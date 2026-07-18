@@ -1,16 +1,24 @@
 # s7s
 
-A `k9s` style terminal tool that **integrates search** across Claude Code, Antigravity CLI, and Codex conversation sessions in a **single TUI**, allowing you to jump to the project folder of a selected session and **instantly resume** it with the corresponding agent CLI.
+A `k9s`-style terminal dashboard that integrates **search and management** across Claude Code, Antigravity CLI, and Codex conversation sessions in a **single, unified TUI**. It allows you to monitor usage, manage sessions, and instantly resume work in your project folders with their respective agent CLIs.
 
-## Features
+## Key Features
 
-- **Integrated Search**: View sessions scattered across three tools on a single screen.
-- **Fast Incremental Cache**: Scans only file `mtime` to re-parse only changed parts (`~/.cache/s7s/index.bin`).
-- **Clean Parser**: Extracts and refines **only user questions (User Turn)** instead of raw JSON.
-- **Korean NFC Normalization**: Prevents missing search results due to macOS NFD issues (excluding initial consonant search).
-- **Bidirectional Lifecycle**: Maintains filter state during the TUI → Agent CLI → TUI return cycle.
-- **Usage Display**: Displays remaining usage for each profile in the header across two windows (5h/weekly) (e.g., ` 72%(4h 30m)  52%(2d 16h) left`). It reads and parses the official CLI screen (`/usage`·`/status`) in a hidden PTY — [Details](docs/usage-display.md).
-- **Profiles (Multiple Subscriptions)**: Manages agent type + name + config folder + OAuth token (storage only) as a profile. Even for Claude, different folders can be treated as separate profiles (e.g., personal/team subscription), and by injecting `CLAUDE_CONFIG_DIR`/`CODEX_HOME`, session scanning, usage tracking, and resume are executed for that subscription — [Details](docs/profiles.md).
+- **Rust-Powered & Blazingly Fast**: Built with Rust for instantaneous session scanning, minimal resource footprint, and highly responsive TUI rendering.
+- **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen.
+- **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
+- **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, or delete redundant histories directly from the TUI.
+- **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
+- **Dozens of Visual Themes**: Personalize your workspace with 40 built-in themes, including specialized dark/light variants (Nord, Dracula, Tokyo Night, Ular) and accessibility-focused CVD (Color Vision Deficiency) safe palettes.
+
+### Core Capabilities
+
+- **Fast Incremental Cache**: Optimizes performance by scanning file `mtime` to re-parse only changed session files (`~/.cache/s7s/index.bin`).
+- **Clean Parser**: Refines raw logs to extract and render only human-readable user turns.
+- **Korean NFC Normalization**: Normalizes Unicode to prevent search misses caused by macOS NFD issues.
+- **Bidirectional Lifecycle**: Retains current search/filter states when switching between TUI and agent CLI subprocesses.
+- **Multi-Profile Support**: Organizes different subscriptions (e.g., personal vs. team accounts) by mapping config directories and injecting variables like `CLAUDE_CONFIG_DIR` or `CODEX_HOME` dynamically — [Details](docs/profiles.md).
+
 
 ## Build / Installation
 
