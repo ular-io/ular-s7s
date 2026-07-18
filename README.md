@@ -4,7 +4,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 
 ## Key Features
 
-- **Rust-Powered & Blazingly Fast**: Built with Rust for instantaneous session scanning, minimal resource footprint, and highly responsive TUI rendering.
+- **Rust-Powered & Blazingly Fast**: Built with Rust combined with database-backed caching for instantaneous loading. The initial scan builds the database cache, enabling subsequent lookups to query the cache directly for near-instantaneous load times.
 - **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen.
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, or delete redundant histories directly from the TUI.
@@ -13,9 +13,10 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 
 ### Core Capabilities
 
-- **Fast Incremental Cache**: Optimizes performance by scanning file `mtime` to re-parse only changed session files (`~/.cache/s7s/index.bin`).
+- **Database-Backed Fast Caching**: Caches parsed session details in a local database index (`~/.cache/s7s/index.bin`). Once indexed, queries run directly against the cache database for blazingly fast session retrieval.
+- **Smart Incremental Updates**: Tracks file modification times (`mtime`) on startup, scanning and parsing only newly added or modified session files to sync the database incrementally.
 - **Clean Parser**: Refines raw logs to extract and render only human-readable user turns.
-- **Korean NFC Normalization**: Normalizes Unicode to prevent search misses caused by macOS NFD issues.
+- **Unicode Normalization (NFC)**: Standardizes search blobs and keyword inputs to NFC to prevent search misses caused by macOS NFD issues (common in Korean Jamo and European diacritics).
 - **Bidirectional Lifecycle**: Retains current search/filter states when switching between TUI and agent CLI subprocesses.
 - **Multi-Profile Support**: Organizes different subscriptions (e.g., personal vs. team accounts) by mapping config directories and injecting variables like `CLAUDE_CONFIG_DIR` or `CODEX_HOME` dynamically — [Details](docs/profiles.md).
 
@@ -28,6 +29,12 @@ brew tap ular-io/s7s
 brew install s7s
 ```
 
+> [!NOTE]
+> On macOS, since custom Homebrew tap binaries are unsigned, Gatekeeper may block execution on the first run. You may need to grant trust under **System Settings > Privacy & Security** (click "Allow Anyway"), or manually clear the quarantine attribute:
+> ```bash
+> xattr -rd com.apple.quarantine $(which s7s)
+> ```
+
 ### Build and Install Manually
 ```bash
 cargo build --release
@@ -38,13 +45,15 @@ cp target/release/s7s ~/bin/   # Copy to your desired PATH location
 ## Usage
 
 ```bash
-s7s            # Run TUI
-s7s session <SESSION_ID>   # View past session context (no TUI, see below)
-s7s --rebuild-cache  # Force rebuild entire cache
-s7s --print    # Print session list only (debug/script)
-s7s --usage-probe    # Print usage check results only without TUI (debug)
-s7s --help     # Help
-s7s --version  # Version
+s7s                         # Run TUI
+s7s session <SESSION_ID>    # View past session context (no TUI, see below)
+s7s --rebuild-cache         # Force rebuild the entire session cache
+s7s --print                 # Print the session list only, without TUI (debug)
+s7s --usage-probe           # Print usage probe results only, without TUI (debug)
+s7s --model-probe           # Print model list probe results only, without TUI (debug; no cache update)
+s7s --handoff-samples [DIR] # Generate one deterministic handoff Markdown sample per agent (debug)
+s7s --help                  # Print help
+s7s --version               # Print version
 ```
 
 ### Shortcuts (Session Screen)
@@ -52,20 +61,20 @@ s7s --version  # Version
 | Key | Action |
 | :-- | :-- |
 | `:` | Screen selection menu (`s` Session / `p` Profile) |
-| `t` | Cycle to next screen (Session ↔ Profile) |
+| `!` | Terminal command in session folder (run shell command in the selected session's folder) |
 | `/` | Keyword search mode (real-time body/title matching, space=AND) |
 | `a` | Agents modal (`space` toggle, `enter` apply) |
-| `1` ~ `9` | Active profile exclusive filter (header number order) |
+| `1` ~ `5` | Active profile exclusive filter (header number order) |
 | `0` | Reset all filters |
 | `f` | Folder modal (typing=filter, `space` toggle, `enter` apply) |
 | `ctrl+u` | Update Session (reflect session list additions/changes + recheck usage) |
 | `ctrl+n` | New Session (Profile/Model/Folder dialog) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |
 | `ctrl+r` | Rename Session |
-| `ctrl+d` | Confirm Delete Session |
+| `ctrl+d` / `del` | Confirm Delete Session |
 | `tab` / `shift+tab` | Toggle focus between left table ↔ right preview panel |
 | `↑`/`↓` (`k`/`j`) | Table focus=move row / Preview focus=scroll body |
-| `g` / `G` | Jump to start / end |
+| `g` / `G` (`home` / `end`) | Jump to start / end |
 | `pageup` / `pagedown` | Scroll preview body |
 | `enter` | Resume Session |
 | `esc` | Cancel search/filter/selection state (reset keyword/filter, close modal) — **Not quit** |
@@ -77,14 +86,14 @@ All filters (Keyword · Agent · Folder · Profile) operate with an **AND combin
 
 | Key | Action |
 | :-- | :-- |
-| `t` | Cycle to next screen (Profile → Session) |
 | `enter` | Start new session with selected profile (type folder directly or select existing folder with `↑`/`↓`, copy full path with `tab`) |
 | `space` | Toggle profile activation (target for header display/number keys, session list keeps all) |
+| `1` ~ `5` | Insert selected profile at shortcut position |
 | `+` | Add profile |
 | `ctrl+e` | Edit profile |
 | `ctrl+d` | Delete profile (default profile cannot be deleted, actual folder remains) |
 | `ctrl+u` | Refresh all profile usages (keeps showing previous value during refresh) |
-| `esc` | Return to session screen |
+| `→` / `l` | Return to session screen |
 
 ## Session Context
 
@@ -179,26 +188,7 @@ bg = "default"        # keep the terminal's own background
 accent = "#88C0D0"    # focus borders / selection
 ```
 
-## Architecture
 
-```
-main.rs         Entry point (clap) · Terminal lifecycle · Event loop · resume handover
-config.rs       Paths · resume/new command templates ({prompt} token) · Cache/settings location
-profile.rs      Profile (multiple subscriptions) model · profiles.json load/save/seed · env mapping
-model.rs        Session/Agent types · Date format
-normalize.rs    NFC normalization
-parser/         claude.rs · codex.rs · antigravity.rs (Extract user turns only)
-session_context/ Shared session context (detailed parser/excerpt/masking/interpretation/rendering)
-session_cli.rs  Execute `s7s session` subcommand
-handoff.rs      HandoffTurn compatible adapter + Markdown exporter
-cache.rs        mtime-based bincode cache
-scan.rs         Incremental scanner per profile
-filter.rs       Keyword/Agent/Folder/Profile AND compound filter
-theme.rs        Color themes (40 built-in · themes/*.toml custom · theme.json selected save)
-ui/mod.rs       App state · Screen/UiMode state machine · Key input handling
-ui/render.rs    Header · Session/Profile table · Preview · Status bar · Modal rendering
-usage.rs        Profile-specific CLI usage check (PTY execution · env injection · screen parsing)
-```
 
 ## Documentation
 
