@@ -1,0 +1,5068 @@
+//! TUI application state and state machine.
+
+pub mod quick;
+pub mod render;
+
+use crate::config::Config;
+use crate::filter::{self, Filter};
+use crate::model::{Agent, Session};
+use crate::models::{self, ModelCatalog};
+use crate::profile::ProfileStore;
+use crate::usage::{self, UsagePhase, UsageState};
+use anyhow::{anyhow, Context, Result};
+use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
+
+/// Main screen variants. Cycled/switched via Quick Command (`:`) window commands or ←/→ arrows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    /// Session list view (default), "Session Search screen".
+    Session,
+    /// Profile list view.
+    Profile,
+    /// Session details view (per-question workspace tasks/answers). Drill-down screen entered via → arrow key from search preview.
+    Detail,
+}
+
+impl Screen {
+    #[allow(dead_code)]
+    pub fn label(self) -> &'static str {
+        match self {
+            Screen::Session => "Session",
+            Screen::Profile => "Profile",
+            Screen::Detail => "Session Detail",
+        }
+    }
+}
+
+/// UI modes determining input event dispatching branches (TUI state machine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiMode {
+    /// Main table navigation (Session/Profile lists depending on active Screen).
+    Table,
+    /// Keyword search text input.
+    Keyword,
+    /// Agent filter multi-select modal.
+    AgentModal,
+    /// Folder filter multi-select modal.
+    FolderModal,
+    /// Session deletion confirmation modal.
+    DeleteConfirm,
+    /// Session renaming modal.
+    Rename,
+    /// Profile creation/edit form.
+    ProfileForm,
+    /// Profile deletion confirmation modal.
+    ProfileDeleteConfirm,
+    /// Directory creation confirmation modal prompt for missing config folders on profile save (login task triggered on confirm).
+    ProfileDirConfirm,
+    /// New session creation dialog (profile selection + folder lookup/input). Accessible globally via Ctrl+N.
+    NewSession,
+    /// `:`/`!` Quick Command window (palette: incremental search and command trigger;
+    /// terminal: shell command input with history in the selected session's folder).
+    QuickCommand,
+    /// Theme selection dialog (live preview on cursor move; Enter commits, Esc reverts).
+    ThemeSelect,
+    /// Global keybindings help screen.
+    Help,
+    /// Generic alert dialog (info / warning / error). Reverts to the prior UI mode upon dismissal.
+    Message,
+}
+
+/// Severity of the alert dialog, determining border and button highlight colors.
+/// Info and Warn variants are currently unused, but preserved for dialog API reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum MessageKind {
+    Info,
+    Warn,
+    Error,
+}
+
+/// State for the reusable alert message dialog.
+///
+/// Can be spawned anywhere via `App::show_message`, returning to the prior UI mode
+/// when dismissed (via Enter / Esc / Space). Holds purely descriptive variables (title,
+/// lines, severity) with no custom actions/callbacks attached.
+pub struct MessageDialog {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub kind: MessageKind,
+    /// Prior UI mode to restore upon dismissing the dialog.
+    return_mode: UiMode,
+}
+
+/// Focused panel in the main search screen (left table <-> right preview). Toggled via ←/→.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Table,
+    Preview,
+}
+
+/// Focused column in the session details screen (left questions list <-> right workspace task details). Toggled via ←/→.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailFocus {
+    /// Left column: list of user questions (navigated via ↑/↓).
+    Questions,
+    /// Right column: detailed agent workspace tasks and answers (scrolled via ↑/↓).
+    Work,
+}
+
+/// State for the session details screen, instantiated on entering from the search preview screen via →.
+pub struct SessionDetailState {
+    /// Target session index in the `sessions` vector.
+    pub session_idx: usize,
+    /// List of handoff turns parsed from raw session files.
+    pub turns: Vec<crate::handoff::HandoffTurn>,
+    /// Selected turn index in the left questions panel.
+    pub selected: usize,
+    pub focus: DetailFocus,
+    /// Scroll offset for the left questions list (lines). Adjusted in render to keep the selected item visible.
+    pub left_scroll: std::cell::Cell<u16>,
+    /// Scroll offset for the right details panel (lines).
+    pub right_scroll: std::cell::Cell<u16>,
+    /// Maximum scroll limit for the right details panel. Calculated and updated in the render pass post-wrapping.
+    pub right_max_scroll: std::cell::Cell<u16>,
+}
+
+impl SessionDetailState {
+    /// Moves selection in the left questions list. Resets the right details panel's scroll offset on changes.
+    fn move_selection(&mut self, delta: isize) {
+        if self.turns.is_empty() {
+            return;
+        }
+        let len = self.turns.len() as isize;
+        let next = (self.selected as isize + delta).clamp(0, len - 1) as usize;
+        if next != self.selected {
+            self.selected = next;
+            self.right_scroll.set(0);
+        }
+    }
+
+    /// Scrolls the right details panel (clamped to available scroll range).
+    fn scroll_work(&self, delta: isize) {
+        let max = self.right_max_scroll.get() as isize;
+        let cur = self.right_scroll.get() as isize;
+        self.right_scroll.set((cur + delta).clamp(0, max) as u16);
+    }
+}
+
+/// Shared state for multi-select modals.
+pub struct ModalState {
+    pub labels: Vec<String>,
+    pub cursor: usize,
+    pub selected: HashSet<usize>,
+    /// Top visible row for scrollable modal lists (folder modal). Managed by the
+    /// renderer (which knows the viewport height): the cursor moves freely within
+    /// the window and the offset only shifts when the cursor would fall outside
+    /// it, so moving the selection upward within the window does not scroll.
+    pub scroll: std::cell::Cell<usize>,
+}
+
+/// State managing single-line text inputs supporting cursor movement and multi-byte character editing.
+/// Shared between the session rename modal and the profile creation/edit form.
+pub struct TextInput {
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl TextInput {
+    fn new(value: String) -> Self {
+        let cursor = value.len();
+        TextInput { value, cursor }
+    }
+
+    fn insert_char(&mut self, c: char) {
+        self.value.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let prev = prev_char_boundary(&self.value, self.cursor);
+        self.value.drain(prev..self.cursor);
+        self.cursor = prev;
+    }
+
+    fn delete(&mut self) {
+        if self.cursor >= self.value.len() {
+            return;
+        }
+        let next = next_char_boundary(&self.value, self.cursor);
+        self.value.drain(self.cursor..next);
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = prev_char_boundary(&self.value, self.cursor);
+    }
+
+    fn move_right(&mut self) {
+        self.cursor = next_char_boundary(&self.value, self.cursor);
+    }
+
+    fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn end(&mut self) {
+        self.cursor = self.value.len();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameFocus {
+    Input,
+    Buttons,
+}
+
+pub struct RenameModalState {
+    pub input: TextInput,
+    pub focus: RenameFocus,
+    pub ok_focused: bool,
+}
+
+/// Focused fields in the profile form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormFocus {
+    /// Agent radio button (cycled via ←/→/Space).
+    Agent,
+    Name,
+    Path,
+    /// Bottom Save/Cancel buttons row.
+    Buttons,
+}
+
+/// Profile creation/edit form state.
+pub struct ProfileFormState {
+    /// Target profile ID (None for a new profile).
+    pub editing_id: Option<String>,
+    /// Whether editing a built-in profile (agent type cannot be changed).
+    pub builtin: bool,
+    /// Whether selecting Antigravity is allowed. Since agy does not support config directory overrides,
+    /// adding extra profiles is moot; thus, only allowed when editing pre-existing agy profiles
+    /// (dimmed and unselectable for new creations or conversion from other agents).
+    pub agy_allowed: bool,
+    /// Radio selection index (referencing `Agent::all()`).
+    pub agent_idx: usize,
+    pub name: TextInput,
+    pub path: TextInput,
+    pub focus: FormFocus,
+    /// Focused button in the button row: Save (true) or Cancel (false).
+    pub save_focused: bool,
+    /// Validation error message (rendered on the bottom line of the form).
+    pub error: Option<String>,
+}
+
+/// Focused control in the new session dialog (cycled via Tab / Shift+Tab).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewSessionFocus {
+    /// Profile combo box (untypeable).
+    Profile,
+    /// Model combo box (untypeable). Available options depend on the selected profile's agent.
+    Model,
+    /// Folder combo box (typeable).
+    Folder,
+    /// Bottom OK/Cancel buttons row (navigated via ←/→).
+    Buttons,
+}
+
+/// An option in the model dropdown of the new session dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOption {
+    /// Value passed to CLI `--model`. None = Default (omits the flag, falling back to CLI default).
+    pub value: Option<String>,
+    pub label: String,
+    /// Supplementary note (rendered in dim color).
+    pub note: String,
+    /// Placeholder indicating the configured default model is missing in the queried list.
+    /// While selected, the OK button is disabled, requiring the user to choose another option.
+    pub missing: bool,
+}
+
+/// Immutable reference to the source session captured when a contextual New
+/// Session dialog opens. Identity is cloned (not a session index) because
+/// indices are unstable after refresh/re-sorting. Changing the target Profile,
+/// Model, or Folder never mutates this reference, enabling cross-agent and
+/// cross-project use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionContextRef {
+    pub agent: Agent,
+    pub profile_id: String,
+    pub session_id: String,
+    pub title: String,
+}
+
+/// New session dialog state (managing profile, model, and folder dropdowns).
+///
+/// Dropdown behavior: Enter/→ opens a closed dropdown (typing in Folder also opens it automatically).
+/// Pressing Enter while open selects the value and closes; Space selects without closing; Esc cancels and closes.
+/// Navigation keys ↑/↓ cycle through open items.
+pub struct NewSessionState {
+    /// Resolved selected profile index in the profiles list (changed via Enter/Space in dropdown).
+    pub profile_idx: usize,
+    /// Currently focused control.
+    pub focus: NewSessionFocus,
+    /// Whether the focused control's dropdown is open (at most one dropdown open at a time).
+    pub dropdown_open: bool,
+    /// Profile dropdown cursor (valid while open, referencing profiles index).
+    pub profile_cursor: usize,
+    /// Model dropdown options (0 = Default). Reconstructed only on opening the dialog or changing profiles
+    /// (background model queries do not hot-swap open dropdown options to prevent misclicks from cursor jumps).
+    pub model_options: Vec<ModelOption>,
+    /// Resolved selected index in `model_options`.
+    pub model_idx: usize,
+    /// Model dropdown cursor (valid while open).
+    pub model_cursor: usize,
+    /// Folder direct text input path. Filled with the full path when a dropdown item is selected.
+    pub input: TextInput,
+    /// Existing workspace folders (full paths) discovered across all sessions.
+    pub folders: Vec<PathBuf>,
+    /// Sorted indices of `folders` prioritizing matches. The first `match_count` items are matches
+    /// for the input string, followed by non-matching items (not hidden).
+    pub ordered: Vec<usize>,
+    /// Number of matching items at the head of `ordered` (used to distinguish colors in render).
+    pub match_count: usize,
+    /// Folder dropdown list cursor (index in `ordered`). None indicates highlight remains in the input field
+    /// (e.g. immediately after typing auto-opens it), requiring ↓ key press to focus the list.
+    pub folder_cursor: Option<usize>,
+    /// Focused button in the button row: OK (true) or Cancel (false). OK and Cancel act as separate
+    /// tab stops (cycling: Profile -> Folder -> OK -> Cancel).
+    pub ok_focused: bool,
+    /// Validation error message.
+    pub error: Option<String>,
+    /// Immutable source-session reference for "New Session with Context".
+    /// None = ordinary New Session (identical behavior to before).
+    pub context: Option<SessionContextRef>,
+}
+
+/// Request to start a new session. Processed by the main loop after releasing TUI.
+#[derive(Debug, Clone)]
+pub struct NewSessionRequest {
+    pub profile_id: String,
+    pub cwd: PathBuf,
+    /// Selected model (appended via `--model`). None = Default (omits the flag).
+    pub model: Option<String>,
+    /// Source session used as historical context (drives bootstrap prompt injection).
+    pub context: Option<SessionContextRef>,
+}
+
+/// Request to run a shell command in a session folder (`!` terminal mode).
+/// Processed by the main loop after releasing TUI.
+#[derive(Debug, Clone)]
+pub struct TerminalRequest {
+    pub cwd: PathBuf,
+    pub command: String,
+    pub kind: TerminalKind,
+}
+
+/// Origin of a terminal request; drives the post-exit behavior in the handover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalKind {
+    /// User `!` command: wait for a keypress after exit so short-lived output is
+    /// not wiped by the TUI redraw. Failures show a warning and also wait.
+    Command,
+    /// Edit Config editor session: return without waiting (no output to read).
+    /// On failure, offer to reopen the config with vim (a broken `editor` value
+    /// would otherwise lock the user out of fixing it from within s7s).
+    EditConfig,
+}
+
+impl ProfileFormState {
+    /// Focus rotation order. Bypasses the Agent field when editing a built-in profile, as the agent type is fixed.
+    fn focus_order(&self) -> &'static [FormFocus] {
+        if self.builtin {
+            &[FormFocus::Name, FormFocus::Path, FormFocus::Buttons]
+        } else {
+            &[
+                FormFocus::Agent,
+                FormFocus::Name,
+                FormFocus::Path,
+                FormFocus::Buttons,
+            ]
+        }
+    }
+
+    fn focus_move(&mut self, delta: isize) {
+        let order = self.focus_order();
+        let cur = order.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
+        let next = (cur + delta).rem_euclid(order.len() as isize) as usize;
+        self.focus = order[next];
+    }
+
+    /// Whether the radio item is enabled. Since Antigravity does not support config directory overrides,
+    /// adding extra profiles is moot; thus, disabled unless editing a pre-existing agy profile.
+    pub fn agent_enabled(&self, idx: usize) -> bool {
+        Agent::all()[idx] != Agent::Antigravity || self.agy_allowed
+    }
+
+    fn cycle_agent(&mut self, delta: isize) {
+        if self.builtin {
+            return;
+        }
+        let n = Agent::all().len() as isize;
+        // Skip disabled items (Antigravity).
+        let mut idx = self.agent_idx as isize;
+        for _ in 0..n {
+            idx = (idx + delta).rem_euclid(n);
+            if self.agent_enabled(idx as usize) {
+                self.agent_idx = idx as usize;
+                return;
+            }
+        }
+    }
+
+    /// Currently focused text input (returns None if focus is not on a text field).
+    fn focused_input(&mut self) -> Option<&mut TextInput> {
+        match self.focus {
+            FormFocus::Name => Some(&mut self.name),
+            FormFocus::Path => Some(&mut self.path),
+            _ => None,
+        }
+    }
+}
+
+impl ModalState {
+    fn new(labels: Vec<String>, preselected: HashSet<usize>) -> Self {
+        ModalState {
+            labels,
+            cursor: 0,
+            selected: preselected,
+            scroll: std::cell::Cell::new(0),
+        }
+    }
+    fn move_cursor(&mut self, delta: isize) {
+        if self.labels.is_empty() {
+            return;
+        }
+        let len = self.labels.len() as isize;
+        let mut c = self.cursor as isize + delta;
+        if c < 0 {
+            c = 0;
+        }
+        if c >= len {
+            c = len - 1;
+        }
+        self.cursor = c as usize;
+    }
+    fn toggle(&mut self) {
+        if self.labels.is_empty() {
+            return;
+        }
+        if self.selected.contains(&self.cursor) {
+            self.selected.remove(&self.cursor);
+        } else {
+            self.selected.insert(self.cursor);
+        }
+    }
+}
+
+/// Theme selection dialog state. Cursor moves apply the theme immediately
+/// (live preview); Esc restores `original`, Enter persists the selection.
+pub struct ThemeSelectState {
+    /// Selectable themes: built-ins followed by custom (themes/*.toml) entries.
+    pub themes: Vec<crate::theme::Theme>,
+    /// Whether the visible list shows Dark (true) or Light (false) themes.
+    /// Left/Right swaps the entire displayed list between the two categories.
+    pub dark_view: bool,
+    /// Cursor index within the currently visible (category-filtered) list.
+    pub cursor: usize,
+    /// Top visible row. Managed by the renderer (which knows the viewport height):
+    /// the cursor moves freely within the window and the offset only shifts when
+    /// the cursor would fall outside it, so selecting upward no longer scrolls.
+    pub scroll: std::cell::Cell<usize>,
+    /// Active theme at dialog open time, restored on Esc.
+    original: crate::theme::Theme,
+}
+
+impl ThemeSelectState {
+    /// Indices into `themes` belonging to the currently visible category.
+    pub fn visible(&self) -> Vec<usize> {
+        self.themes
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.dark == self.dark_view)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+/// Global application state.
+pub struct App {
+    pub cfg: Config,
+    /// List of profiles (vector order corresponds to UI/header index numbers).
+    pub profiles: ProfileStore,
+    pub sessions: Vec<Session>,
+    pub all_folders: Vec<String>,
+
+    pub filter: Filter,
+    /// Byte offset of the search input cursor (relative to filter.keyword).
+    pub keyword_cursor: usize,
+    pub mode: UiMode,
+    /// Current main screen (Session/Profile).
+    pub screen: Screen,
+    pub focus: Focus,
+
+    /// List of session indices that passed the current filters.
+    pub filtered: Vec<usize>,
+    /// Selected index within `filtered`.
+    pub selected: usize,
+    /// Left scroll offset for the right preview panel (lines).
+    pub preview_scroll: u16,
+    /// Maximum scroll offset for the preview panel (lines). Calculated and saved during render
+    /// based on actual lines and viewport height (0 if all contents fit, making it unscrollable).
+    pub preview_max_scroll: std::cell::Cell<u16>,
+
+    pub agent_modal: Option<ModalState>,
+    pub folder_modal: Option<ModalState>,
+    pub rename_modal: Option<RenameModalState>,
+    /// Target session index for renaming (valid while the rename modal is open).
+    /// Kept independent of the main table selection to operate safely within details screens as well.
+    pub rename_target: Option<usize>,
+    /// Active message dialog (present when mode == Message).
+    pub message: Option<MessageDialog>,
+    /// Target session index pending deletion.
+    pub pending_delete: Option<usize>,
+    /// Focused button in the session deletion confirmation modal: Delete (true) or Cancel (false).
+    pub delete_ok_focused: bool,
+    /// Incremental search keyword in the folder filter modal.
+    pub folder_query: String,
+    /// Mapping: folder modal label index <-> index in `all_folders` (reflects search filtering).
+    folder_visible: Vec<usize>,
+
+    pub scan_info: String,
+    pub status_msg: Option<String>,
+
+    /// Table viewport state (scroll offsets). Retained across frames to ensure selection moves
+    /// inside the viewport and scrolls only at the edges. Recreating it on every frame resets
+    /// offsets to 0, locking the cursor to the bottom while scrolling the list.
+    pub table_state: std::cell::RefCell<ratatui::widgets::TableState>,
+
+    /// Selected row index in the profiles list.
+    pub profile_selected: usize,
+    /// Profile table viewport state.
+    pub profile_table_state: std::cell::RefCell<ratatui::widgets::TableState>,
+    /// Active profile form (present when mode == ProfileForm).
+    pub profile_form: Option<ProfileFormState>,
+    /// Target profile index pending deletion.
+    pub pending_profile_delete: Option<usize>,
+    /// Focused button in the config directory creation confirmation modal: OK (true) or Cancel (false).
+    pub dir_create_ok_focused: bool,
+    /// Active new session folder input/select dialog (present when mode == NewSession).
+    pub new_session: Option<NewSessionState>,
+    /// Active Quick Command palette state (present when mode == QuickCommand).
+    pub quick: Option<quick::QuickState>,
+    /// Active color theme (every render color derives from this).
+    pub theme: crate::theme::Theme,
+    /// Active theme selection dialog state (present when mode == ThemeSelect).
+    pub theme_select: Option<ThemeSelectState>,
+    /// Execution history of Quick Commands (most recent first, persisted in file).
+    pub quick_history: Vec<String>,
+    /// Execution history of terminal commands (most recent first, persisted in file).
+    pub terminal_history: Vec<String>,
+    /// Active session detail screen state (present when screen == Detail).
+    pub detail: Option<SessionDetailState>,
+    /// Whether to display tool calls/results in the right panel of the details screen (defaults to hidden, toggled via `.`).
+    pub detail_show_tools: bool,
+
+    pub should_quit: bool,
+    pub quit_armed: bool,
+    /// Ignores exit keys (q/Ctrl+C) until this instant. Prevents subsequent Ctrl+C keypresses
+    /// from an exited agent from triggering s7s's "double press to exit" before the user realizes s7s is restored.
+    pub quit_grace_until: Option<std::time::Instant>,
+    /// Request to resume the session at the specified sessions index, if set.
+    pub resume_request: Option<usize>,
+    /// Request to start a new session in the specified profile/folder, if set.
+    pub new_session_request: Option<NewSessionRequest>,
+    /// Request to execute the agent for initial setup (login) under the specified profile ID, if set.
+    pub login_request: Option<String>,
+    /// Request to run a shell command in a session folder, if set.
+    pub terminal_request: Option<TerminalRequest>,
+
+    /// Usage (remaining %) display status per profile.
+    pub usage: UsageState,
+    /// Receivers for active usage query results (removed on completion). Items are (profile_id, UsageResult).
+    /// Maintained as a vector to allow concurrent runs of full updates (Ctrl+U) and incremental updates (profile add/edit).
+    usage_rxs: Vec<Receiver<(String, usage::UsageResult)>>,
+
+    /// Cache of model catalogs per profile (persisted in models.json). Used in the new session model dropdown.
+    pub models: ModelCatalog,
+    /// Receivers for active model query results (removed on completion).
+    models_rxs: Vec<Receiver<(String, models::ModelsResult)>>,
+    /// Profile IDs with active model queries (prevents duplicate PTY queries for the same profile).
+    models_loading: HashSet<String>,
+}
+
+impl App {
+    pub fn new(
+        cfg: Config,
+        profiles: ProfileStore,
+        sessions: Vec<Session>,
+        scan_info: String,
+    ) -> Self {
+        let mut all_folders: Vec<String> = sessions
+            .iter()
+            .map(|s| s.folder.clone())
+            .filter(|f| !f.is_empty())
+            .collect();
+        all_folders.sort_unstable();
+        all_folders.dedup();
+
+        let filtered: Vec<usize> = (0..sessions.len()).collect();
+        let mut app = App {
+            cfg,
+            profiles,
+            sessions,
+            all_folders,
+            filter: Filter::default(),
+            keyword_cursor: 0,
+            mode: UiMode::Table,
+            screen: Screen::Session,
+            focus: Focus::Table,
+            filtered,
+            selected: 0,
+            preview_scroll: 0,
+            preview_max_scroll: std::cell::Cell::new(0),
+            agent_modal: None,
+            folder_modal: None,
+            rename_modal: None,
+            rename_target: None,
+            detail_show_tools: false,
+            message: None,
+            pending_delete: None,
+            delete_ok_focused: false,
+            folder_query: String::new(),
+            folder_visible: Vec::new(),
+            scan_info,
+            status_msg: None,
+            table_state: std::cell::RefCell::new(ratatui::widgets::TableState::default()),
+            profile_selected: 0,
+            profile_table_state: std::cell::RefCell::new(ratatui::widgets::TableState::default()),
+            profile_form: None,
+            pending_profile_delete: None,
+            dir_create_ok_focused: false,
+            new_session: None,
+            quick: None,
+            theme: crate::theme::current(),
+            theme_select: None,
+            quick_history: quick::load_history(),
+            terminal_history: quick::load_terminal_history(),
+            detail: None,
+            should_quit: false,
+            quit_armed: false,
+            quit_grace_until: None,
+            resume_request: None,
+            new_session_request: None,
+            login_request: None,
+            terminal_request: None,
+            usage: UsageState::new(),
+            usage_rxs: Vec::new(),
+            // Unit tests do not load the actual models.json to prevent non-deterministic failures
+            // in dropdown initial selections driven by system state.
+            models: if cfg!(test) {
+                ModelCatalog::default()
+            } else {
+                ModelCatalog::load()
+            },
+            models_rxs: Vec::new(),
+            models_loading: HashSet::new(),
+        };
+        app.recompute();
+        app
+    }
+
+    /// Applies active filters and resets selection / scroll positions.
+    pub fn recompute(&mut self) {
+        self.filtered = filter::apply(&self.sessions, &self.filter);
+        if self.selected >= self.filtered.len() {
+            self.selected = self.filtered.len().saturating_sub(1);
+        }
+        self.preview_scroll = 0;
+        // Reset table viewport scroll to top when filters change (in case the result set shrinks significantly).
+        *self.table_state.borrow_mut().offset_mut() = 0;
+    }
+
+    /// Returns the currently selected session.
+    pub fn current(&self) -> Option<&Session> {
+        self.filtered.get(self.selected).map(|&i| &self.sessions[i])
+    }
+
+    /// Rescans sessions on disk to refresh the session list (utilizes mtime-based incremental cache).
+    ///
+    /// Low overhead as only modified or new files are parsed. Tracks current selection by (agent, id)
+    /// to preserve cursor position post-refresh (even if content modifications re-order lists to the top).
+    /// Shared between automatic triggers on resume return and manual Ctrl+U refreshes.
+    pub fn refresh_sessions(&mut self) {
+        let prev = self.current().map(|s| (s.agent, s.id.clone()));
+        // If the details view is open, capture the target session's identity to rebind post-refresh.
+        let detail_key = self
+            .detail
+            .as_ref()
+            .and_then(|d| self.sessions.get(d.session_idx))
+            .map(|s| (s.agent, s.id.clone()));
+
+        let result = crate::scan::scan(&self.profiles.profiles, false);
+        self.scan_info = format!(
+            "{} sessions · reparsed {}/{}",
+            result.sessions.len(),
+            result.reparsed_files,
+            result.scanned_files
+        );
+        self.sessions = result.sessions;
+        self.rebuild_all_folders();
+        self.recompute();
+
+        // Restore selection: if the same session still passes the filters, move cursor to its new index.
+        if let Some((agent, id)) = prev {
+            if let Some(pos) = self
+                .filtered
+                .iter()
+                .position(|&i| self.sessions[i].agent == agent && self.sessions[i].id == id)
+            {
+                self.selected = pos;
+            }
+        }
+
+        // Rebind details screen: update target session index and re-parse turns
+        // (reflecting updates such as messages added on resume return). Closes details view if session was deleted.
+        if self.detail.is_some() {
+            let found = detail_key.and_then(|(agent, id)| {
+                self.sessions
+                    .iter()
+                    .position(|s| s.agent == agent && s.id == id)
+            });
+            match found {
+                Some(idx) => {
+                    let turns = crate::handoff::load_turns(&self.sessions[idx]);
+                    if turns.is_empty() {
+                        self.close_session_detail();
+                    } else if let Some(d) = self.detail.as_mut() {
+                        d.session_idx = idx;
+                        d.selected = d.selected.min(turns.len() - 1);
+                        d.turns = turns;
+                    }
+                }
+                None => self.close_session_detail(),
+            }
+        }
+    }
+
+    /// Global Ctrl+U: Refreshes session lists, usage stats, and model catalogs concurrently (shared across all main screens).
+    /// Forcefully updates model catalogs (bypassing version gates) to capture potential plan changes,
+    /// though it runs silently in the background unlike usage query feedback (no status updates on completion).
+    fn update_sessions_and_usage(&mut self) {
+        self.refresh_sessions();
+        self.start_usage_fetch();
+        self.start_models_fetch(true);
+        self.status_msg = Some(format!(
+            "session update complete · {} · updating usage…",
+            self.scan_info
+        ));
+    }
+
+    /// Spawns parallel queries to fetch usage (remaining %) for all fetchable profiles. Ignored if queries are already in flight.
+    pub fn start_usage_fetch(&mut self) {
+        if self.usage_in_flight() {
+            return;
+        }
+        let ids: Vec<String> = self
+            .profiles
+            .profiles
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        self.start_usage_fetch_for(&ids);
+    }
+
+    /// Spawns parallel queries to fetch usage for specified profiles (used for incremental refreshes on profile add/edit).
+    /// Only skips profiles currently in `Loading` state. Since non-fetchable states (missing directories, unsupportive agents)
+    /// are modeled as results (`UsageResult::MissingDir` / `Unavailable`), all profiles are targetable,
+    /// and profiles not included in an ongoing global query can start query tasks immediately.
+    pub fn start_usage_fetch_for(&mut self, profile_ids: &[String]) {
+        // Prevent launching interactive CLI processes (PTY) during unit tests.
+        if cfg!(test) {
+            return;
+        }
+        let targets: Vec<crate::profile::Profile> = self
+            .profiles
+            .profiles
+            .iter()
+            .filter(|p| profile_ids.contains(&p.id))
+            .filter(|p| self.usage.entry(&p.id).phase != UsagePhase::Loading)
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        for p in &targets {
+            // Retain the prior successful value (`last`) while turning on the progress indicator.
+            self.usage.entry_mut(&p.id).phase = UsagePhase::Loading;
+        }
+        self.usage_rxs.push(usage::spawn_fetch(targets));
+    }
+
+    /// Applies background usage query results to app state. Returns true if updates occurred (triggering a redraw).
+    pub fn poll_usage(&mut self) -> bool {
+        if self.usage_rxs.is_empty() {
+            return false;
+        }
+        // Iterate receivers to collect incoming messages; remove channels that are fully completed (Disconnected).
+        let mut results: Vec<(String, usage::UsageResult)> = Vec::new();
+        self.usage_rxs.retain(|rx| loop {
+            match rx.try_recv() {
+                Ok(item) => results.push(item),
+                Err(TryRecvError::Empty) => break true,
+                Err(TryRecvError::Disconnected) => break false,
+            }
+        });
+        let updated = !results.is_empty();
+        for (profile_id, res) in results {
+            let entry = self.usage.entry_mut(&profile_id);
+            match res {
+                usage::UsageResult::Ready(snapshot) => {
+                    entry.last = Some(snapshot);
+                    entry.phase = UsagePhase::Ready;
+                }
+                // Logged out, missing CLI, missing dir, or unavailable: clear `last` to prevent misleading displays.
+                usage::UsageResult::NotLoggedIn => {
+                    entry.last = None;
+                    entry.phase = UsagePhase::NotLoggedIn;
+                }
+                usage::UsageResult::NotInstalled => {
+                    entry.last = None;
+                    entry.phase = UsagePhase::NotInstalled;
+                }
+                usage::UsageResult::MissingDir => {
+                    entry.last = None;
+                    entry.phase = UsagePhase::MissingDir;
+                }
+                usage::UsageResult::Unavailable => {
+                    entry.last = None;
+                    entry.phase = UsagePhase::Unavailable;
+                }
+                // Keep the prior value (`last`) even if the current query failed.
+                usage::UsageResult::Failed(_) => entry.phase = UsagePhase::Failed,
+            }
+        }
+        if updated && self.usage_rxs.is_empty() {
+            self.status_msg = Some("usage update complete".to_string());
+        }
+        updated
+    }
+
+    /// Returns whether a usage query task is in progress (used to determine polling frequency in the main loop).
+    pub fn usage_in_flight(&self) -> bool {
+        !self.usage_rxs.is_empty()
+    }
+
+    /// Spawns parallel queries to fetch model catalogs for all profiles.
+    ///
+    /// If `force` is false (app startup), bypasses queries for profiles where the cached CLI version
+    /// matches the current version (version gate to avoid expensive claude PTY spin-up costs).
+    /// If `force` is true (Ctrl+U), forcefully queries all profiles. Skips profiles with active tasks.
+    pub fn start_models_fetch(&mut self, force: bool) {
+        let ids: Vec<String> = self
+            .profiles
+            .profiles
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        self.start_models_fetch_for(&ids, force);
+    }
+
+    /// Spawns queries to fetch model catalogs for specified profiles (used for incremental updates on profile add/edit).
+    pub fn start_models_fetch_for(&mut self, profile_ids: &[String], force: bool) {
+        // Prevent launching interactive CLI processes (PTY) during unit tests.
+        if cfg!(test) {
+            return;
+        }
+        let targets: Vec<crate::profile::Profile> = self
+            .profiles
+            .profiles
+            .iter()
+            .filter(|p| profile_ids.contains(&p.id))
+            .filter(|p| !self.models_loading.contains(&p.id))
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        let cached_versions = targets
+            .iter()
+            .filter_map(|p| self.models.cached_version(&p.id).map(|v| (p.id.clone(), v)))
+            .collect();
+        for p in &targets {
+            self.models_loading.insert(p.id.clone());
+        }
+        self.models_rxs
+            .push(models::spawn_fetch(targets, cached_versions, force));
+    }
+
+    /// Applies background model catalog query results. Returns true if updates occurred.
+    ///
+    /// Preserves existing caches on query failure or unavailability. Since CLIs do not filter out
+    /// invalid model names, we must not clear cached catalogs on unsuccessful updates.
+    pub fn poll_models(&mut self) -> bool {
+        if self.models_rxs.is_empty() {
+            return false;
+        }
+        let mut results: Vec<(String, models::ModelsResult)> = Vec::new();
+        self.models_rxs.retain(|rx| loop {
+            match rx.try_recv() {
+                Ok(item) => results.push(item),
+                Err(TryRecvError::Empty) => break true,
+                Err(TryRecvError::Disconnected) => break false,
+            }
+        });
+        let mut dirty = false;
+        for (profile_id, res) in results {
+            self.models_loading.remove(&profile_id);
+            if let models::ModelsResult::Ready(pm) = res {
+                self.models.insert(profile_id, pm);
+                dirty = true;
+            }
+        }
+        if self.models_rxs.is_empty() {
+            // Defensively clear loading tracking to clean up trailing markers once all channels complete.
+            self.models_loading.clear();
+        }
+        if dirty {
+            self.models.save().ok();
+        }
+        dirty
+    }
+
+    /// Returns whether any background query (usage or models) is in progress (used to determine polling frequency).
+    pub fn background_in_flight(&self) -> bool {
+        !self.usage_rxs.is_empty() || !self.models_rxs.is_empty()
+    }
+
+    /// Polls and applies all background query results. Returns true if updates occurred (triggering a redraw).
+    pub fn poll_background(&mut self) -> bool {
+        let usage_updated = self.poll_usage();
+        let models_updated = self.poll_models();
+        usage_updated || models_updated
+    }
+
+    fn rebuild_all_folders(&mut self) {
+        let mut all_folders: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|s| s.folder.clone())
+            .filter(|f| !f.is_empty())
+            .collect();
+        all_folders.sort_unstable();
+        all_folders.dedup();
+        self.all_folders = all_folders;
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let len = self.filtered.len() as isize;
+        let mut s = self.selected as isize + delta;
+        if s < 0 {
+            s = 0;
+        }
+        if s >= len {
+            s = len - 1;
+        }
+        self.selected = s as usize;
+        self.preview_scroll = 0;
+    }
+
+    // ---- Filter Operations ----
+
+    /// Header number keys (`1..5`): Activates a single profile filter at the specified numbered index.
+    fn set_single_profile(&mut self, idx: usize) {
+        let Some((id, name)) = self
+            .profiles
+            .numbered_profiles()
+            .get(idx)
+            .map(|p| (p.id.clone(), p.name.clone()))
+        else {
+            return;
+        };
+        self.filter.profile_ids.clear();
+        self.filter.profile_ids.insert(id);
+        self.recompute();
+        self.status_msg = Some(format!("Profile filter: {}", name));
+    }
+
+    /// Resolves profile ID to display name (used in filter descriptions).
+    pub fn profile_name(&self, id: &str) -> Option<String> {
+        self.profiles.find(id).map(|p| p.name.clone())
+    }
+
+    // ---- Screen Switching / Profile Screen ----
+
+    /// Switched screen to target and reverts to table navigation mode.
+    fn switch_screen(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.mode = UiMode::Table;
+        self.status_msg = None;
+        if screen != Screen::Detail {
+            self.detail = None;
+        }
+        if screen == Screen::Profile {
+            self.profile_selected = self
+                .profile_selected
+                .min(self.profiles.profiles.len().saturating_sub(1));
+        }
+    }
+
+    fn move_profile_selection(&mut self, delta: isize) {
+        let len = self.profiles.profiles.len() as isize;
+        if len == 0 {
+            return;
+        }
+        let s = (self.profile_selected as isize + delta).clamp(0, len - 1);
+        self.profile_selected = s as usize;
+    }
+
+    /// Profile screen number keys: Inserts the selected profile at the requested shortcut position.
+    fn assign_profile_slot(&mut self, slot_idx: usize) {
+        let Some((id, name)) = self
+            .profiles
+            .profiles
+            .get(self.profile_selected)
+            .map(|p| (p.id.clone(), p.name.clone()))
+        else {
+            return;
+        };
+        if !self
+            .profiles
+            .assign_shortcut_slot(self.profile_selected, slot_idx)
+        {
+            return;
+        }
+        if let Err(e) = self.profiles.save() {
+            self.status_msg = Some(format!("failed to save profiles.json: {e}"));
+            return;
+        }
+        let assigned = self
+            .profiles
+            .numbered_profiles()
+            .iter()
+            .position(|p| p.id == id)
+            .map(|idx| idx + 1)
+            .unwrap_or(slot_idx + 1);
+        self.status_msg = Some(format!("Profile shortcut <{assigned}>: {name}"));
+    }
+
+    /// Profile screen Space: Toggles the selected shortcut, appending new assignments at the end.
+    fn toggle_selected_profile_shortcut(&mut self) {
+        let Some(name) = self
+            .profiles
+            .profiles
+            .get(self.profile_selected)
+            .map(|p| p.name.clone())
+        else {
+            return;
+        };
+        let result = self.profiles.toggle_shortcut(self.profile_selected);
+        let status = match result {
+            crate::profile::ShortcutToggle::Assigned(slot) => {
+                format!("Profile shortcut <{slot}>: {name}")
+            }
+            crate::profile::ShortcutToggle::Removed => {
+                format!("Profile shortcut removed: {name}")
+            }
+            crate::profile::ShortcutToggle::Full => {
+                self.show_message(
+                    " Cannot Assign Shortcut ",
+                    vec![
+                        "All 5 profile shortcuts are already assigned.".to_string(),
+                        "Remove a shortcut before assigning another profile.".to_string(),
+                    ],
+                    MessageKind::Error,
+                );
+                return;
+            }
+            crate::profile::ShortcutToggle::Invalid => return,
+        };
+        if let Err(e) = self.profiles.save() {
+            self.status_msg = Some(format!("failed to save profiles.json: {e}"));
+            return;
+        }
+        self.status_msg = Some(status);
+    }
+
+    /// Opens the profile form for creation (`editing = None`) or modification.
+    fn open_profile_form(&mut self, editing: Option<usize>) {
+        let form = match editing {
+            Some(idx) => {
+                let Some(p) = self.profiles.profiles.get(idx) else {
+                    return;
+                };
+                ProfileFormState {
+                    editing_id: Some(p.id.clone()),
+                    builtin: p.builtin,
+                    agy_allowed: p.agent == Agent::Antigravity,
+                    agent_idx: Agent::all().iter().position(|a| *a == p.agent).unwrap_or(0),
+                    name: TextInput::new(p.name.clone()),
+                    path: TextInput::new(p.path.to_string_lossy().into_owned()),
+                    focus: FormFocus::Name,
+                    save_focused: true,
+                    error: None,
+                }
+            }
+            None => ProfileFormState {
+                editing_id: None,
+                builtin: false,
+                agy_allowed: false,
+                agent_idx: 0,
+                name: TextInput::new(String::new()),
+                path: TextInput::new(String::new()),
+                focus: FormFocus::Agent,
+                save_focused: true,
+                error: None,
+            },
+        };
+        self.profile_form = Some(form);
+        self.mode = UiMode::ProfileForm;
+        self.status_msg = None;
+    }
+
+    fn cancel_profile_form(&mut self) {
+        self.profile_form = None;
+        self.mode = UiMode::Table;
+    }
+
+    /// Form submission: stays in the form and displays validation messages on error.
+    fn confirm_profile_form(&mut self) {
+        let Some(form) = self.profile_form.as_ref() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        let name = form.name.value.trim().to_string();
+        let path_str = form.path.value.trim().to_string();
+        let agent = Agent::all()[form.agent_idx.min(Agent::all().len() - 1)];
+        let editing_id = form.editing_id.clone();
+        let exclude = editing_id.as_deref();
+
+        let error = if name.is_empty() {
+            Some("Name is required".to_string())
+        } else if path_str.is_empty() {
+            Some("Path is required".to_string())
+        } else if agent == Agent::Antigravity && !form.agy_allowed {
+            // Defensively check during saving, though already blocked in the radio UI selector.
+            Some("Antigravity does not support custom config folders".to_string())
+        } else if self.profiles.name_exists(&name, exclude) {
+            Some(format!("Name already in use: {name}"))
+        } else {
+            let path = crate::config::expand(&path_str);
+            if self.profiles.duplicate_exists(agent, &path, exclude) {
+                Some("A profile with the same agent and path already exists".to_string())
+            } else {
+                None
+            }
+        };
+        if let Some(err) = error {
+            if let Some(form) = self.profile_form.as_mut() {
+                form.error = Some(err);
+            }
+            return;
+        }
+
+        // Prompt directory creation if the config folder does not exist.
+        let path = crate::config::expand(&path_str);
+        if !path.is_dir() {
+            self.dir_create_ok_focused = true; // Default focus to OK (creation is the natural workflow).
+            self.mode = UiMode::ProfileDirConfirm;
+            return;
+        }
+        self.commit_profile_form();
+    }
+
+    /// Saves the profile after validation. Returns the saved profile ID (None on failure).
+    fn commit_profile_form(&mut self) -> Option<String> {
+        let Some(form) = self.profile_form.as_ref() else {
+            self.mode = UiMode::Table;
+            return None;
+        };
+        let name = form.name.value.trim().to_string();
+        let path_str = form.path.value.trim().to_string();
+        let agent = Agent::all()[form.agent_idx.min(Agent::all().len() - 1)];
+        let editing_id = form.editing_id.clone();
+        let path = crate::config::expand(&path_str);
+        // Since OAuth Token input fields were removed, preserve tokens in existing profiles, default to None for new profiles.
+        let oauth_token = match &editing_id {
+            Some(id) => self
+                .profiles
+                .profiles
+                .iter()
+                .find(|p| p.id == *id)
+                .and_then(|p| p.oauth_token.clone()),
+            None => None,
+        };
+        let saved_id = match editing_id {
+            Some(id) => {
+                if let Some(p) = self.profiles.profiles.iter_mut().find(|p| p.id == id) {
+                    if !p.builtin {
+                        p.agent = agent;
+                    }
+                    p.name = name.clone();
+                    p.path = path;
+                    p.oauth_token = oauth_token;
+                }
+                id
+            }
+            None => {
+                let id = crate::profile::gen_id();
+                let shortcut_count = self.profiles.numbered_profiles().len();
+                let shortcut = (shortcut_count < crate::profile::MAX_PROFILE_SHORTCUTS)
+                    .then_some((shortcut_count + 1) as u8);
+                self.profiles.profiles.push(crate::profile::Profile {
+                    id: id.clone(),
+                    agent,
+                    name: name.clone(),
+                    path,
+                    oauth_token,
+                    active: shortcut.is_some(),
+                    shortcut,
+                    builtin: false,
+                });
+                id
+            }
+        };
+        if let Err(e) = self.profiles.save() {
+            if let Some(form) = self.profile_form.as_mut() {
+                form.error = Some(format!("failed to save profiles.json: {e}"));
+            }
+            // Restore profile form mode since this might have been called from the directory confirmation modal.
+            self.mode = UiMode::ProfileForm;
+            return None;
+        }
+
+        self.profile_form = None;
+        self.mode = UiMode::Table;
+        // Immediately load sessions for the new/modified profile directory (rescan is cheap thanks to mtime caching).
+        // Since usage and model catalogs queries require expensive PTY runs, only run incremental updates for the saved profile
+        // (models are forcefully queried in case the config directory path has changed).
+        self.refresh_sessions();
+        self.start_usage_fetch_for(std::slice::from_ref(&saved_id));
+        self.start_models_fetch_for(std::slice::from_ref(&saved_id), true);
+        self.status_msg = Some(format!("Profile saved: {name}"));
+        Some(saved_id)
+    }
+
+    /// Cancels config folder creation modal: returns to profile form, keeping inputs for correction.
+    fn cancel_profile_dir_create(&mut self) {
+        self.mode = UiMode::ProfileForm;
+    }
+
+    /// Confirms config folder creation: creates target directories, saves profile data,
+    /// and requests launching the agent login sequence if applicable.
+    fn confirm_profile_dir_create(&mut self) {
+        let Some(form) = self.profile_form.as_ref() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        let path = crate::config::expand(form.path.value.trim());
+        if let Err(e) = std::fs::create_dir_all(&path) {
+            if let Some(form) = self.profile_form.as_mut() {
+                form.error = Some(format!("failed to create folder: {e}"));
+            }
+            self.mode = UiMode::ProfileForm;
+            return;
+        }
+        let Some(saved_id) = self.commit_profile_form() else {
+            return;
+        };
+        // Custom Antigravity paths do not support environment variable overrides, rendering login launches meaningless.
+        let (runnable, name) = self
+            .profiles
+            .find(&saved_id)
+            .map(|p| {
+                (
+                    crate::profile::login_runnable(p.agent, &p.path),
+                    p.name.clone(),
+                )
+            })
+            .unwrap_or((false, String::new()));
+        if runnable {
+            self.login_request = Some(saved_id);
+        } else {
+            self.status_msg = Some(format!(
+                "Profile saved: {name} — log in manually (custom config folder not supported)"
+            ));
+        }
+    }
+
+    /// Opens profile deletion confirmation modal. Blocked for built-in profiles.
+    fn open_profile_delete(&mut self) {
+        let Some(p) = self.profiles.profiles.get(self.profile_selected) else {
+            return;
+        };
+        if p.builtin {
+            self.show_message(
+                " Cannot Delete ",
+                vec![
+                    format!("'{}' is a built-in profile.", p.name),
+                    "Built-in profiles cannot be deleted.".to_string(),
+                ],
+                MessageKind::Warn,
+            );
+            return;
+        }
+        self.pending_profile_delete = Some(self.profile_selected);
+        self.delete_ok_focused = false; // Default focus to Cancel (safer fallback).
+        self.mode = UiMode::ProfileDeleteConfirm;
+        self.status_msg = None;
+    }
+
+    fn cancel_profile_delete(&mut self) {
+        self.pending_profile_delete = None;
+        self.mode = UiMode::Table;
+    }
+
+    /// Confirms profile deletion: removes from active lists, filters, usage tracking, and cached sessions (directory preserved).
+    fn confirm_profile_delete(&mut self) {
+        let Some(idx) = self.pending_profile_delete.take() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        self.mode = UiMode::Table;
+        if idx >= self.profiles.profiles.len() || self.profiles.profiles[idx].builtin {
+            return;
+        }
+        let removed = self.profiles.profiles.remove(idx);
+        if let Err(e) = self.profiles.save() {
+            self.status_msg = Some(format!("failed to save profiles.json: {e}"));
+        }
+        self.sessions.retain(|s| s.profile_id != removed.id);
+        self.filter.profile_ids.remove(&removed.id);
+        self.usage.remove(&removed.id);
+        self.models.remove(&removed.id);
+        self.models.save().ok();
+        self.rebuild_all_folders();
+        self.recompute();
+        self.profile_selected = self
+            .profile_selected
+            .min(self.profiles.profiles.len().saturating_sub(1));
+        self.status_msg = Some(format!("Profile deleted: {} (folder kept)", removed.name));
+    }
+
+    /// Opens the new session creation dialog (accessible globally via Ctrl+N).
+    ///
+    /// `profile_idx`: Default index in `profiles` to select initially
+    /// (corresponds to active session's profile in search/details screens, or active profile in profile screen).
+    /// `initial_dir`: Initial value for the directory input field (resolves to active session's cwd,
+    /// or empty when launched from the profile screen).
+    fn open_new_session_modal(
+        &mut self,
+        profile_idx: usize,
+        initial_dir: Option<String>,
+        focus_ok: bool,
+        context: Option<SessionContextRef>,
+    ) {
+        if self.profiles.profiles.is_empty() {
+            self.status_msg = Some("No profiles available".to_string());
+            return;
+        }
+        let profile_idx = profile_idx.min(self.profiles.profiles.len() - 1);
+        let mut folders: Vec<PathBuf> = self
+            .sessions
+            .iter()
+            .map(|s| s.cwd.clone())
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        folders.sort_unstable();
+        folders.dedup();
+
+        // Initial focus: OK button when requested (Session view), else Folder for profile
+        // screens (empty path), otherwise the Profile dropdown.
+        let focus = if focus_ok {
+            NewSessionFocus::Buttons
+        } else if initial_dir.is_none() {
+            NewSessionFocus::Folder
+        } else {
+            NewSessionFocus::Profile
+        };
+        let (model_options, model_idx) = self.new_session_model_options(profile_idx);
+        let mut state = NewSessionState {
+            profile_idx,
+            focus,
+            dropdown_open: false,
+            profile_cursor: profile_idx,
+            model_options,
+            model_idx,
+            model_cursor: model_idx,
+            input: TextInput::new(initial_dir.unwrap_or_default()),
+            folders,
+            ordered: Vec::new(),
+            match_count: 0,
+            folder_cursor: None,
+            ok_focused: true,
+            error: None,
+            context,
+        };
+        state.reorder_folders();
+        // If starting with Folder focused due to empty inputs, pre-open the dropdown list.
+        if state.focus == NewSessionFocus::Folder {
+            state.dropdown_open = true;
+            state.folder_cursor = (!state.ordered.is_empty()).then_some(0);
+        }
+        self.new_session = Some(state);
+        self.mode = UiMode::NewSession;
+        self.status_msg = None;
+    }
+
+    /// Search/Details view helper: Opens dialog using targeted session's profile and cwd as defaults.
+    /// Falls back to first profile and empty directory if session index is invalid.
+    ///
+    /// `with_context = true` (Ctrl+Shift+N / palette "New Session with Context")
+    /// additionally captures the focused session as an immutable context source;
+    /// it requires a valid focused session and keeps the current screen otherwise.
+    fn open_new_session_modal_for_session(
+        &mut self,
+        session_idx: Option<usize>,
+        with_context: bool,
+    ) {
+        let session = session_idx.and_then(|idx| self.sessions.get(idx));
+        if with_context && session.is_none() {
+            self.status_msg = Some("Select a session first".to_string());
+            return;
+        }
+        let context = if with_context {
+            session.map(|s| SessionContextRef {
+                agent: s.agent,
+                profile_id: s.profile_id.clone(),
+                session_id: s.id.clone(),
+                title: s.title(),
+            })
+        } else {
+            None
+        };
+        let (profile_idx, dir) = session
+            .map(|s| {
+                let profile_idx = self
+                    .profiles
+                    .profiles
+                    .iter()
+                    .position(|p| p.id == s.profile_id)
+                    .unwrap_or(0);
+                let dir =
+                    (!s.cwd.as_os_str().is_empty()).then(|| s.cwd.to_string_lossy().into_owned());
+                (profile_idx, dir)
+            })
+            .unwrap_or((0, None));
+        // Session view opens with the OK button focused for a quick start; other screens
+        // (Detail) keep the Profile dropdown focused.
+        let focus_ok = self.screen == Screen::Session;
+        self.open_new_session_modal(profile_idx, dir, focus_ok, context);
+    }
+
+    fn cancel_new_session(&mut self) {
+        self.new_session = None;
+        self.mode = UiMode::Table;
+    }
+
+    /// Generates model dropdown options and default index for the specified profile.
+    ///
+    /// - Index 0 is always reserved for Default (no --model flag injected).
+    /// - Lists populated from model caches (extra agy profiles share the default profile cache),
+    ///   falling back to hardcoded configurations if empty (claude aliases only).
+    /// - Default selection falls back to CLI configurations. If missing in fetched lists,
+    ///   creates a missing placeholder option and disables the OK button until user updates.
+    fn new_session_model_options(&self, profile_idx: usize) -> (Vec<ModelOption>, usize) {
+        let default_only = || {
+            (
+                vec![ModelOption {
+                    value: None,
+                    label: "Default".to_string(),
+                    note: "run without --model".to_string(),
+                    missing: false,
+                }],
+                0,
+            )
+        };
+        let Some(profile) = self.profiles.profiles.get(profile_idx) else {
+            return default_only();
+        };
+        let (entries, default_model) = match self.models.for_profile(profile) {
+            Some(pm) => (pm.models.clone(), pm.default_model.clone()),
+            None => (models::fallback_models(profile.agent), None),
+        };
+        let mut options = vec![ModelOption {
+            value: None,
+            label: "Default".to_string(),
+            note: match &default_model {
+                Some(d) => format!("run without --model (currently {d})"),
+                None => "run without --model".to_string(),
+            },
+            missing: false,
+        }];
+        options.extend(entries.iter().map(|m| ModelOption {
+            value: Some(m.value.clone()),
+            label: m.label.clone(),
+            note: m.note.clone(),
+            missing: false,
+        }));
+        let idx = match default_model {
+            None => 0,
+            Some(d) => match entries.iter().position(|m| m.value == d) {
+                Some(pos) => pos + 1,
+                None => {
+                    // Configured default model missing: insert placeholder and disable OK button
+                    // to prevent launching with typos or outdated configuration values silently.
+                    options.insert(
+                        1,
+                        ModelOption {
+                            value: Some(d.clone()),
+                            label: d,
+                            note: "not in the fetched model list".to_string(),
+                            missing: true,
+                        },
+                    );
+                    1
+                }
+            },
+        };
+        (options, idx)
+    }
+
+    /// Re-evaluates model dropdown options when selected profile changes.
+    fn refresh_new_session_model_options(&mut self) {
+        let Some(profile_idx) = self.new_session.as_ref().map(|s| s.profile_idx) else {
+            return;
+        };
+        let (options, idx) = self.new_session_model_options(profile_idx);
+        if let Some(state) = self.new_session.as_mut() {
+            state.model_options = options;
+            state.model_idx = idx;
+            state.model_cursor = idx;
+        }
+    }
+
+    /// Confirms session dialog (Enter on closed dropdown): requests starting a new session
+    /// in the selected profile and directory. Displays error if directory input is empty.
+    fn confirm_new_session(&mut self) {
+        let Some(state) = self.new_session.as_mut() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        let raw = state.input.value.trim();
+        if raw.is_empty() {
+            state.error = Some("Select a folder first".to_string());
+            return;
+        }
+        let path = resolve_input_path(raw);
+        let cwd = match fs::canonicalize(&path) {
+            Ok(path) if path.is_dir() => path,
+            Ok(_) => {
+                state.error = Some("Path is not a directory".to_string());
+                return;
+            }
+            Err(err) => {
+                state.error = Some(format!("Cannot open path: {err}"));
+                return;
+            }
+        };
+
+        // Prevent execution if placeholder missing model is selected.
+        let model_option = state.model_options.get(state.model_idx);
+        if model_option.is_some_and(|o| o.missing) {
+            state.error = Some("Model not available — select another model".to_string());
+            return;
+        }
+        let model = model_option.and_then(|o| o.value.clone());
+
+        let Some(profile) = self.profiles.profiles.get(state.profile_idx) else {
+            state.error = Some("Profile no longer exists".to_string());
+            return;
+        };
+        let profile_id = profile.id.clone();
+
+        // Contextual launch: the source must still exist at OK time. Abort with an
+        // error instead of launching an agent whose bootstrap command would fail
+        // (and never fall back to another source profile).
+        let context = state.context.clone();
+        if let Some(ctx) = &context {
+            let source_exists = self
+                .sessions
+                .iter()
+                .any(|s| s.agent == ctx.agent && s.id == ctx.session_id);
+            if !source_exists {
+                if let Some(state) = self.new_session.as_mut() {
+                    state.error =
+                        Some("Source session not found — it may have been deleted".to_string());
+                }
+                return;
+            }
+            if self.profiles.find(&ctx.profile_id).is_none() {
+                if let Some(state) = self.new_session.as_mut() {
+                    state.error = Some("Source profile not found".to_string());
+                }
+                return;
+            }
+        }
+
+        self.new_session_request = Some(NewSessionRequest {
+            profile_id,
+            cwd,
+            model,
+            context,
+        });
+        self.new_session = None;
+        self.mode = UiMode::Table;
+    }
+
+    fn open_agent_modal(&mut self) {
+        let labels: Vec<String> = Agent::all().iter().map(|a| a.label().to_string()).collect();
+        let mut pre = HashSet::new();
+        for (i, a) in Agent::all().iter().enumerate() {
+            if self.filter.agents.contains(a) {
+                pre.insert(i);
+            }
+        }
+        self.agent_modal = Some(ModalState::new(labels, pre));
+        self.mode = UiMode::AgentModal;
+    }
+
+    /// Syncs agent selection in the modal to `filter.agents` (enables live list updates while toggling).
+    fn sync_agent_selection_to_filter(&mut self) {
+        if let Some(m) = &self.agent_modal {
+            let mut set = HashSet::new();
+            for (i, a) in Agent::all().iter().enumerate() {
+                if m.selected.contains(&i) {
+                    set.insert(*a);
+                }
+            }
+            self.filter.agents = set;
+        }
+    }
+
+    fn confirm_agent_modal(&mut self) {
+        self.sync_agent_selection_to_filter();
+        self.agent_modal = None;
+        self.mode = UiMode::Table;
+        self.recompute();
+    }
+
+    fn open_folder_modal(&mut self) {
+        self.folder_query.clear();
+        self.rebuild_folder_visible();
+        let mut pre = HashSet::new();
+        for (vis_i, &all_i) in self.folder_visible.iter().enumerate() {
+            if self.filter.folders.contains(&self.all_folders[all_i]) {
+                pre.insert(vis_i);
+            }
+        }
+        let labels: Vec<String> = self
+            .folder_visible
+            .iter()
+            .map(|&i| self.all_folders[i].clone())
+            .collect();
+        self.folder_modal = Some(ModalState::new(labels, pre));
+        self.mode = UiMode::FolderModal;
+    }
+
+    /// Re-evaluates visible folder lists in folder modal based on `folder_query`.
+    /// Existing selections (relative to `all_folders`) are preserved in `filter.folders`.
+    fn rebuild_folder_visible(&mut self) {
+        let q = crate::normalize::nfc_lower(&self.folder_query);
+        self.folder_visible = self
+            .all_folders
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| q.is_empty() || crate::normalize::nfc_lower(f).contains(&q))
+            .map(|(i, _)| i)
+            .collect();
+    }
+
+    /// Syncs folder selection in the modal to `filter.folders` (retains checks across query filter changes).
+    fn sync_folder_selection_to_filter(&mut self) {
+        if let Some(m) = &self.folder_modal {
+            for (vis_i, &all_i) in self.folder_visible.iter().enumerate() {
+                let name = &self.all_folders[all_i];
+                if m.selected.contains(&vis_i) {
+                    self.filter.folders.insert(name.clone());
+                } else {
+                    self.filter.folders.remove(name);
+                }
+            }
+        }
+    }
+
+    fn confirm_folder_modal(&mut self) {
+        self.sync_folder_selection_to_filter();
+        self.folder_modal = None;
+        self.mode = UiMode::Table;
+        self.recompute();
+    }
+
+    fn clear_all_filters(&mut self) {
+        self.filter = Filter::default();
+        self.recompute();
+        self.status_msg = Some("Filters cleared".to_string());
+    }
+
+    fn open_delete_confirm(&mut self) {
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            self.open_delete_confirm_at(idx);
+        } else {
+            self.status_msg = Some("No session selected".to_string());
+        }
+    }
+
+    /// Opens session deletion confirmation modal for specified sessions index (helper for details screen direct trigger).
+    fn open_delete_confirm_at(&mut self, idx: usize) {
+        self.pending_delete = Some(idx);
+        self.delete_ok_focused = false; // Default focus to Cancel (safer fallback).
+        self.mode = UiMode::DeleteConfirm;
+        self.status_msg = None;
+    }
+
+    fn open_rename_modal(&mut self) {
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            self.open_rename_modal_at(idx);
+        } else {
+            self.status_msg = Some("No session selected".to_string());
+        }
+    }
+
+    /// Opens session rename modal for specified sessions index (helper for details screen direct trigger).
+    fn open_rename_modal_at(&mut self, idx: usize) {
+        let Some(session) = self.sessions.get(idx) else {
+            self.status_msg = Some("No session selected".to_string());
+            return;
+        };
+        self.rename_modal = Some(RenameModalState {
+            input: TextInput::new(session.title()),
+            focus: RenameFocus::Input,
+            ok_focused: true,
+        });
+        self.rename_target = Some(idx);
+        self.mode = UiMode::Rename;
+        self.status_msg = None;
+    }
+
+    // ---- Session Details Screen ----
+
+    /// Enters details view for the selected session (triggered via preview focus + → key).
+    /// Parses the raw session file to structure turns (questions, workspace tasks, and answers).
+    fn open_session_detail(&mut self) {
+        let Some(&idx) = self.filtered.get(self.selected) else {
+            self.status_msg = Some("No session selected".to_string());
+            return;
+        };
+        let turns = crate::handoff::load_turns(&self.sessions[idx]);
+        if turns.is_empty() {
+            self.status_msg = Some("No turns to show for this session".to_string());
+            return;
+        }
+        self.detail = Some(SessionDetailState {
+            session_idx: idx,
+            turns,
+            selected: 0,
+            focus: DetailFocus::Questions,
+            left_scroll: std::cell::Cell::new(0),
+            right_scroll: std::cell::Cell::new(0),
+            right_max_scroll: std::cell::Cell::new(0),
+        });
+        self.screen = Screen::Detail;
+        self.status_msg = None;
+    }
+
+    /// Closes details screen and returns to main search screen. Focuses the left session list
+    /// table so that users can immediately resume browsing/navigating.
+    fn close_session_detail(&mut self) {
+        self.detail = None;
+        self.screen = Screen::Session;
+        self.mode = UiMode::Table;
+        self.focus = Focus::Table;
+    }
+
+    fn open_help(&mut self) {
+        self.mode = UiMode::Help;
+        self.status_msg = None;
+        self.quit_armed = false;
+    }
+
+    fn close_help(&mut self) {
+        self.mode = UiMode::Table;
+    }
+
+    fn cancel_delete_confirm(&mut self) {
+        self.pending_delete = None;
+        self.mode = UiMode::Table;
+    }
+
+    fn cancel_rename(&mut self) {
+        self.rename_modal = None;
+        self.rename_target = None;
+        self.mode = UiMode::Table;
+    }
+
+    // ---- Reusable Generic Alert Message Dialog ----
+
+    /// Spawns an alert message dialog. Reverts to the prior active mode on dismissal.
+    /// Exposed publicly for reuse in displaying warnings or validation errors.
+    pub fn show_message(
+        &mut self,
+        title: impl Into<String>,
+        lines: Vec<String>,
+        kind: MessageKind,
+    ) {
+        let return_mode = self.mode;
+        self.message = Some(MessageDialog {
+            title: title.into(),
+            lines,
+            kind,
+            return_mode,
+        });
+        self.mode = UiMode::Message;
+    }
+
+    /// Dismisses the message dialog and restores the prior UI mode.
+    fn dismiss_message(&mut self) {
+        let return_mode = self
+            .message
+            .take()
+            .map(|m| m.return_mode)
+            .unwrap_or(UiMode::Table);
+        self.mode = return_mode;
+    }
+
+    /// Requests resuming the targeted session. Triggers an alert instead of handover
+    /// if the project directory no longer exists (pre-flight check).
+    fn request_resume(&mut self, idx: usize) {
+        let cwd = self.sessions[idx].cwd.clone();
+        // Omit check if cwd is empty, as it runs without directory changes.
+        if !cwd.as_os_str().is_empty() && !cwd.is_dir() {
+            self.show_message(
+                " Cannot Resume ",
+                vec![
+                    "The project folder no longer exists:".to_string(),
+                    cwd.to_string_lossy().into_owned(),
+                    String::new(),
+                    "This session cannot be resumed.".to_string(),
+                ],
+                MessageKind::Error,
+            );
+            return;
+        }
+        self.resume_request = Some(idx);
+    }
+
+    fn arm_quit(&mut self) {
+        if let Some(until) = self.quit_grace_until {
+            let now = std::time::Instant::now();
+            if now < until {
+                // Ignore exits during grace period to defend against trailing spam; extends the grace window
+                // slightly to ensure keystrokes only register after user halts spamming.
+                const QUIT_GRACE_REPEAT: std::time::Duration =
+                    std::time::Duration::from_millis(400);
+                self.quit_grace_until = Some(until.max(now + QUIT_GRACE_REPEAT));
+                return;
+            }
+            self.quit_grace_until = None;
+        }
+        if self.quit_armed {
+            self.should_quit = true;
+        } else {
+            self.quit_armed = true;
+            self.status_msg = Some("Press q or ctrl+c again to quit".to_string());
+        }
+    }
+
+    /// Begins the exit key grace period upon returning from agent handover (called in main loop).
+    pub fn begin_quit_grace(&mut self) {
+        const QUIT_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
+        self.quit_grace_until = Some(std::time::Instant::now() + QUIT_GRACE);
+    }
+
+    fn confirm_rename(&mut self) {
+        let Some(state) = self.rename_modal.as_ref() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        // Session captured when opening modal (independent of active table cursor).
+        let Some(session) = self
+            .rename_target
+            .and_then(|idx| self.sessions.get(idx))
+            .cloned()
+        else {
+            self.status_msg = Some("No session selected".to_string());
+            return;
+        };
+
+        let title = state.input.value.trim().to_string();
+        if title.is_empty() {
+            self.status_msg = Some("Title cannot be empty".to_string());
+            return;
+        }
+
+        // Metadata paths and CLI env derive from the owning profile; never fall
+        // back to the default root (wrong account store for extra profiles).
+        let Some(profile) = self.profiles.find(&session.profile_id).cloned() else {
+            self.status_msg =
+                Some("Rename failed: session profile not found — refresh with ctrl+u".to_string());
+            return;
+        };
+        match crate::rename::rename_session(&profile, &session, &title) {
+            Ok(()) => {
+                self.rename_modal = None;
+                self.rename_target = None;
+                self.mode = UiMode::Table;
+                self.refresh_sessions();
+                self.status_msg = Some(format!("Renamed session: {}", title));
+            }
+            Err(err) => {
+                self.status_msg = Some(format!("Rename failed: {err}"));
+            }
+        }
+    }
+
+    fn confirm_delete(&mut self) {
+        let Some(idx) = self.pending_delete.take() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        self.mode = UiMode::Table;
+
+        let Some(session) = self.sessions.get(idx).cloned() else {
+            self.status_msg = Some("Delete target no longer exists".to_string());
+            return;
+        };
+
+        if let Err(err) = self.delete_session_artifacts(&session) {
+            self.status_msg = Some(format!("Delete failed: {err}"));
+            return;
+        }
+
+        self.sessions.remove(idx);
+        self.rebuild_all_folders();
+        self.recompute();
+        // If deleted within details view, close and return to search view. Since recompute
+        // clamps cursor within bounds, selection naturally shifts to the subsequent row.
+        if self.screen == Screen::Detail {
+            self.close_session_detail();
+        }
+        self.status_msg = Some(format!(
+            "Deleted [{}] {}",
+            session.agent.label(),
+            session.title()
+        ));
+    }
+
+    fn delete_session_artifacts(&self, session: &Session) -> Result<()> {
+        let Some(source_path) = session.source_path.as_ref() else {
+            return Err(anyhow!("source path is missing"));
+        };
+
+        self.remove_file_best_effort(source_path)
+            .with_context(|| format!("remove {}", source_path.display()))?;
+
+        if session.agent == Agent::Antigravity {
+            // Best-effort cache cleanup; skipped when the owning profile is gone
+            // (never touch another profile's metadata store).
+            if let Some(root) = self.session_profile_root(session) {
+                let _ = self.remove_antigravity_metadata(&root, session.id.as_str());
+            }
+            self.remove_sqlite_sidecars(source_path);
+        }
+
+        Ok(())
+    }
+
+    /// Config root (`Profile.path`) of the profile a session belongs to.
+    /// Sessions are re-stamped with live profile ids on every scan, so a miss
+    /// means a stale list — callers must not fall back to the default root.
+    fn session_profile_root(&self, session: &Session) -> Option<std::path::PathBuf> {
+        self.profiles
+            .find(&session.profile_id)
+            .map(|p| p.path.clone())
+    }
+
+    fn remove_file_best_effort(&self, path: &std::path::Path) -> Result<()> {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn remove_sqlite_sidecars(&self, db_path: &std::path::Path) {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = db_path.to_path_buf();
+            let name = match db_path.file_name().and_then(|s| s.to_str()) {
+                Some(name) => format!("{name}{suffix}"),
+                None => continue,
+            };
+            sidecar.set_file_name(name);
+            let _ = fs::remove_file(sidecar);
+        }
+    }
+
+    fn remove_antigravity_metadata(&self, profile_root: &std::path::Path, id: &str) -> Result<()> {
+        let path = profile_root.join("cache/conversation_metadata.json");
+        let data = match fs::read_to_string(&path) {
+            Ok(data) => data,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        let mut root: serde_json::Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) => return Ok(()),
+        };
+        if let Some(conversations) = root
+            .get_mut("conversations")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            conversations.remove(id);
+            let bytes = serde_json::to_vec_pretty(&root)?;
+            fs::write(&path, bytes)?;
+        }
+        Ok(())
+    }
+
+    // ---- Key Event Handlers (invoked by event.rs, bypassing direct crossterm KeyEvents) ----
+}
+
+// Extracted to a separate impl block due to large size of key event dispatch logic.
+impl App {
+    /// Handles key inputs in the main table navigation view.
+    pub fn on_key_table(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let is_quit_key = matches!(key.code, KeyCode::Char('q'))
+            || (matches!(key.code, KeyCode::Char('c'))
+                && key.modifiers.contains(KeyModifiers::CONTROL));
+        if is_quit_key {
+            self.arm_quit();
+            return;
+        }
+
+        self.quit_armed = false;
+        self.status_msg = None;
+        match key.code {
+            KeyCode::Char('/') => {
+                self.mode = UiMode::Keyword;
+                self.keyword_cursor = self.filter.keyword.len();
+            }
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char(':') => self.open_quick_command(),
+            KeyCode::Char('!') => self.open_quick_terminal(),
+            KeyCode::Char('a') => self.open_agent_modal(),
+            KeyCode::Char('f') => self.open_folder_modal(),
+            KeyCode::Char('d') | KeyCode::Delete
+                if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.is_empty() =>
+            {
+                self.open_delete_confirm()
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_rename_modal()
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.update_sessions_and_usage();
+            }
+            // Contextual New Session must match BEFORE ordinary Ctrl+N: terminals
+            // with the enhanced keyboard protocol report the SHIFT modifier
+            // (possibly with 'N'), legacy terminals send plain Ctrl+N instead.
+            KeyCode::Char('n') | KeyCode::Char('N')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                let idx = self.filtered.get(self.selected).copied();
+                self.open_new_session_modal_for_session(idx, true);
+            }
+            KeyCode::Char('n')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                let idx = self.filtered.get(self.selected).copied();
+                self.open_new_session_modal_for_session(idx, false);
+            }
+            KeyCode::Char(c @ '1'..='5') => self.set_single_profile(c as usize - '1' as usize),
+            KeyCode::Char('0') => self.clear_all_filters(),
+            // ←/→ (h/l): Moves focus between the left table and the right preview column.
+            // Pressing → again while preview is focused enters the session details screen.
+            // Pressing ← while the table (session list) is focused moves to the profile list screen.
+            KeyCode::Left | KeyCode::Char('h') => {
+                if self.focus == Focus::Preview {
+                    self.focus = Focus::Table;
+                } else {
+                    self.switch_screen(Screen::Profile);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if self.focus == Focus::Table {
+                    self.focus = Focus::Preview;
+                } else {
+                    self.open_session_detail();
+                }
+            }
+            // Arrow keys: Scrolls preview contents if preview is focused, otherwise changes table row selection.
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.focus == Focus::Preview {
+                    self.scroll_preview(-1);
+                } else {
+                    self.move_selection(-1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.focus == Focus::Preview {
+                    self.scroll_preview(1);
+                } else {
+                    self.move_selection(1);
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                if self.focus == Focus::Preview {
+                    self.preview_scroll = 0;
+                } else {
+                    self.selected = 0;
+                    self.preview_scroll = 0;
+                }
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                if self.focus == Focus::Preview {
+                    self.preview_scroll = self.preview_max_scroll.get();
+                } else {
+                    self.selected = self.filtered.len().saturating_sub(1);
+                    self.preview_scroll = 0;
+                }
+            }
+            KeyCode::PageUp => self.scroll_preview(-10),
+            KeyCode::PageDown => self.scroll_preview(10),
+            KeyCode::Enter => {
+                if let Some(&idx) = self.filtered.get(self.selected) {
+                    self.request_resume(idx);
+                }
+            }
+            // Esc: Reverts back to table focus if the preview panel is currently focused.
+            // Otherwise, resets/clears active search keywords and filters (does not exit the application).
+            KeyCode::Esc if self.focus == Focus::Preview => {
+                self.focus = Focus::Table;
+            }
+            KeyCode::Esc => {
+                if self.filter.is_active() {
+                    self.clear_all_filters();
+                } else {
+                    self.status_msg = Some("Press q or ctrl+c twice to quit".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Scrolls the preview panel by `delta` lines (clamped to bounds). The upper scroll limit is computed during
+    /// the last render frame based on actual lines and viewport height, resolving to 0 if all contents fit.
+    fn scroll_preview(&mut self, delta: isize) {
+        let max = self.preview_max_scroll.get();
+        let cur = self.preview_scroll as isize;
+        let next = (cur + delta).clamp(0, max as isize);
+        self.preview_scroll = next as u16;
+    }
+
+    /// Handles key inputs on the session details screen.
+    ///
+    /// ←/→ moves focus between the left (questions list) and right (workspace tasks / agent responses) panels.
+    /// Pressing ← while focused on the questions list returns to the session search screen.
+    pub fn on_key_detail(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let is_quit_key = matches!(key.code, KeyCode::Char('q'))
+            || (matches!(key.code, KeyCode::Char('c'))
+                && key.modifiers.contains(KeyModifiers::CONTROL));
+        if is_quit_key {
+            self.arm_quit();
+            return;
+        }
+
+        self.quit_armed = false;
+        self.status_msg = None;
+        if self.detail.is_none() {
+            self.close_session_detail();
+            return;
+        }
+        match key.code {
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char(':') => self.open_quick_command(),
+            KeyCode::Char('!') => self.open_quick_terminal(),
+            // Session operations identical to the main search view: resume, rename, and delete.
+            KeyCode::Enter => {
+                if let Some(idx) = self.detail.as_ref().map(|d| d.session_idx) {
+                    self.request_resume(idx);
+                }
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(idx) = self.detail.as_ref().map(|d| d.session_idx) {
+                    self.open_rename_modal_at(idx);
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.update_sessions_and_usage();
+            }
+            // Contextual New Session (matched before ordinary Ctrl+N; see on_key_table).
+            KeyCode::Char('n') | KeyCode::Char('N')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                let idx = self.detail.as_ref().map(|d| d.session_idx);
+                self.open_new_session_modal_for_session(idx, true);
+            }
+            KeyCode::Char('n')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                let idx = self.detail.as_ref().map(|d| d.session_idx);
+                self.open_new_session_modal_for_session(idx, false);
+            }
+            KeyCode::Char('d') | KeyCode::Delete
+                if key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.is_empty() =>
+            {
+                if let Some(idx) = self.detail.as_ref().map(|d| d.session_idx) {
+                    self.open_delete_confirm_at(idx);
+                }
+            }
+            // Toggle displaying tool calls and results (hidden by default).
+            KeyCode::Char('.') => {
+                self.detail_show_tools = !self.detail_show_tools;
+                self.status_msg = Some(
+                    if self.detail_show_tools {
+                        "tool calls/results shown"
+                    } else {
+                        "tool calls/results hidden"
+                    }
+                    .to_string(),
+                );
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                let on_questions = self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| d.focus == DetailFocus::Questions);
+                if on_questions {
+                    self.close_session_detail();
+                } else if let Some(d) = self.detail.as_mut() {
+                    d.focus = DetailFocus::Questions;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(d) = self.detail.as_mut() {
+                    d.focus = DetailFocus::Work;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.detail_nav(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.detail_nav(1),
+            KeyCode::PageUp => {
+                if let Some(d) = self.detail.as_ref() {
+                    d.scroll_work(-10);
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(d) = self.detail.as_ref() {
+                    d.scroll_work(10);
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                let Some(d) = self.detail.as_mut() else {
+                    return;
+                };
+                match d.focus {
+                    DetailFocus::Questions => {
+                        if d.selected != 0 {
+                            d.selected = 0;
+                            d.right_scroll.set(0);
+                        }
+                    }
+                    DetailFocus::Work => d.right_scroll.set(0),
+                }
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                let Some(d) = self.detail.as_mut() else {
+                    return;
+                };
+                match d.focus {
+                    DetailFocus::Questions => {
+                        let last = d.turns.len().saturating_sub(1);
+                        if d.selected != last {
+                            d.selected = last;
+                            d.right_scroll.set(0);
+                        }
+                    }
+                    DetailFocus::Work => d.right_scroll.set(d.right_max_scroll.get()),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Details view ↑/↓: changes selected question if focused on the left panel, scrolls workspace tasks if focused on the right panel.
+    fn detail_nav(&mut self, delta: isize) {
+        let Some(d) = self.detail.as_mut() else {
+            return;
+        };
+        match d.focus {
+            DetailFocus::Questions => d.move_selection(delta),
+            DetailFocus::Work => d.scroll_work(delta),
+        }
+    }
+
+    /// Handles key inputs in Keyword search mode.
+    pub fn on_key_keyword(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        // Defensively clamp cursor within string bounds.
+        self.keyword_cursor = self.keyword_cursor.min(self.filter.keyword.len());
+        match key.code {
+            KeyCode::Char(c) => {
+                self.filter.keyword.insert(self.keyword_cursor, c);
+                self.keyword_cursor += c.len_utf8();
+                self.recompute();
+            }
+            KeyCode::Backspace => {
+                if self.keyword_cursor > 0 {
+                    let prev = prev_char_boundary(&self.filter.keyword, self.keyword_cursor);
+                    self.filter.keyword.drain(prev..self.keyword_cursor);
+                    self.keyword_cursor = prev;
+                    self.recompute();
+                }
+            }
+            KeyCode::Delete => {
+                if self.keyword_cursor < self.filter.keyword.len() {
+                    let next = next_char_boundary(&self.filter.keyword, self.keyword_cursor);
+                    self.filter.keyword.drain(self.keyword_cursor..next);
+                    self.recompute();
+                }
+            }
+            KeyCode::Left => {
+                self.keyword_cursor = prev_char_boundary(&self.filter.keyword, self.keyword_cursor);
+            }
+            KeyCode::Right => {
+                self.keyword_cursor = next_char_boundary(&self.filter.keyword, self.keyword_cursor);
+            }
+            KeyCode::Home => self.keyword_cursor = 0,
+            KeyCode::End => self.keyword_cursor = self.filter.keyword.len(),
+            KeyCode::Up => self.move_selection(-1),
+            KeyCode::Down => self.move_selection(1),
+            // Tab: Exits text input mode while keeping the search term, focusing directly on the desired panel.
+            KeyCode::Tab => {
+                self.mode = UiMode::Table;
+                self.focus = Focus::Preview;
+            }
+            KeyCode::BackTab => {
+                self.mode = UiMode::Table;
+                self.focus = Focus::Table;
+            }
+            // Enter: Commits the input keyword. Esc: Cancels search, clearing the active keyword.
+            KeyCode::Enter => {
+                self.mode = UiMode::Table;
+                self.focus = Focus::Table;
+            }
+            KeyCode::Esc => {
+                self.filter.keyword.clear();
+                self.keyword_cursor = 0;
+                self.recompute();
+                self.mode = UiMode::Table;
+                self.focus = Focus::Table;
+            }
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the Agent filter modal.
+    pub fn on_key_agent_modal(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(m) = &mut self.agent_modal {
+                    m.move_cursor(-1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(m) = &mut self.agent_modal {
+                    m.move_cursor(1);
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(m) = &mut self.agent_modal {
+                    m.toggle();
+                }
+                self.sync_agent_selection_to_filter();
+                self.recompute();
+            }
+            KeyCode::Enter => self.confirm_agent_modal(),
+            KeyCode::Esc => {
+                self.agent_modal = None;
+                self.mode = UiMode::Table;
+            }
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the Folder filter modal (supporting incremental search).
+    pub fn on_key_folder_modal(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Up => {
+                if let Some(m) = &mut self.folder_modal {
+                    m.move_cursor(-1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(m) = &mut self.folder_modal {
+                    m.move_cursor(1);
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(m) = &mut self.folder_modal {
+                    m.toggle();
+                }
+                self.sync_folder_selection_to_filter();
+                self.recompute();
+            }
+            KeyCode::Char(c) => {
+                self.folder_query.push(c);
+                self.refresh_folder_modal_labels();
+            }
+            KeyCode::Backspace => {
+                self.folder_query.pop();
+                self.refresh_folder_modal_labels();
+            }
+            KeyCode::Enter => self.confirm_folder_modal(),
+            KeyCode::Esc => {
+                // Active selections are already synced to filter; simply close modal and recompute.
+                self.folder_modal = None;
+                self.mode = UiMode::Table;
+                self.recompute();
+            }
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the session deletion confirmation modal.
+    pub fn on_key_delete_confirm(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            // Tab/Arrows: Moves focus between Cancel and Delete buttons.
+            KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h')
+            | KeyCode::Char('l') => {
+                self.delete_ok_focused = !self.delete_ok_focused;
+            }
+            // Enter: Executes the action of the currently focused button.
+            KeyCode::Enter => {
+                if self.delete_ok_focused {
+                    self.confirm_delete();
+                } else {
+                    self.cancel_delete_confirm();
+                }
+            }
+            KeyCode::Esc => self.cancel_delete_confirm(),
+            _ => {}
+        }
+    }
+
+    pub fn on_key_rename_modal(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let Some(m) = &mut self.rename_modal else {
+            self.mode = UiMode::Table;
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => self.cancel_rename(),
+            KeyCode::Tab | KeyCode::Down => {
+                m.focus = match m.focus {
+                    RenameFocus::Input => RenameFocus::Buttons,
+                    RenameFocus::Buttons => RenameFocus::Input,
+                };
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                m.focus = match m.focus {
+                    RenameFocus::Input => RenameFocus::Buttons,
+                    RenameFocus::Buttons => RenameFocus::Input,
+                };
+            }
+            KeyCode::Enter => {
+                if m.focus == RenameFocus::Buttons {
+                    if m.ok_focused {
+                        self.confirm_rename();
+                    } else {
+                        self.cancel_rename();
+                    }
+                }
+            }
+            _ => match m.focus {
+                RenameFocus::Input => match key.code {
+                    KeyCode::Char(c)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT)
+                            && !key.modifiers.contains(KeyModifiers::SUPER) =>
+                    {
+                        m.input.insert_char(c);
+                    }
+                    KeyCode::Backspace => m.input.backspace(),
+                    KeyCode::Delete => m.input.delete(),
+                    KeyCode::Left => m.input.move_left(),
+                    KeyCode::Right => m.input.move_right(),
+                    KeyCode::Home => m.input.home(),
+                    KeyCode::End => m.input.end(),
+                    _ => {}
+                },
+                RenameFocus::Buttons => {
+                    if matches!(
+                        key.code,
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+                    ) {
+                        m.ok_focused = !m.ok_focused;
+                    }
+                }
+            },
+        }
+    }
+
+    /// Handles key inputs in the profile table view.
+    pub fn on_key_profile_table(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let is_quit_key = matches!(key.code, KeyCode::Char('q'))
+            || (matches!(key.code, KeyCode::Char('c'))
+                && key.modifiers.contains(KeyModifiers::CONTROL));
+        if is_quit_key {
+            self.arm_quit();
+            return;
+        }
+
+        self.quit_armed = false;
+        self.status_msg = None;
+        match key.code {
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char(':') => self.open_quick_command(),
+            // No session selection on this screen; shows a status message explaining why.
+            KeyCode::Char('!') => self.open_quick_terminal(),
+            // →: Switches to the session search view (simple transition, independent of selection).
+            KeyCode::Right | KeyCode::Char('l') => self.switch_screen(Screen::Session),
+            KeyCode::Up | KeyCode::Char('k') => self.move_profile_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_profile_selection(1),
+            KeyCode::Home | KeyCode::Char('g') => self.profile_selected = 0,
+            KeyCode::End | KeyCode::Char('G') => {
+                self.profile_selected = self.profiles.profiles.len().saturating_sub(1);
+            }
+            KeyCode::Char(c @ '1'..='5') => self.assign_profile_slot(c as usize - '1' as usize),
+            KeyCode::Char(' ') => self.toggle_selected_profile_shortcut(),
+            // Ctrl+N: Opens the new session creation dialog (defaults to selected profile, empty directory).
+            // No contextual variant here (no focused session), and SHIFT is excluded so a
+            // Ctrl+Shift+N chord from an enhanced terminal is not captured as ordinary Ctrl+N.
+            KeyCode::Char('n')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                self.open_new_session_modal(self.profile_selected, None, false, None);
+            }
+            KeyCode::Char('+') => self.open_profile_form(None),
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_profile_form(Some(self.profile_selected));
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_profile_delete();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.update_sessions_and_usage();
+            }
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the profile creation/edit form.
+    pub fn on_key_profile_form(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let Some(form) = self.profile_form.as_mut() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.cancel_profile_form(),
+            KeyCode::Tab | KeyCode::Down => form.focus_move(1),
+            KeyCode::BackTab | KeyCode::Up => form.focus_move(-1),
+            KeyCode::Enter => {
+                if form.focus == FormFocus::Buttons {
+                    if form.save_focused {
+                        self.confirm_profile_form();
+                    } else {
+                        self.cancel_profile_form();
+                    }
+                }
+            }
+            _ => match form.focus {
+                FormFocus::Agent => match key.code {
+                    KeyCode::Left | KeyCode::Char('h') => form.cycle_agent(-1),
+                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => form.cycle_agent(1),
+                    _ => {}
+                },
+                FormFocus::Buttons => {
+                    if matches!(
+                        key.code,
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+                    ) {
+                        form.save_focused = !form.save_focused;
+                    }
+                }
+                _ => {
+                    let Some(input) = form.focused_input() else {
+                        return;
+                    };
+                    match key.code {
+                        KeyCode::Char(c)
+                            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                                && !key.modifiers.contains(KeyModifiers::ALT)
+                                && !key.modifiers.contains(KeyModifiers::SUPER) =>
+                        {
+                            input.insert_char(c);
+                            form.error = None;
+                        }
+                        KeyCode::Backspace => input.backspace(),
+                        KeyCode::Delete => input.delete(),
+                        KeyCode::Left => input.move_left(),
+                        KeyCode::Right => input.move_right(),
+                        KeyCode::Home => input.home(),
+                        KeyCode::End => input.end(),
+                        _ => {}
+                    }
+                }
+            },
+        }
+    }
+
+    /// Handles key inputs in the profile deletion confirmation modal.
+    pub fn on_key_profile_delete_confirm(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h')
+            | KeyCode::Char('l') => {
+                self.delete_ok_focused = !self.delete_ok_focused;
+            }
+            KeyCode::Enter => {
+                if self.delete_ok_focused {
+                    self.confirm_profile_delete();
+                } else {
+                    self.cancel_profile_delete();
+                }
+            }
+            KeyCode::Esc => self.cancel_profile_delete(),
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the missing config folder creation confirmation modal.
+    pub fn on_key_profile_dir_confirm(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h')
+            | KeyCode::Char('l') => {
+                self.dir_create_ok_focused = !self.dir_create_ok_focused;
+            }
+            KeyCode::Enter => {
+                if self.dir_create_ok_focused {
+                    self.confirm_profile_dir_create();
+                } else {
+                    self.cancel_profile_dir_create();
+                }
+            }
+            KeyCode::Esc => self.cancel_profile_dir_create(),
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the new session creation dialog (profile, model, and folder dropdown controls).
+    ///
+    /// - Tab/Shift+Tab: Cycles focus through Profile → Model → Folder → OK → Cancel.
+    ///   Closes open dropdowns, committing the active cursor selection first (commit-then-move).
+    /// - ↑/↓: Closed dropdowns → moves focus vertically (stops at bounds, enters buttons row focusing OK first).
+    ///   cycles through dropdown items if open.
+    /// - Enter: closed -> opens dropdown list (if Buttons, executes: OK=start, Cancel=cancel) /
+    ///   open -> commits cursor selection and closes dropdown.
+    /// - Space: open -> commits selection but keeps dropdown open (folders are instantly reflected in input).
+    /// - →: opens Folder dropdown if closed / moves text cursor right if open. For Profile/Model,
+    ///   opens dropdown if closed. On Buttons focus, moves between OK ↔ Cancel using ←/→.
+    /// - Esc: open -> closes dropdown without selection / closed -> cancels session dialog.
+    ///
+    /// Reconstructs model dropdown items based on the active profile's agent type
+    /// when the profile selection is committed (via Enter / Space / Tab).
+    pub fn on_key_new_session(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let profile_count = self.profiles.profiles.len();
+        let prev_profile_idx = self.new_session.as_ref().map(|s| s.profile_idx);
+        let Some(state) = self.new_session.as_mut() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                if state.dropdown_open {
+                    state.close_dropdown();
+                } else {
+                    self.cancel_new_session();
+                }
+            }
+            KeyCode::Tab => state.move_focus(1),
+            KeyCode::BackTab => state.move_focus(-1),
+            KeyCode::Enter => {
+                if state.dropdown_open {
+                    // Enter key on open dropdown: selects the active item and closes dropdown.
+                    match state.focus {
+                        NewSessionFocus::Profile => {
+                            state.profile_idx = state.profile_cursor;
+                            state.close_dropdown();
+                        }
+                        NewSessionFocus::Model => {
+                            state.model_idx = state.model_cursor;
+                            state.close_dropdown();
+                        }
+                        NewSessionFocus::Folder => {
+                            // If cursor is on a listed item, select it; otherwise, commit the text input directly.
+                            if let Some(i) = state.folder_cursor {
+                                state.apply_folder_to_input(i);
+                            }
+                            state.close_dropdown();
+                        }
+                        // Dropdown cannot be opened while focused on buttons (defensive close).
+                        NewSessionFocus::Buttons => state.close_dropdown(),
+                    }
+                } else {
+                    // Enter key on closed state: executes the control's default action.
+                    match state.focus {
+                        // Dropdown: opens selection list (replaces prior ↓ action).
+                        NewSessionFocus::Profile => {
+                            if profile_count > 0 {
+                                state.profile_cursor = state.profile_idx.min(profile_count - 1);
+                                state.dropdown_open = true;
+                            }
+                        }
+                        NewSessionFocus::Model => {
+                            state.model_cursor = state
+                                .model_idx
+                                .min(state.model_options.len().saturating_sub(1));
+                            state.dropdown_open = true;
+                        }
+                        NewSessionFocus::Folder => {
+                            state.dropdown_open = true;
+                            state.folder_cursor = (!state.ordered.is_empty()).then_some(0);
+                        }
+                        // Buttons: executes button action.
+                        NewSessionFocus::Buttons => {
+                            if state.ok_focused {
+                                self.confirm_new_session();
+                            } else {
+                                self.cancel_new_session();
+                            }
+                        }
+                    }
+                }
+            }
+            // Arrow keys ↑/↓ on closed dropdowns move focus between controls.
+            KeyCode::Down if !state.dropdown_open => state.move_focus_vertical(1),
+            KeyCode::Up if !state.dropdown_open => state.move_focus_vertical(-1),
+            _ => match state.focus {
+                NewSessionFocus::Profile => match key.code {
+                    // Dropdowns are guaranteed to be open here (closed states handled above).
+                    KeyCode::Down => {
+                        if profile_count > 0 {
+                            // Cycle from bottom to top index on Down arrow.
+                            state.profile_cursor = if state.profile_cursor + 1 >= profile_count {
+                                0
+                            } else {
+                                state.profile_cursor + 1
+                            };
+                        }
+                    }
+                    KeyCode::Up => {
+                        if profile_count > 0 {
+                            // Cycle from top to bottom index on Up arrow (keeps dropdown open).
+                            state.profile_cursor = if state.profile_cursor == 0 {
+                                profile_count - 1
+                            } else {
+                                state.profile_cursor - 1
+                            };
+                        }
+                    }
+                    // → key (closed): opens dropdown (places cursor on active selection); no action if already open.
+                    KeyCode::Right if !state.dropdown_open => {
+                        if profile_count > 0 {
+                            state.profile_cursor = state.profile_idx.min(profile_count - 1);
+                            state.dropdown_open = true;
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        state.profile_idx = state.profile_cursor;
+                    }
+                    _ => {}
+                },
+                NewSessionFocus::Model => match key.code {
+                    // Dropdowns are guaranteed to be open here (closed states handled above).
+                    KeyCode::Down => {
+                        let n = state.model_options.len();
+                        if n > 0 {
+                            // Cycle from bottom to top index on Down arrow.
+                            state.model_cursor = if state.model_cursor + 1 >= n {
+                                0
+                            } else {
+                                state.model_cursor + 1
+                            };
+                        }
+                    }
+                    KeyCode::Up => {
+                        let n = state.model_options.len();
+                        if n > 0 {
+                            // Cycle from top to bottom index on Up arrow (keeps dropdown open).
+                            state.model_cursor = if state.model_cursor == 0 {
+                                n - 1
+                            } else {
+                                state.model_cursor - 1
+                            };
+                        }
+                    }
+                    // → key (closed): opens dropdown (places cursor on active selection); no action if already open.
+                    KeyCode::Right if !state.dropdown_open => {
+                        state.model_cursor = state
+                            .model_idx
+                            .min(state.model_options.len().saturating_sub(1));
+                        state.dropdown_open = true;
+                    }
+                    KeyCode::Char(' ') => {
+                        state.model_idx = state.model_cursor;
+                    }
+                    _ => {}
+                },
+                NewSessionFocus::Folder => match key.code {
+                    // Arrow keys ↑/↓ reach here only when the dropdown is open (moves cursor in list).
+                    KeyCode::Down => {
+                        // Cycle from bottom to top index on Down arrow.
+                        state.folder_cursor = match state.folder_cursor {
+                            None => (!state.ordered.is_empty()).then_some(0),
+                            Some(i) if i + 1 >= state.ordered.len() => Some(0),
+                            Some(i) => Some(i + 1),
+                        };
+                    }
+                    KeyCode::Up => {
+                        // Cycle from top (first item / text highlight) to bottom index on Up arrow (keeps dropdown open).
+                        let last = state.ordered.len().saturating_sub(1);
+                        state.folder_cursor = match state.folder_cursor {
+                            Some(i) if i > 0 => Some(i - 1),
+                            _ => (!state.ordered.is_empty()).then_some(last),
+                        };
+                    }
+                    // Space key: updates text inputs immediately while keeping the dropdown list open.
+                    // (handled as literal space character input if the list cursor is not set)
+                    KeyCode::Char(' ') if state.dropdown_open && state.folder_cursor.is_some() => {
+                        if let Some(i) = state.folder_cursor {
+                            state.apply_folder_to_input(i);
+                        }
+                    }
+                    // → key: opens dropdown list if closed; moves text cursor right if open.
+                    KeyCode::Right => {
+                        if !state.dropdown_open {
+                            state.dropdown_open = true;
+                            state.folder_cursor = (!state.ordered.is_empty()).then_some(0);
+                        } else {
+                            state.input.move_right();
+                        }
+                    }
+                    KeyCode::Char(c)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT)
+                            && !key.modifiers.contains(KeyModifiers::SUPER) =>
+                    {
+                        state.input.insert_char(c);
+                        state.on_input_edited();
+                    }
+                    KeyCode::Backspace => {
+                        state.input.backspace();
+                        state.on_input_edited();
+                    }
+                    KeyCode::Delete => {
+                        state.input.delete();
+                        state.on_input_edited();
+                    }
+                    KeyCode::Left => state.input.move_left(),
+                    KeyCode::Home => state.input.home(),
+                    KeyCode::End => state.input.end(),
+                    _ => {}
+                },
+                NewSessionFocus::Buttons => {
+                    if matches!(
+                        key.code,
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+                    ) {
+                        state.ok_focused = !state.ok_focused;
+                    }
+                }
+            },
+        }
+        // Reconstruct model catalogs if selected profile changed (committed via Enter / Space / Tab).
+        if let Some(prev) = prev_profile_idx {
+            if self
+                .new_session
+                .as_ref()
+                .is_some_and(|s| s.profile_idx != prev)
+            {
+                self.refresh_new_session_model_options();
+            }
+        }
+    }
+
+    /// Handles key inputs in the global help view. Dismissing returns to table mode on the active screen.
+    pub fn on_key_help(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => self.close_help(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.close_help();
+            }
+            // Quick Command window can be opened directly from the help screen (closes the help view).
+            KeyCode::Char(':') => self.open_quick_command(),
+            // Terminal mode keeps help open (with a status message) if no target folder is available.
+            KeyCode::Char('!') => self.open_quick_terminal(),
+            _ => {}
+        }
+    }
+
+    /// Handles key inputs in the alert dialog, dismissing and returning to the prior UI mode on commit keys.
+    pub fn on_key_message(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char(' ') => self.dismiss_message(),
+            _ => {}
+        }
+    }
+
+    /// Opens the theme selection dialog with the cursor on the active theme.
+    pub(super) fn open_theme_select(&mut self) {
+        let themes = crate::theme::all_themes();
+        if themes.is_empty() {
+            return;
+        }
+        let active = themes
+            .iter()
+            .position(|t| t.key == self.theme.key)
+            .unwrap_or(0);
+        let dark_view = themes.get(active).map(|t| t.dark).unwrap_or(true);
+        // Cursor position within the active theme's own category.
+        let cursor = themes
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.dark == dark_view)
+            .position(|(i, _)| i == active)
+            .unwrap_or(0);
+        self.theme_select = Some(ThemeSelectState {
+            themes,
+            dark_view,
+            cursor,
+            scroll: std::cell::Cell::new(0),
+            original: self.theme.clone(),
+        });
+        self.mode = UiMode::ThemeSelect;
+        self.status_msg = None;
+    }
+
+    /// Theme dialog keys: Up/Down move within the visible list (clamped — no wrap)
+    /// and apply the theme immediately (live preview); Left shows the Dark list and
+    /// Right shows the Light list (swapping the entire displayed set); Enter persists
+    /// the selection and closes; Esc restores the theme active at open time. No buttons.
+    pub fn on_key_theme_select(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        let Some(state) = self.theme_select.as_mut() else {
+            self.mode = UiMode::Table;
+            return;
+        };
+        let visible = state.visible();
+        let vlen = visible.len();
+        match key.code {
+            KeyCode::Esc => {
+                self.theme = state.original.clone();
+                self.theme_select = None;
+                self.mode = UiMode::Table;
+            }
+            KeyCode::Enter => {
+                crate::theme::save_selected(&self.theme.key);
+                self.status_msg = Some(format!("Theme: {}", self.theme.name));
+                self.theme_select = None;
+                self.mode = UiMode::Table;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.cursor = state.cursor.saturating_sub(1);
+                self.theme = state.themes[visible[state.cursor]].clone();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.cursor = (state.cursor + 1).min(vlen.saturating_sub(1));
+                self.theme = state.themes[visible[state.cursor]].clone();
+            }
+            // Left → Dark list, Right → Light list (swap the whole visible list).
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Right | KeyCode::Char('l') => {
+                let want_dark = matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
+                if want_dark != state.dark_view {
+                    state.dark_view = want_dark;
+                    state.cursor = 0;
+                    state.scroll.set(0);
+                    if let Some(&idx) = state.visible().first() {
+                        self.theme = state.themes[idx].clone();
+                    }
+                }
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                state.cursor = 0;
+                self.theme = state.themes[visible[state.cursor]].clone();
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                state.cursor = vlen.saturating_sub(1);
+                self.theme = state.themes[visible[state.cursor]].clone();
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-evaluates visible labels in folder filter modal when search query changes.
+    fn refresh_folder_modal_labels(&mut self) {
+        // Keep active selections preserved in `filter` before reordering the visible lists.
+        self.sync_folder_selection_to_filter();
+        self.rebuild_folder_visible();
+        let mut pre = HashSet::new();
+        for (vis_i, &all_i) in self.folder_visible.iter().enumerate() {
+            if self.filter.folders.contains(&self.all_folders[all_i]) {
+                pre.insert(vis_i);
+            }
+        }
+        let labels: Vec<String> = self
+            .folder_visible
+            .iter()
+            .map(|&i| self.all_folders[i].clone())
+            .collect();
+        self.folder_modal = Some(ModalState::new(labels, pre));
+    }
+}
+
+impl NewSessionState {
+    /// Tab/Shift+Tab: Cycles focus through Profile → Model → Folder → OK → Cancel (driven by delta).
+    /// OK and Cancel act as independent tab stops. Commits current list cursor selections
+    /// before closing dropdowns to prevent inadvertent data loss. Use Esc to cancel selection.
+    fn move_focus(&mut self, delta: isize) {
+        if self.dropdown_open {
+            match self.focus {
+                NewSessionFocus::Profile => self.profile_idx = self.profile_cursor,
+                NewSessionFocus::Model => self.model_idx = self.model_cursor,
+                NewSessionFocus::Folder => {
+                    if let Some(i) = self.folder_cursor {
+                        self.apply_folder_to_input(i);
+                    }
+                }
+                NewSessionFocus::Buttons => {}
+            }
+            self.close_dropdown();
+        }
+        // Tab stop order: 0=Profile, 1=Model, 2=Folder, 3=OK, 4=Cancel.
+        let cur = match self.focus {
+            NewSessionFocus::Profile => 0isize,
+            NewSessionFocus::Model => 1,
+            NewSessionFocus::Folder => 2,
+            NewSessionFocus::Buttons => {
+                if self.ok_focused {
+                    3
+                } else {
+                    4
+                }
+            }
+        };
+        match (cur + delta).rem_euclid(5) {
+            0 => self.focus = NewSessionFocus::Profile,
+            1 => self.focus = NewSessionFocus::Model,
+            2 => self.focus = NewSessionFocus::Folder,
+            3 => {
+                self.focus = NewSessionFocus::Buttons;
+                self.ok_focused = true;
+            }
+            _ => {
+                self.focus = NewSessionFocus::Buttons;
+                self.ok_focused = false;
+            }
+        }
+    }
+
+    /// ↑/↓ (closed dropdowns): Moves focus vertically between rows.
+    /// Cycles through Profile (0) ↔ Model (1) ↔ Folder (2) ↔ Buttons (3) clamping at bounds.
+    /// Moves vertically matching TUI layout (unlike Tab). Entering button row focuses OK first.
+    fn move_focus_vertical(&mut self, delta: isize) {
+        let cur = match self.focus {
+            NewSessionFocus::Profile => 0isize,
+            NewSessionFocus::Model => 1,
+            NewSessionFocus::Folder => 2,
+            NewSessionFocus::Buttons => 3,
+        };
+        let was_buttons = matches!(self.focus, NewSessionFocus::Buttons);
+        self.focus = match (cur + delta).clamp(0, 3) {
+            0 => NewSessionFocus::Profile,
+            1 => NewSessionFocus::Model,
+            2 => NewSessionFocus::Folder,
+            _ => NewSessionFocus::Buttons,
+        };
+        // Focuses OK first when entering button row (Down key).
+        if matches!(self.focus, NewSessionFocus::Buttons) && !was_buttons {
+            self.ok_focused = true;
+        }
+    }
+
+    /// Closes dropdown without committing active selections (shared between Esc and focus changes).
+    fn close_dropdown(&mut self) {
+        self.dropdown_open = false;
+        self.folder_cursor = None;
+    }
+
+    /// Post-edit helper for folder text input: clears errors, auto-opens dropdown (keeps highlight in input), and reorders matches.
+    fn on_input_edited(&mut self) {
+        self.error = None;
+        self.dropdown_open = true;
+        self.folder_cursor = None;
+        self.reorder_folders();
+    }
+
+    /// Reorders folder options placing input matches at the top. Non-matching items are appended
+    /// to the tail rather than hidden, preserving alphabetical order within each subset.
+    fn reorder_folders(&mut self) {
+        let q = crate::normalize::nfc_lower(self.input.value.trim());
+        let mut matched = Vec::new();
+        let mut rest = Vec::new();
+        for (i, path) in self.folders.iter().enumerate() {
+            let is_match = if q.is_empty() {
+                true
+            } else {
+                let full = crate::normalize::nfc_lower(&path.to_string_lossy());
+                let name = path
+                    .file_name()
+                    .map(|n| crate::normalize::nfc_lower(&n.to_string_lossy()))
+                    .unwrap_or_default();
+                full.contains(&q) || name.contains(&q)
+            };
+            if is_match {
+                matched.push(i);
+            } else {
+                rest.push(i);
+            }
+        }
+        self.match_count = matched.len();
+        matched.extend(rest);
+        self.ordered = matched;
+        if let Some(c) = self.folder_cursor {
+            self.folder_cursor = if self.ordered.is_empty() {
+                None
+            } else {
+                Some(c.min(self.ordered.len() - 1))
+            };
+        }
+    }
+
+    /// Syncs the full path of the selected folder dropdown option (index in `ordered`) back to the input text box.
+    /// Keeps the list cursor tracking the same folder even after sorting lists.
+    fn apply_folder_to_input(&mut self, ordered_pos: usize) {
+        let Some(&folder_i) = self.ordered.get(ordered_pos) else {
+            return;
+        };
+        let Some(path) = self.folders.get(folder_i) else {
+            return;
+        };
+        self.input = TextInput::new(path.to_string_lossy().into_owned());
+        self.error = None;
+        self.reorder_folders();
+        self.folder_cursor = self.ordered.iter().position(|&i| i == folder_i);
+    }
+}
+
+fn resolve_input_path(raw: &str) -> PathBuf {
+    let path = crate::config::expand(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn prev_char_boundary(s: &str, cursor: usize) -> usize {
+    if cursor == 0 {
+        return 0;
+    }
+    let mut idx = cursor.saturating_sub(1);
+    while !s.is_char_boundary(idx) {
+        idx = idx.saturating_sub(1);
+    }
+    idx
+}
+
+fn next_char_boundary(s: &str, cursor: usize) -> usize {
+    if cursor >= s.len() {
+        return s.len();
+    }
+    let mut idx = cursor.saturating_add(1);
+    while idx < s.len() && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx.min(s.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quick::QuickMode;
+    use super::{
+        App, DetailFocus, Focus, MessageKind, NewSessionFocus, Screen, TerminalKind, UiMode,
+    };
+    use crate::config::Config;
+    use crate::model::{Agent, Session};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    /// Returns an empty mock ProfileStore for unit testing (prevents disk scanning / file saving).
+    fn test_profiles() -> crate::profile::ProfileStore {
+        crate::profile::ProfileStore {
+            profiles: Vec::new(),
+        }
+    }
+
+    fn empty_app() -> App {
+        App::new(
+            Config::load(),
+            test_profiles(),
+            Vec::new(),
+            "0 sessions · reparsed 0/0".to_string(),
+        )
+    }
+
+    fn app_with_session() -> App {
+        App::new(
+            Config::load(),
+            test_profiles(),
+            vec![Session {
+                agent: Agent::Codex,
+                profile_id: String::new(),
+                id: "session-1".to_string(),
+                source_path: None,
+                cwd: PathBuf::from("/tmp"),
+                folder: "tmp".to_string(),
+                mtime_ms: 0,
+                ctime_ms: 0,
+                size_bytes: 0,
+                user_turns: vec!["hello".to_string()],
+                search_blob: "hello".to_string(),
+                title_hint: Some("hello".to_string()),
+                title_fixed: false,
+            }],
+            "1 sessions · reparsed 0/0".to_string(),
+        )
+    }
+
+    #[test]
+    fn profile_form_save_with_missing_dir_opens_create_confirm() {
+        let mut app = empty_app();
+        app.screen = Screen::Profile;
+        app.open_profile_form(None);
+        assert_eq!(app.mode, UiMode::ProfileForm);
+
+        let missing = std::env::temp_dir().join("s7s-test-missing-config-dir-xyz");
+        assert!(!missing.exists());
+        let form = app.profile_form.as_mut().unwrap();
+        form.name.value = "Team".to_string();
+        form.path.value = missing.to_string_lossy().into_owned();
+
+        app.confirm_profile_form();
+
+        // Instead of saving, directory creation confirmation modal must be triggered (OK button focused).
+        assert_eq!(app.mode, UiMode::ProfileDirConfirm);
+        assert!(app.dir_create_ok_focused);
+        assert!(app.profiles.profiles.is_empty());
+
+        // Esc key returns back to form, preserving input values.
+        app.on_key_profile_dir_confirm(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::ProfileForm);
+        assert!(app.profile_form.is_some());
+    }
+
+    #[test]
+    fn bang_opens_terminal_mode_and_enter_requests_command() {
+        let mut app = app_with_session(); // session cwd /tmp exists on disk
+        app.on_key_table(key(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::QuickCommand);
+        assert_eq!(app.quick.as_ref().unwrap().mode, QuickMode::Terminal);
+
+        for c in "echo hi".chars() {
+            app.on_key_quick(key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key_quick(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::Table);
+        let req = app.terminal_request.take().expect("terminal request");
+        assert_eq!(req.cwd, PathBuf::from("/tmp"));
+        assert_eq!(req.command, "echo hi");
+        // `!` commands keep the post-exit keypress wait (output must stay readable).
+        assert_eq!(req.kind, TerminalKind::Command);
+        assert_eq!(
+            app.terminal_history.first().map(String::as_str),
+            Some("echo hi")
+        );
+    }
+
+    #[test]
+    fn edit_config_requests_editor_without_pause() {
+        let mut app = empty_app();
+        app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::QuickCommand);
+        for c in "config.toml".chars() {
+            app.on_key_quick(key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key_quick(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::Table);
+        let req = app.terminal_request.take().expect("terminal request");
+        assert_eq!(req.cwd, crate::config::config_base_dir());
+        assert!(req.command.ends_with("config.toml'"), "{}", req.command);
+        // Interactive editors leave no output to read: return without a keypress;
+        // failures offer the vim fallback in the handover.
+        assert_eq!(req.kind, TerminalKind::EditConfig);
+    }
+
+    #[test]
+    fn bang_requires_selected_session_with_existing_folder() {
+        let mut app = empty_app();
+        app.on_key_table(key(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.quick.is_none());
+        assert!(app.status_msg.is_some());
+    }
+
+    #[test]
+    fn quick_mode_switch_only_on_empty_input() {
+        let mut app = app_with_session();
+        app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().mode, QuickMode::Palette);
+
+        // Empty-input `!` switches palette -> terminal.
+        app.on_key_quick(key(KeyCode::Char('!'), KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().mode, QuickMode::Terminal);
+
+        // With text present, `:` is an ordinary character (no switch).
+        app.on_key_quick(key(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.on_key_quick(key(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().mode, QuickMode::Terminal);
+        assert_eq!(app.quick.as_ref().unwrap().input.value, "x:");
+
+        // Clearing the input re-enables switching terminal -> palette.
+        app.on_key_quick(key(KeyCode::Backspace, KeyModifiers::NONE));
+        app.on_key_quick(key(KeyCode::Backspace, KeyModifiers::NONE));
+        app.on_key_quick(key(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().mode, QuickMode::Palette);
+    }
+
+    #[test]
+    fn terminal_history_recall_fills_input_and_restores_typed_text() {
+        let mut app = app_with_session();
+        app.terminal_history = vec!["git status".to_string(), "ls".to_string()];
+        app.on_key_table(key(KeyCode::Char('!'), KeyModifiers::NONE));
+
+        // Down recalls the most recent command into the editable input.
+        app.on_key_quick(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().term_selected, Some(0));
+        assert_eq!(app.quick.as_ref().unwrap().input.value, "git status");
+        app.on_key_quick(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().input.value, "ls");
+
+        // Moving back above the list restores the (empty) typed text.
+        app.on_key_quick(key(KeyCode::Up, KeyModifiers::NONE));
+        app.on_key_quick(key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.quick.as_ref().unwrap().term_selected, None);
+        assert_eq!(app.quick.as_ref().unwrap().input.value, "");
+
+        // Typing filters the history list and detaches the selection.
+        app.on_key_quick(key(KeyCode::Char('g'), KeyModifiers::NONE));
+        let state = app.quick.as_ref().unwrap();
+        assert_eq!(state.term_items, vec!["git status".to_string()]);
+        assert_eq!(state.term_selected, None);
+    }
+
+    #[test]
+    fn ctrl_r_opens_rename_modal() {
+        let mut app = app_with_session();
+
+        app.on_key_table(key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.mode, UiMode::Rename);
+    }
+
+    #[test]
+    fn session_profile_root_resolves_owning_profile_path() {
+        let mut app = app_with_session();
+        app.profiles.profiles.push(crate::profile::Profile {
+            id: "profile-team".to_string(),
+            agent: Agent::Codex,
+            name: "Team".to_string(),
+            path: PathBuf::from("/tmp/codex-team"),
+            oauth_token: None,
+            active: true,
+            shortcut: None,
+            builtin: false,
+        });
+        app.sessions[0].profile_id = "profile-team".to_string();
+
+        assert_eq!(
+            app.session_profile_root(&app.sessions[0]),
+            Some(PathBuf::from("/tmp/codex-team"))
+        );
+
+        // Unknown profile id must resolve to None (no default-root fallback:
+        // that would write title metadata into the wrong account store).
+        app.sessions[0].profile_id = "ghost".to_string();
+        assert_eq!(app.session_profile_root(&app.sessions[0]), None);
+    }
+
+    #[test]
+    fn rename_fails_without_owning_profile() {
+        let mut app = app_with_session(); // profile store is empty -> no owning profile
+        app.on_key_table(key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, UiMode::Rename);
+
+        app.confirm_rename();
+
+        // Must abort before touching any metadata store and keep the modal open.
+        assert_eq!(app.mode, UiMode::Rename);
+        assert!(matches!(
+            app.status_msg.as_deref(),
+            Some(msg) if msg.starts_with("Rename failed: session profile not found")
+        ));
+    }
+
+    #[test]
+    fn ctrl_u_updates_sessions_without_entering_rename_mode() {
+        let mut app = empty_app();
+
+        app.on_key_table(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(matches!(
+            app.status_msg.as_deref(),
+            Some(msg) if msg.starts_with("session update complete · ")
+        ));
+    }
+
+    #[test]
+    fn quit_requires_two_presses() {
+        let mut app = app_with_session();
+
+        app.on_key_table(key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.status_msg.as_deref(),
+            Some("Press q or ctrl+c again to quit")
+        );
+
+        app.on_key_table(key(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_keys_are_ignored_during_grace_after_handover() {
+        let mut app = app_with_session();
+        app.begin_quit_grace();
+        let initial_grace = app.quit_grace_until.unwrap();
+
+        // During the grace period, exits do not trigger even on rapid key spam (Ctrl+C x 2), extending grace period.
+        app.on_key_table(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        app.on_key_table(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.quit_armed);
+        assert!(!app.should_quit);
+        assert!(app.quit_grace_until.unwrap() >= initial_grace);
+
+        // Restores normal "press twice to exit" behavior after grace period expires (user halts spamming).
+        app.quit_grace_until =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        app.on_key_table(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.quit_armed);
+        app.on_key_table(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn tab_no_longer_toggles_focus_in_session_table() {
+        let mut app = app_with_session();
+
+        app.on_key_table(key(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(app.focus, Focus::Table);
+    }
+
+    #[test]
+    fn arrow_keys_move_column_focus_in_session_screen() {
+        let mut app = app_with_session();
+        assert_eq!(app.focus, Focus::Table);
+
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.focus, Focus::Preview);
+
+        app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.focus, Focus::Table);
+        assert_eq!(app.screen, Screen::Session);
+    }
+
+    #[test]
+    fn ctrl_u_is_global_across_profile_and_detail_screens() {
+        // Profile view: refreshes both session list and usage statistics.
+        let mut app = empty_app();
+        app.screen = Screen::Profile;
+        app.on_key_profile_table(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.status_msg.as_deref(),
+            Some(msg) if msg.starts_with("session update complete · ")
+        ));
+
+        // Details view: returning to search view if target session vanishes (e.g. empty profile rescan) post-update.
+        let mut app = app_with_session();
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Detail);
+        app.on_key_detail(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            app.status_msg.as_deref(),
+            Some(msg) if msg.starts_with("session update complete · ")
+        ));
+        assert_eq!(app.screen, Screen::Session);
+        assert!(app.detail.is_none());
+    }
+
+    #[test]
+    fn left_right_switch_between_profile_and_session_screens() {
+        let mut app = app_with_session();
+
+        // Session list (with table focus) -> Left key -> Profile list screen.
+        app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Profile);
+
+        // Profile view -> Right key -> Session list screen (independent of selected profile).
+        app.on_key_profile_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Session);
+        assert_eq!(app.focus, Focus::Table);
+    }
+
+    #[test]
+    fn right_key_on_preview_opens_detail_screen() {
+        let mut app = app_with_session();
+
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE)); // focus preview
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE)); // enter details
+
+        assert_eq!(app.screen, Screen::Detail);
+        let d = app.detail.as_ref().expect("detail state");
+        assert_eq!(d.focus, DetailFocus::Questions);
+        assert_eq!(d.turns.len(), 1);
+        assert_eq!(d.turns[0].user, "hello");
+    }
+
+    #[test]
+    fn detail_question_selection_and_work_scroll() {
+        let mut app = app_with_session();
+        app.sessions[0]
+            .user_turns
+            .push("second question".to_string());
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().turns.len(), 2);
+
+        // Left column (questions): Down key moves selection.
+        app.on_key_detail(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().selected, 1);
+
+        // Right key focuses right details column; Up/Down keys scroll details panel.
+        app.on_key_detail(key(KeyCode::Right, KeyModifiers::NONE));
+        {
+            let d = app.detail.as_ref().unwrap();
+            assert_eq!(d.focus, DetailFocus::Work);
+            d.right_max_scroll.set(10); // Simulate calculations performed during render frame.
+        }
+        app.on_key_detail(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().right_scroll.get(), 1);
+
+        // Right column focus -> Left key -> focuses left panel; left panel focus -> Left key -> returns to search view (table focus).
+        app.on_key_detail(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().focus, DetailFocus::Questions);
+        app.on_key_detail(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Session);
+        assert!(app.detail.is_none());
+        assert_eq!(app.focus, Focus::Table);
+    }
+
+    #[test]
+    fn detail_dot_toggles_tool_visibility() {
+        let mut app = app_with_session();
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert!(!app.detail_show_tools); // Hidden by default.
+
+        app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+        assert!(app.detail_show_tools);
+
+        app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+        assert!(!app.detail_show_tools);
+    }
+
+    #[test]
+    fn detail_enter_requests_resume() {
+        // Since cwd "/tmp" exists in app_with_session, resume request should be configured.
+        let mut app = app_with_session();
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+
+        app.on_key_detail(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.resume_request, Some(0));
+    }
+
+    #[test]
+    fn detail_ctrl_r_opens_rename_for_detail_session() {
+        let mut app = app_with_session();
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+
+        app.on_key_detail(key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.mode, UiMode::Rename);
+        assert_eq!(app.rename_target, Some(0));
+        // Esc cancels and returns back to details view (table mode), clearing target session index.
+        app.on_key_rename_modal(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.screen, Screen::Detail);
+        assert_eq!(app.rename_target, None);
+    }
+
+    /// Instantiates App with two sessions linked to temporary source files (for testing deletion).
+    fn app_with_two_deletable_sessions() -> (App, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "s7s-ui-delete-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let make = |name: &str| {
+            let path = root.join(name);
+            std::fs::write(&path, "{}").expect("write source");
+            Session {
+                agent: Agent::Codex,
+                profile_id: String::new(),
+                id: name.to_string(),
+                source_path: Some(path),
+                cwd: PathBuf::from("/tmp"),
+                folder: "tmp".to_string(),
+                mtime_ms: 0,
+                ctime_ms: 0,
+                size_bytes: 0,
+                user_turns: vec!["hello".to_string()],
+                search_blob: "hello".to_string(),
+                title_hint: Some(name.to_string()),
+                title_fixed: false,
+            }
+        };
+        let app = App::new(
+            Config::load(),
+            test_profiles(),
+            vec![make("s1.jsonl"), make("s2.jsonl")],
+            "2 sessions".to_string(),
+        );
+        (app, root)
+    }
+
+    #[test]
+    fn detail_delete_returns_to_session_screen_with_next_selected() {
+        let (mut app, root) = app_with_two_deletable_sessions();
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Detail);
+
+        // Ctrl+D -> opens session deletion confirmation modal -> moves focus to Delete button -> confirm.
+        app.on_key_detail(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, UiMode::DeleteConfirm);
+        app.on_key_delete_confirm(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_delete_confirm(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Returns to search screen, selecting the next session (s2).
+        assert_eq!(app.screen, Screen::Session);
+        assert!(app.detail.is_none());
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.sessions[0].id, "s2.jsonl");
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.focus, Focus::Table);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detail_selection_change_resets_work_scroll() {
+        let mut app = app_with_session();
+        app.sessions[0]
+            .user_turns
+            .push("second question".to_string());
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        {
+            let d = app.detail.as_ref().unwrap();
+            d.right_max_scroll.set(10);
+            d.right_scroll.set(5);
+        }
+
+        app.on_key_detail(key(KeyCode::Down, KeyModifiers::NONE));
+
+        let d = app.detail.as_ref().unwrap();
+        assert_eq!(d.selected, 1);
+        assert_eq!(d.right_scroll.get(), 0);
+    }
+
+    #[test]
+    fn detail_esc_stays_on_detail_screen() {
+        let mut app = app_with_session();
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Detail);
+
+        app.on_key_detail(key(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert_eq!(app.screen, Screen::Detail);
+        assert!(app.detail.is_some());
+    }
+
+    #[test]
+    fn search_tab_closes_prompt_and_focuses_preview() {
+        let mut app = app_with_session();
+        app.mode = UiMode::Keyword;
+        app.filter.keyword = "hello".to_string();
+
+        app.on_key_keyword(key(KeyCode::Tab, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.focus, Focus::Preview);
+        assert_eq!(app.filter.keyword, "hello");
+    }
+
+    #[test]
+    fn search_backtab_closes_prompt_and_focuses_table() {
+        let mut app = app_with_session();
+        app.mode = UiMode::Keyword;
+        app.focus = Focus::Preview;
+        app.filter.keyword = "hello".to_string();
+
+        app.on_key_keyword(key(KeyCode::BackTab, KeyModifiers::SHIFT));
+
+        assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.focus, Focus::Table);
+        assert_eq!(app.filter.keyword, "hello");
+    }
+
+    #[test]
+    fn search_arrow_keys_move_cursor_and_edit_mid_string() {
+        let mut app = app_with_session();
+        app.mode = UiMode::Keyword;
+        app.filter.keyword = "helo".to_string();
+        app.keyword_cursor = app.filter.keyword.len();
+
+        // Move cursor left twice, insert missing 'l' -> resolves to "hello".
+        app.on_key_keyword(key(KeyCode::Left, KeyModifiers::NONE));
+        app.on_key_keyword(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.keyword_cursor, 2);
+        app.on_key_keyword(key(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(app.filter.keyword, "hello");
+        assert_eq!(app.keyword_cursor, 3);
+
+        // Verify Home/End navigation and Backspace/Delete actions at current cursor positions.
+        app.on_key_keyword(key(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.keyword_cursor, 0);
+        app.on_key_keyword(key(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.filter.keyword, "ello");
+        app.on_key_keyword(key(KeyCode::End, KeyModifiers::NONE));
+        app.on_key_keyword(key(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.filter.keyword, "ell");
+        assert_eq!(app.keyword_cursor, app.filter.keyword.len());
+    }
+
+    fn app_with_cwd(cwd: &str) -> App {
+        App::new(
+            Config::load(),
+            test_profiles(),
+            vec![Session {
+                agent: Agent::Codex,
+                profile_id: String::new(),
+                id: "session-1".to_string(),
+                source_path: None,
+                cwd: PathBuf::from(cwd),
+                folder: "x".to_string(),
+                mtime_ms: 0,
+                ctime_ms: 0,
+                size_bytes: 0,
+                user_turns: vec!["hi".to_string()],
+                search_blob: "hi".to_string(),
+                title_hint: Some("hi".to_string()),
+                title_fixed: false,
+            }],
+            "1 sessions · reparsed 0/0".to_string(),
+        )
+    }
+
+    #[test]
+    fn resume_blocked_when_folder_missing_shows_message() {
+        let mut app = app_with_cwd("/no/such/dir/s7s-xyz");
+
+        app.on_key_table(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.resume_request.is_none());
+        assert_eq!(app.mode, UiMode::Message);
+        assert!(app.message.is_some());
+    }
+
+    #[test]
+    fn resume_allowed_when_folder_exists() {
+        // Since "/tmp" exists on disk, resume request should be configured.
+        let mut app = app_with_cwd("/tmp");
+
+        app.on_key_table(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.resume_request, Some(0));
+        assert_eq!(app.mode, UiMode::Table);
+    }
+
+    #[test]
+    fn message_dialog_dismisses_to_previous_mode() {
+        let mut app = app_with_session();
+        app.show_message("t", vec!["body".to_string()], MessageKind::Error);
+        assert_eq!(app.mode, UiMode::Message);
+
+        app.on_key_message(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.message.is_none());
+    }
+
+    /// Returns App with a built-in Claude profile, one custom profile, and one session per profile.
+    fn app_with_profiles() -> App {
+        use crate::profile::{Profile, ProfileStore};
+        let profiles = ProfileStore {
+            profiles: vec![
+                Profile {
+                    id: "builtin-claude".to_string(),
+                    agent: Agent::Claude,
+                    name: "Claude".to_string(),
+                    path: PathBuf::from("/tmp"),
+                    oauth_token: None,
+                    active: true,
+                    shortcut: Some(1),
+                    builtin: true,
+                },
+                Profile {
+                    id: "profile-x".to_string(),
+                    agent: Agent::Claude,
+                    name: "Team".to_string(),
+                    path: PathBuf::from("/tmp/team"),
+                    oauth_token: None,
+                    active: true,
+                    shortcut: Some(2),
+                    builtin: false,
+                },
+            ],
+        };
+        let session = |pid: &str, id: &str, cwd: &str| Session {
+            agent: Agent::Claude,
+            profile_id: pid.to_string(),
+            id: id.to_string(),
+            source_path: None,
+            cwd: PathBuf::from(cwd),
+            folder: PathBuf::from(cwd)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| cwd.to_string()),
+            mtime_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec!["hi".to_string()],
+            search_blob: "hi".to_string(),
+            title_hint: None,
+            title_fixed: false,
+        };
+        App::new(
+            Config::load(),
+            profiles,
+            vec![
+                session("builtin-claude", "s1", "/"),
+                session("profile-x", "s2", "/tmp"),
+            ],
+            "2 sessions · reparsed 0/0".to_string(),
+        )
+    }
+
+    /// Opens the new-session dialog from the Session view, then normalizes focus to the
+    /// (closed) Profile dropdown — the shared starting point for focus/dropdown flow tests.
+    /// The Session view itself now opens on the OK button; that behavior has its own
+    /// regression test (`ctrl_n_in_session_screen_focuses_ok_button`).
+    fn open_new_session_at_profile_focus(app: &mut App) {
+        app.on_key_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        app.new_session.as_mut().expect("new session dialog").focus = NewSessionFocus::Profile;
+    }
+
+    #[test]
+    fn colon_opens_quick_command() {
+        let mut app = app_with_profiles();
+
+        app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::QuickCommand);
+        assert!(app.quick.is_some());
+
+        // Esc closes the palette and restores prior table mode.
+        app.on_key_quick(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.quick.is_none());
+
+        // Screen transitions are driven by ←/→ keys; Esc does not change the active screen.
+        app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Profile);
+        app.on_key_profile_table(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Profile);
+        app.on_key_profile_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Session);
+    }
+
+    #[test]
+    fn question_mark_opens_help_without_joining_screen_rotation() {
+        let mut app = app_with_profiles();
+
+        app.on_key_table(key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Help);
+        assert_eq!(app.screen, Screen::Session);
+
+        app.on_key_help(key(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Help);
+        assert_eq!(app.screen, Screen::Session);
+
+        app.on_key_help(key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.screen, Screen::Session);
+    }
+
+    #[test]
+    fn profile_screen_question_mark_help_returns_to_profile_table() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+
+        app.on_key_profile_table(key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Help);
+        assert_eq!(app.screen, Screen::Profile);
+
+        app.on_key_help(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.screen, Screen::Profile);
+    }
+
+    #[test]
+    fn space_on_unnumbered_profile_shows_error_when_all_slots_are_full() {
+        let mut app = app_with_profiles();
+        let template = app.profiles.profiles[1].clone();
+        for slot in 3..=5 {
+            let mut profile = template.clone();
+            profile.id = format!("profile-{slot}");
+            profile.name = format!("Profile {slot}");
+            profile.path = PathBuf::from(format!("/tmp/profile-{slot}"));
+            profile.shortcut = Some(slot);
+            app.profiles.profiles.push(profile);
+        }
+        let mut unnumbered = template;
+        unnumbered.id = "profile-6".to_string();
+        unnumbered.name = "Profile 6".to_string();
+        unnumbered.path = PathBuf::from("/tmp/profile-6");
+        unnumbered.active = false;
+        unnumbered.shortcut = None;
+        app.profiles.profiles.push(unnumbered);
+        app.screen = Screen::Profile;
+        app.profile_selected = 5;
+
+        app.on_key_profile_table(key(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::Message);
+        assert!(app
+            .message
+            .as_ref()
+            .is_some_and(|message| message.kind == MessageKind::Error
+                && message
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("already assigned"))));
+        assert_eq!(app.profiles.numbered_profiles().len(), 5);
+        assert!(!app.profiles.profiles[5].active);
+    }
+
+    #[test]
+    fn number_key_filters_by_active_profile() {
+        let mut app = app_with_profiles();
+
+        // <2> key: filters only by the second active profile (profile-x).
+        app.on_key_table(key(KeyCode::Char('2'), KeyModifiers::NONE));
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(app.sessions[app.filtered[0]].profile_id, "profile-x");
+
+        // <0> key: clears active filters.
+        app.on_key_table(key(KeyCode::Char('0'), KeyModifiers::NONE));
+        assert_eq!(app.filtered.len(), 2);
+    }
+
+    #[test]
+    fn builtin_profile_delete_blocked_and_normal_confirmed() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+
+        // Deletion of built-in profiles must be blocked with an alert dialog.
+        app.profile_selected = 0;
+        app.on_key_profile_table(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, UiMode::Message);
+        app.on_key_message(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Deletion of normal profiles opens the deletion confirmation modal.
+        app.profile_selected = 1;
+        app.on_key_profile_table(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, UiMode::ProfileDeleteConfirm);
+        // Esc cancels (skip saving validation verification tests).
+        app.on_key_profile_delete_confirm(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.profiles.profiles.len(), 2);
+    }
+
+    #[test]
+    fn new_session_folder_dropdown_selects_then_ok_starts() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.profile_selected = 1;
+
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, UiMode::NewSession);
+        {
+            // Profile screen: starts with Folder focused (empty path) and dropdown open.
+            let state = app.new_session.as_ref().expect("new session dialog");
+            assert_eq!(state.focus, NewSessionFocus::Folder);
+            assert!(state.dropdown_open);
+            assert_eq!(state.folder_cursor, Some(0));
+            assert_eq!(state.input.value, "");
+            assert!(state.folders.contains(&PathBuf::from("/")));
+        }
+
+        // Down key navigates to "/tmp" option.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+
+        // Enter key (dropdown open): commits selection and closes dropdown; does not trigger session launch yet.
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.new_session_request.is_none());
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert!(!state.dropdown_open);
+            assert_eq!(state.input.value, "/tmp");
+        }
+
+        // Down key (dropdown closed): moves focus from Folder to Buttons (OK focused). Enter launches session.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Buttons);
+            assert!(state.ok_focused);
+        }
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        let req = app
+            .new_session_request
+            .as_ref()
+            .expect("new session request");
+        assert_eq!(req.profile_id, "profile-x");
+        assert_eq!(
+            req.cwd,
+            std::fs::canonicalize("/tmp").expect("canonicalize /tmp")
+        );
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.new_session.is_none());
+    }
+
+    #[test]
+    fn new_session_space_selects_folder_and_keeps_dropdown_open() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        // Profile screen: starts with Folder focused (dropdown open at cursor 0). Down key moves cursor to 1 (/tmp).
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Char(' '), KeyModifiers::NONE));
+
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert!(state.dropdown_open); // Space key keeps dropdown open.
+        assert_eq!(state.input.value, "/tmp"); // Synced back to input text box immediately.
+                                               // Reordering post-selection must keep the cursor tracking same folder.
+        let cursor_folder = state
+            .folder_cursor
+            .and_then(|c| state.ordered.get(c))
+            .and_then(|&i| state.folders.get(i));
+        assert_eq!(cursor_folder, Some(&PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn new_session_right_does_not_complete_when_dropdown_open() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.profile_selected = 1;
+
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        // Profile screen: starts with Folder focused (dropdown open at cursor 0). Down key moves cursor to 1 (/tmp).
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Right, KeyModifiers::NONE));
+
+        // → selection & completion removed: dropdown stays open and input text is unchanged.
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert!(state.dropdown_open);
+        assert_eq!(state.input.value, "");
+        assert_eq!(state.folder_cursor, Some(1));
+    }
+
+    #[test]
+    fn new_session_right_opens_both_dropdowns_when_closed() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // directory populated -> focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Profile
+        );
+
+        // → key (Profile closed): opens dropdown and places cursor on current selection.
+        app.on_key_new_session(key(KeyCode::Right, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert!(state.dropdown_open);
+            assert_eq!(state.profile_cursor, state.profile_idx);
+        }
+
+        // Esc closes it, then move to Folder focus and reopen using →.
+        app.on_key_new_session(key(KeyCode::Esc, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
+        assert!(!app.new_session.as_ref().unwrap().dropdown_open);
+
+        // → key (Folder closed): opens dropdown and highlights the first option.
+        app.on_key_new_session(key(KeyCode::Right, KeyModifiers::NONE));
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.focus, NewSessionFocus::Folder);
+        assert!(state.dropdown_open);
+        assert_eq!(state.folder_cursor, Some(0));
+    }
+
+    #[test]
+    fn new_session_typing_autoopens_and_reorders_matches_first() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        app.on_key_new_session(key(KeyCode::Char('t'), KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Char('m'), KeyModifiers::NONE));
+
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.input.value, "tm");
+        assert!(state.dropdown_open); // Auto-opens dropdown on typing.
+                                      // Matching option ("/tmp") at top, non-matching ("/") preserved at bottom.
+        assert_eq!(state.match_count, 1);
+        assert_eq!(state.ordered.len(), state.folders.len());
+        assert_eq!(state.folders[state.ordered[0]], PathBuf::from("/tmp"));
+        assert_eq!(state.folders[state.ordered[1]], PathBuf::from("/"));
+    }
+
+    #[test]
+    fn new_session_tab_toggles_focus_and_closes_dropdown() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Profile
+        );
+
+        // Tab key with dropdown open -> closes dropdown and moves focus to Model.
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.new_session.as_ref().unwrap().dropdown_open);
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Model);
+            assert!(!state.dropdown_open);
+        }
+
+        // Shift+Tab key returns focus back to Profile.
+        app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Profile
+        );
+    }
+
+    #[test]
+    fn new_session_tab_commits_dropdown_selection_before_moving_focus() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // profile-x, /tmp — focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+
+        // Profile dropdown: moves cursor to 0 (builtin-claude) then Tab ->
+        // commits selection and shifts focus to Model.
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 1)
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor 0
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.profile_idx, 0);
+            assert_eq!(state.focus, NewSessionFocus::Model);
+            assert!(!state.dropdown_open);
+        }
+
+        // Folder dropdown: committed selection reflects on text box, shifting focus back via Shift+Tab.
+        // Sort order by input "/tmp": ["/tmp" (match), "/"] - second item is "/".
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 0=/tmp)
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // cursor 1=/
+        app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.input.value, "/");
+        assert_eq!(state.focus, NewSessionFocus::Model);
+        assert!(!state.dropdown_open);
+    }
+
+    #[test]
+    fn new_session_buttons_row_ok_and_cancel() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // input "/tmp", focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+
+        // Tab x 3: Profile -> Model -> Folder -> OK (first). Tab again -> Cancel.
+        // Shift+Tab -> OK.
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Buttons);
+            assert!(state.ok_focused); // OK is the initial button stop.
+        }
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(!app.new_session.as_ref().unwrap().ok_focused); // -> Cancel
+        app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert!(app.new_session.as_ref().unwrap().ok_focused); // returns to OK.
+
+        // Shifts to Cancel then Enter -> closes dialog without starting.
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // OK -> Cancel
+        assert!(!app.new_session.as_ref().unwrap().ok_focused);
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.new_session.is_none());
+        assert!(app.new_session_request.is_none());
+        assert_eq!(app.mode, UiMode::Table);
+
+        // Reopens and Shift+Tab wraps back: Profile -> Cancel (the last stop).
+        open_new_session_at_profile_focus(&mut app);
+        app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Buttons);
+            assert!(!state.ok_focused);
+        }
+
+        // Cycles forward via Tab to OK, then Enter -> launches session.
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Cancel -> Profile
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Folder -> OK
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Buttons);
+            assert!(state.ok_focused);
+        }
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        let req = app
+            .new_session_request
+            .as_ref()
+            .expect("new session request");
+        assert_eq!(req.profile_id, "profile-x");
+    }
+
+    #[test]
+    fn new_session_profile_dropdown_space_enter_up_flow() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // s2: profile-x -> default profile_idx 1, focus normalized to Profile.
+        open_new_session_at_profile_focus(&mut app);
+
+        // Enter: opens dropdown placing cursor on the active profile selection.
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert!(state.dropdown_open);
+            assert_eq!(state.profile_cursor, 1);
+        }
+
+        // Up key moves to top item, then Space: selects it while keeping dropdown open.
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Char(' '), KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert!(state.dropdown_open);
+            assert_eq!(state.profile_idx, 0);
+        }
+
+        // Up key on top item (cursor 0): cycles to bottom item without closing dropdown.
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert!(state.dropdown_open); // Stays open.
+            assert_eq!(state.profile_cursor, 1); // 0 -> bottom index.
+        }
+
+        // Down key on bottom item (cursor 1): cycles back to top (0), then Down key returns to 1.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.new_session.as_ref().unwrap().profile_cursor, 0);
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.new_session.as_ref().unwrap().profile_cursor, 1);
+
+        // Enter: commits selection and closes dropdown (does not start session).
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        let state = app.new_session.as_ref().unwrap();
+        assert!(!state.dropdown_open);
+        assert_eq!(state.profile_idx, 1);
+        assert!(app.new_session_request.is_none()); // Enter selection does not launch session.
+    }
+
+    #[test]
+    fn new_session_esc_closes_dropdown_first_then_dialog() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // move cursor
+        app.on_key_new_session(key(KeyCode::Esc, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().expect("dialog stays open");
+            assert!(!state.dropdown_open);
+            assert_eq!(state.profile_idx, 1); // Esc key does not commit active cursor selection.
+        }
+
+        app.on_key_new_session(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.new_session.is_none());
+    }
+
+    #[test]
+    fn new_session_folder_updown_wraps_around() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile; // initially focused on Folder (empty folders).
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        // Profile screen: starts dropdown open (cursor 0). Up key cycles from top to bottom.
+        assert_eq!(app.new_session.as_ref().unwrap().folder_cursor, Some(0));
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        let last = {
+            let state = app.new_session.as_ref().unwrap();
+            assert!(state.dropdown_open);
+            state.ordered.len() - 1
+        };
+        assert_eq!(app.new_session.as_ref().unwrap().folder_cursor, Some(last));
+
+        // Down key cycles from bottom back to top (0).
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.new_session.as_ref().unwrap().folder_cursor, Some(0));
+    }
+
+    #[test]
+    fn new_session_text_input_allows_plain_k_character() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        app.on_key_new_session(key(KeyCode::Char('k'), KeyModifiers::NONE));
+
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.input.value, "k");
+    }
+
+    #[test]
+    fn profile_enter_no_longer_opens_new_session_dialog() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+
+        app.on_key_profile_table(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.new_session.is_none());
+    }
+
+    #[test]
+    fn ctrl_n_in_profile_screen_opens_dialog_with_selected_profile_and_empty_folder() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.profile_selected = 1;
+
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.profile_idx, 1);
+        assert_eq!(state.input.value, "");
+        // Starts with Folder focused and dropdown open due to empty folders.
+        assert_eq!(state.focus, NewSessionFocus::Folder);
+        assert!(state.dropdown_open);
+        assert_eq!(state.folder_cursor, Some(0));
+    }
+
+    #[test]
+    fn ctrl_n_in_session_screen_focuses_ok_button() {
+        let mut app = app_with_profiles();
+        // Selects the second session (s2: profile-x, /tmp).
+        app.selected = 1;
+
+        app.on_key_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.profile_idx, 1); // profile-x
+        assert_eq!(state.input.value, "/tmp");
+        // Session view opens with the OK button focused for a quick start.
+        assert_eq!(state.focus, NewSessionFocus::Buttons);
+        assert!(state.ok_focused);
+        assert!(!state.dropdown_open);
+    }
+
+    #[test]
+    fn ctrl_n_in_detail_screen_defaults_to_detail_session_profile() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Detail);
+
+        app.on_key_detail(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.profile_idx, 1);
+        assert_eq!(state.input.value, "/tmp");
+        // Detail view keeps the Profile dropdown focused (unlike the Session view).
+        assert_eq!(state.focus, NewSessionFocus::Profile);
+    }
+
+    #[test]
+    fn ctrl_n_opens_ordinary_dialog_without_context() {
+        let mut app = app_with_profiles();
+        app.on_key_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        let state = app.new_session.as_ref().expect("dialog");
+        assert!(state.context.is_none());
+    }
+
+    #[test]
+    fn ctrl_shift_n_opens_contextual_dialog_with_selected_source() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // s2: profile-x, /tmp
+
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        let state = app.new_session.as_ref().expect("dialog");
+        let ctx = state.context.as_ref().expect("context captured");
+        assert_eq!(ctx.agent, Agent::Claude);
+        assert_eq!(ctx.profile_id, "profile-x");
+        assert_eq!(ctx.session_id, "s2");
+        // Target defaults mirror ordinary New Session (source session's profile/cwd).
+        assert_eq!(state.profile_idx, 1);
+        assert_eq!(state.input.value, "/tmp");
+    }
+
+    #[test]
+    fn ctrl_shift_n_accepts_uppercase_char_form() {
+        // Enhanced-keyboard terminals may report the chord as Char('N').
+        let mut app = app_with_profiles();
+        app.on_key_table(key(
+            KeyCode::Char('N'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert!(app
+            .new_session
+            .as_ref()
+            .is_some_and(|s| s.context.is_some()));
+    }
+
+    #[test]
+    fn ctrl_shift_n_without_focused_session_is_rejected() {
+        let mut app = empty_app();
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.new_session.is_none());
+        assert_eq!(app.status_msg.as_deref(), Some("Select a session first"));
+    }
+
+    #[test]
+    fn profile_screen_ctrl_shift_n_is_not_captured_as_ordinary_new_session() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.on_key_profile_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert!(app.new_session.is_none());
+    }
+
+    #[test]
+    fn detail_ctrl_shift_n_captures_detail_source_session() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.screen, Screen::Detail);
+
+        app.on_key_detail(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+
+        let ctx = app
+            .new_session
+            .as_ref()
+            .and_then(|s| s.context.as_ref())
+            .expect("context from detail source");
+        assert_eq!(ctx.session_id, "s2");
+    }
+
+    #[test]
+    fn changing_target_profile_preserves_source_context() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        let before = app.new_session.as_ref().unwrap().context.clone().unwrap();
+
+        // Switch the target profile via the dropdown (open -> up -> enter).
+        app.new_session.as_mut().unwrap().focus = NewSessionFocus::Profile;
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        // Edit the folder input as well.
+        let state = app.new_session.as_mut().unwrap();
+        state.focus = NewSessionFocus::Folder;
+        app.on_key_new_session(key(KeyCode::Char('x'), KeyModifiers::NONE));
+
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.profile_idx, 0); // target changed
+        assert_eq!(state.context.as_ref(), Some(&before)); // source immutable
+    }
+
+    #[test]
+    fn ok_transfers_context_into_request_and_cancel_discards_it() {
+        // OK path.
+        let mut app = app_with_profiles();
+        app.selected = 1; // cwd /tmp exists on disk
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert!(app.new_session.as_ref().unwrap().ok_focused);
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        let req = app.new_session_request.take().expect("request");
+        let ctx = req.context.expect("context travels with the request");
+        assert_eq!(ctx.session_id, "s2");
+        assert_eq!(ctx.profile_id, "profile-x");
+
+        // Cancel path.
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        app.on_key_new_session(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.new_session.is_none());
+        assert!(app.new_session_request.is_none());
+    }
+
+    #[test]
+    fn contextual_ok_aborts_when_source_session_disappeared() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        // Source disappears while the dialog is open (delete/refresh race).
+        app.sessions.retain(|s| s.id != "s2");
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(app.new_session_request.is_none());
+        let state = app.new_session.as_ref().expect("dialog stays open");
+        assert!(state
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("Source session not found")));
+    }
+
+    #[test]
+    fn quick_command_invokes_contextual_opener() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE));
+        for c in "attach-session".chars() {
+            app.on_key_quick(key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key_quick(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        let ctx = app
+            .new_session
+            .as_ref()
+            .and_then(|s| s.context.as_ref())
+            .expect("palette opens contextual dialog");
+        assert_eq!(ctx.session_id, "s2");
+    }
+
+    #[test]
+    fn contextual_source_control_is_not_focusable() {
+        let mut app = app_with_profiles();
+        app.selected = 1;
+        app.on_key_table(key(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        let state = app.new_session.as_mut().expect("contextual dialog");
+        state.focus = NewSessionFocus::Profile;
+
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Model
+        );
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Profile
+        );
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Model
+        );
+    }
+
+    #[test]
+    fn new_session_ctrl_n_p_no_longer_cycle_profile() {
+        // Profile selection is unified into dropdown - Ctrl+N/P cycle shortcuts are removed.
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.profile_selected = 0;
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        app.on_key_new_session(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        app.on_key_new_session(key(KeyCode::Char('p'), KeyModifiers::CONTROL));
+
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.profile_idx, 0);
+        assert_eq!(state.input.value, ""); // Ctrl key combinations are not written to the text input.
+    }
+
+    #[test]
+    fn new_session_enter_with_empty_folder_shows_error() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        // Closes open dropdown using Esc leaving folder input empty, moves focus to OK button via Down key, then Enter.
+        app.on_key_new_session(key(KeyCode::Esc, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.new_session.as_ref().unwrap().ok_focused);
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        assert!(app.new_session_request.is_none());
+        let state = app.new_session.as_ref().expect("dialog stays open");
+        assert_eq!(state.error.as_deref(), Some("Select a folder first"));
+    }
+
+    #[test]
+    fn new_session_enter_uses_profile_selected_in_dropdown() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // s2: profile-x, /tmp - focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+
+        // Changes profile to builtin-claude (index 0) in dropdown, closes it, and launches via Enter on OK button.
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 1)
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor 0
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // select & close
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Profile -> Model
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Model -> Folder
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Folder -> Buttons(OK)
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // start
+
+        let req = app
+            .new_session_request
+            .as_ref()
+            .expect("new session request");
+        assert_eq!(req.profile_id, "builtin-claude");
+        assert_eq!(
+            req.cwd,
+            std::fs::canonicalize("/tmp").expect("canonicalize /tmp")
+        );
+    }
+
+    #[test]
+    fn new_session_updown_move_focus_when_dropdown_closed() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // folder populated -> focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Profile
+        );
+
+        // Down key: Profile -> Model -> Folder -> Buttons. Dropdown is not opened.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Model);
+            assert!(!state.dropdown_open);
+        }
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Folder
+        );
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Buttons
+        );
+        // Down key at bottom clamps (no wrapping).
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Buttons
+        );
+
+        // Up key: Buttons -> Folder -> Model -> Profile, clamping at top.
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Folder
+        );
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Model
+        );
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Profile
+        );
+    }
+
+    #[test]
+    fn new_session_down_into_buttons_always_focuses_ok() {
+        let mut app = app_with_profiles();
+        app.selected = 1; // folder populated -> focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+
+        // Moves focus to button row, moves to Cancel, climbs back to Folder, then moves Down again.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Profile -> Model
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Model -> Folder
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Folder -> Buttons(OK)
+        app.on_key_new_session(key(KeyCode::Right, KeyModifiers::NONE)); // OK -> Cancel
+        assert!(!app.new_session.as_ref().unwrap().ok_focused);
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // Buttons -> Folder
+        assert_eq!(
+            app.new_session.as_ref().unwrap().focus,
+            NewSessionFocus::Folder
+        );
+
+        // Entering button row again -> focuses OK first, independent of the prior Cancel selection.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.focus, NewSessionFocus::Buttons);
+        assert!(state.ok_focused);
+    }
+
+    fn model_entry(value: &str) -> crate::models::ModelEntry {
+        crate::models::ModelEntry {
+            value: value.to_string(),
+            label: value.to_string(),
+            note: String::new(),
+        }
+    }
+
+    fn profile_models(
+        agent: Agent,
+        values: &[&str],
+        default_model: Option<&str>,
+    ) -> crate::models::ProfileModels {
+        crate::models::ProfileModels {
+            agent,
+            cli_version: None,
+            models: values.iter().map(|v| model_entry(v)).collect(),
+            default_model: default_model.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn new_session_model_dropdown_selects_and_passes_model() {
+        let mut app = app_with_profiles();
+        app.models.insert(
+            "profile-x".to_string(),
+            profile_models(Agent::Claude, &["opus", "fable", "sonnet"], Some("fable")),
+        );
+        app.selected = 1; // s2: profile-x, /tmp - focus normalized to Profile for this flow.
+        open_new_session_at_profile_focus(&mut app);
+
+        // Initial selection = default model from settings ("fable", index 2 including "Default").
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.model_options.len(), 4); // Default + 3
+            assert_eq!(state.model_idx, 2);
+            assert_eq!(state.model_options[2].value.as_deref(), Some("fable"));
+        }
+
+        // Selecting "opus" in Model dropdown then OK -> injected model configuration included in the request.
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 2)
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor 1 (opus)
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // select & close
+        assert_eq!(app.new_session.as_ref().unwrap().model_idx, 1);
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Model -> Folder
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // Folder -> Buttons(OK)
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // start
+        let req = app.new_session_request.as_ref().expect("request");
+        assert_eq!(req.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn new_session_default_model_passes_no_model() {
+        let mut app = app_with_profiles();
+        // If default model is absent from cache, initial selection points to "Default" (no injection).
+        app.models.insert(
+            "profile-x".to_string(),
+            profile_models(Agent::Claude, &["opus", "sonnet"], None),
+        );
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        assert_eq!(app.new_session.as_ref().unwrap().model_idx, 0);
+
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> Model
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> Folder
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> Buttons(OK)
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        let req = app.new_session_request.as_ref().expect("request");
+        assert_eq!(req.model, None);
+    }
+
+    #[test]
+    fn new_session_missing_default_model_disables_ok_until_reselected() {
+        let mut app = app_with_profiles();
+        // Default model ("legacy") absent from options catalog -> placeholder item "missing" is selected.
+        app.models.insert(
+            "profile-x".to_string(),
+            profile_models(Agent::Claude, &["opus", "sonnet"], Some("legacy")),
+        );
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.model_idx, 1);
+            assert!(state.model_options[1].missing);
+        }
+
+        // Enter on OK while "missing" is selected must block execution and only show error message.
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // -> Model
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // -> Folder
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // -> OK
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.new_session_request.is_none());
+        {
+            let state = app.new_session.as_ref().expect("dialog stays open");
+            assert!(state.error.as_deref().unwrap().contains("Model"));
+        }
+
+        // Re-selecting to "Default" (no injection) enables execution again.
+        app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT)); // OK -> Folder
+        app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT)); // Folder -> Model
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 1)
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor 0 (Default)
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // select & close
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Folder -> OK
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+        let req = app.new_session_request.as_ref().expect("request");
+        assert_eq!(req.model, None);
+    }
+
+    #[test]
+    fn new_session_profile_change_rebuilds_model_options() {
+        let mut app = app_with_profiles();
+        // Only builtin-claude has cached models. profile-x has no cache -> falls back to embedded Claude models
+        // (fable / opus / sonnet / haiku).
+        app.models.insert(
+            "builtin-claude".to_string(),
+            profile_models(Agent::Claude, &["opus"], Some("opus")),
+        );
+        app.selected = 1; // profile-x
+        open_new_session_at_profile_focus(&mut app);
+        assert_eq!(app.new_session.as_ref().unwrap().model_options.len(), 5);
+
+        // Swapping profile to builtin-claude -> model options list is reconstructed.
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 1)
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor 0
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // select & close
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.profile_idx, 0);
+        assert_eq!(state.model_options.len(), 2); // Default + opus
+        assert_eq!(state.model_idx, 1); // Initial selection default model "opus".
+    }
+
+    #[test]
+    fn profile_form_add_blocks_antigravity_agent() {
+        let mut app = empty_app();
+        app.open_profile_form(None);
+        let form = app.profile_form.as_mut().unwrap();
+        assert!(!form.agy_allowed);
+        // Agent enum order: [Claude, Codex, Antigravity] - cycling bypasses Antigravity option.
+        form.cycle_agent(1);
+        assert_eq!(Agent::all()[form.agent_idx], Agent::Codex);
+        form.cycle_agent(1);
+        assert_eq!(Agent::all()[form.agent_idx], Agent::Claude);
+        form.cycle_agent(-1);
+        assert_eq!(Agent::all()[form.agent_idx], Agent::Codex);
+    }
+
+    #[test]
+    fn profile_form_save_rejects_new_antigravity_profile() {
+        let mut app = empty_app();
+        app.open_profile_form(None);
+        let form = app.profile_form.as_mut().unwrap();
+        // Force-selects Antigravity bypassing radio button restrictions (defensive validation test).
+        form.agent_idx = 2;
+        form.name.value = "Agy2".to_string();
+        form.path.value = "/tmp".to_string();
+        app.confirm_profile_form();
+        let form = app.profile_form.as_ref().expect("form stays open");
+        assert!(form.error.as_deref().unwrap().contains("Antigravity"));
+        assert!(app.profiles.profiles.is_empty());
+    }
+
+    #[test]
+    fn search_cursor_moves_over_multibyte_chars() {
+        let mut app = app_with_session();
+        app.mode = UiMode::Keyword;
+        app.filter.keyword = "한글".to_string();
+        app.keyword_cursor = app.filter.keyword.len();
+
+        // Must traverse by character boundary step (3 bytes per Hangul char).
+        app.on_key_keyword(key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.keyword_cursor, "한".len());
+        app.on_key_keyword(key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.filter.keyword, "한x글");
+    }
+
+    #[test]
+    fn theme_select_previews_on_move_and_esc_restores_original() {
+        let mut app = empty_app();
+        let original = app.theme.key.clone();
+        app.open_theme_select();
+        assert_eq!(app.mode, UiMode::ThemeSelect);
+        // Cursor starts on the active theme within its own category list.
+        let state = app.theme_select.as_ref().unwrap();
+        assert_eq!(state.themes[state.visible()[state.cursor]].key, original);
+
+        // Down applies the next theme immediately (live preview).
+        app.on_key_theme_select(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_ne!(app.theme.key, original);
+
+        // Esc restores the theme active at open time and closes the dialog.
+        app.on_key_theme_select(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.theme.key, original);
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.theme_select.is_none());
+    }
+
+    #[test]
+    fn theme_select_enter_keeps_previewed_theme_and_closes() {
+        let mut app = empty_app();
+        app.open_theme_select();
+        app.on_key_theme_select(key(KeyCode::Down, KeyModifiers::NONE));
+        let previewed = app.theme.key.clone();
+
+        app.on_key_theme_select(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.theme.key, previewed);
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.theme_select.is_none());
+        assert!(app
+            .status_msg
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Theme: ")));
+    }
+
+    #[test]
+    fn theme_select_up_from_top_stays_clamped() {
+        let mut app = empty_app();
+        app.open_theme_select();
+        // Move to the very top, then Up again must not wrap to the last item.
+        app.on_key_theme_select(key(KeyCode::Home, KeyModifiers::NONE));
+        app.on_key_theme_select(key(KeyCode::Up, KeyModifiers::NONE));
+        let state = app.theme_select.as_ref().unwrap();
+        assert_eq!(state.cursor, 0);
+        assert_eq!(app.theme.key, state.themes[state.visible()[0]].key);
+    }
+
+    #[test]
+    fn theme_select_down_from_bottom_stays_clamped() {
+        let mut app = empty_app();
+        app.open_theme_select();
+        let vlen = app.theme_select.as_ref().unwrap().visible().len();
+        app.on_key_theme_select(key(KeyCode::End, KeyModifiers::NONE));
+        app.on_key_theme_select(key(KeyCode::Down, KeyModifiers::NONE));
+        let state = app.theme_select.as_ref().unwrap();
+        assert_eq!(state.cursor, vlen - 1);
+    }
+
+    #[test]
+    fn theme_select_left_right_swaps_the_whole_list() {
+        let mut app = empty_app();
+        app.open_theme_select();
+        // Right shows the Light list: every visible theme is light, cursor resets.
+        app.on_key_theme_select(key(KeyCode::Right, KeyModifiers::NONE));
+        let state = app.theme_select.as_ref().unwrap();
+        assert!(!state.dark_view);
+        assert_eq!(state.cursor, 0);
+        assert!(state.visible().iter().all(|&i| !state.themes[i].dark));
+        assert!(!app.theme.dark, "preview switched to a light theme");
+
+        // Left shows the Dark list again.
+        app.on_key_theme_select(key(KeyCode::Left, KeyModifiers::NONE));
+        let state = app.theme_select.as_ref().unwrap();
+        assert!(state.dark_view);
+        assert!(state.visible().iter().all(|&i| state.themes[i].dark));
+        assert!(app.theme.dark, "preview switched to a dark theme");
+    }
+}

@@ -1,0 +1,312 @@
+//! Configuration: per-agent command templates, editor, and cache/config paths.
+//!
+//! Defaults are built into the code, but `~/.config/s7s/config.toml` can override them
+//! (especially because the Antigravity resume method varies across environments).
+//! TOML is used for this user-edited file so the seeded template can carry comments;
+//! app-owned state files (profiles/models/history) stay JSON.
+//!
+//! Session directories are NOT configured here: they belong to profiles
+//! (`Profile.path` -> `sessions_dir()`). The legacy dir keys
+//! (`claude_projects_dir`/`codex_sessions_dir`/`antigravity_cli_dir`) were removed;
+//! unknown keys left in an old config.toml are silently ignored by the parser.
+
+use crate::model::Agent;
+use serde::Deserialize;
+use std::path::PathBuf;
+
+/// App name (used in cache/config directories).
+pub const APP_NAME: &str = "s7s";
+
+/// Substitution tokens for the resume command template.
+/// - `{id}`  : Session/Conversation ID
+/// - `{cwd}` : Current working directory (passed wrapped in single quotes)
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Shell command template for resuming per agent.
+    pub resume_claude: String,
+    pub resume_codex: String,
+    pub resume_antigravity: String,
+    /// Shell command template for a new session per agent.
+    pub new_claude: String,
+    pub new_codex: String,
+    pub new_antigravity: String,
+    /// Default editor command (config.toml `editor` key). None = not configured
+    /// (falls back to `$VISUAL`/`$EDITOR`/`vi` when an editor is needed).
+    pub editor: Option<String>,
+}
+
+/// config.toml overlay (can be partially specified).
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    resume_claude: Option<String>,
+    resume_codex: Option<String>,
+    resume_antigravity: Option<String>,
+    new_claude: Option<String>,
+    new_codex: Option<String>,
+    new_antigravity: Option<String>,
+    editor: Option<String>,
+}
+
+impl Config {
+    /// Built-in defaults (no overlay applied).
+    fn built_in() -> Self {
+        Config {
+            // Verified behavior: execute after cd.
+            resume_claude: "claude --resume {id} --dangerously-skip-permissions".to_string(),
+            resume_codex: "codex resume {id} --yolo".to_string(),
+            // Antigravity CLI (agy): resume with conversation ID.
+            resume_antigravity: "agy --conversation {id} --dangerously-skip-permissions"
+                .to_string(),
+            new_claude: "claude --dangerously-skip-permissions".to_string(),
+            new_codex: "codex --yolo".to_string(),
+            new_antigravity: "agy --dangerously-skip-permissions".to_string(),
+            editor: None,
+        }
+    }
+
+    /// Merges and loads default configuration with the config.toml overlay.
+    pub fn load() -> Self {
+        let mut cfg = Self::built_in();
+        if let Some(fc) = load_file_config() {
+            cfg.apply(fc);
+        }
+        cfg
+    }
+
+    /// Applies a partially-specified overlay onto this config.
+    fn apply(&mut self, fc: FileConfig) {
+        if let Some(v) = fc.resume_claude {
+            self.resume_claude = v;
+        }
+        if let Some(v) = fc.resume_codex {
+            self.resume_codex = v;
+        }
+        if let Some(v) = fc.resume_antigravity {
+            self.resume_antigravity = v;
+        }
+        if let Some(v) = fc.new_claude {
+            self.new_claude = v;
+        }
+        if let Some(v) = fc.new_codex {
+            self.new_codex = v;
+        }
+        if let Some(v) = fc.new_antigravity {
+            self.new_antigravity = v;
+        }
+        if let Some(v) = fc.editor {
+            let v = v.trim().to_string();
+            self.editor = (!v.is_empty()).then_some(v);
+        }
+    }
+
+    /// Resolves the editor command for opening files (e.g. the `Edit Config`
+    /// palette command): the config `editor` key first, then `$VISUAL`/`$EDITOR`,
+    /// then `vi` as the last resort.
+    pub fn editor_command(&self) -> String {
+        resolve_editor(
+            self.editor.as_deref(),
+            std::env::var("VISUAL").ok().as_deref(),
+            std::env::var("EDITOR").ok().as_deref(),
+        )
+    }
+
+    /// Returns the resume command template for the given agent.
+    pub fn resume_template(&self, agent: Agent) -> &str {
+        match agent {
+            Agent::Claude => &self.resume_claude,
+            Agent::Codex => &self.resume_codex,
+            Agent::Antigravity => &self.resume_antigravity,
+        }
+    }
+
+    /// Returns the new session command template for the given agent.
+    pub fn new_session_template(&self, agent: Agent) -> &str {
+        match agent {
+            Agent::Claude => &self.new_claude,
+            Agent::Codex => &self.new_codex,
+            Agent::Antigravity => &self.new_antigravity,
+        }
+    }
+}
+
+/// Cache file path: `<dirs::cache_dir()>/s7s/index.bin`
+/// (macOS `~/Library/Caches/s7s/index.bin`). Derived data only (regenerated by a
+/// full rescan), so unlike `config_base_dir` it stays under the OS cache location.
+pub fn cache_path() -> PathBuf {
+    let base = dirs::cache_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".cache")
+    });
+    base.join(APP_NAME).join("index.bin")
+}
+
+/// Configuration directory: `~/.config/s7s`.
+///
+/// Hardcoded rather than resolved via `dirs::config_dir()` so all app state
+/// (config, history, cached lists, and user-facing project folders) lives
+/// under one predictable path regardless of platform (`dirs::config_dir()`
+/// resolves to macOS `Application Support`, hidden from Finder by default).
+pub(crate) fn config_base_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join(APP_NAME)
+}
+
+pub(crate) fn config_file_path() -> PathBuf {
+    config_base_dir().join("config.toml")
+}
+
+/// Seed template written by `Edit Config` when config.toml is missing or blank.
+/// Every key is commented out showing its built-in default, so the file documents
+/// itself without pinning any value (commented keys never override defaults).
+/// Session dir keys do not exist anymore: session storage belongs to profiles
+/// (edit the profile path instead).
+pub(crate) const CONFIG_TEMPLATE: &str = r#"# s7s configuration. Uncomment a key to override the built-in default.
+# Tokens available in command templates: {id} = session id, {cwd} = session folder.
+# new_* templates may also declare {prompt}: it is replaced with the shell-quoted
+# initial prompt on "New Session with Context" launches (empty string otherwise).
+# Without the token the prompt is appended automatically (claude/codex positional,
+# agy --prompt-interactive).
+
+# Default editor: exported as EDITOR/VISUAL for `!` terminal commands and used
+# by the `Edit Config` palette command (falls back to $VISUAL/$EDITOR/vi).
+# editor = "vim"
+
+# Command templates per agent.
+# resume_claude = "claude --resume {id} --dangerously-skip-permissions"
+# resume_codex = "codex resume {id} --yolo"
+# resume_antigravity = "agy --conversation {id} --dangerously-skip-permissions"
+# new_claude = "claude --dangerously-skip-permissions"
+# new_codex = "codex --yolo"
+# new_antigravity = "agy --dangerously-skip-permissions"
+"#;
+
+/// Writes the commented template to config.toml if the file is missing or blank
+/// (creating the config dir as needed). Never touches a file with content.
+/// Unit tests skip disk access to avoid touching the real user config.
+pub(crate) fn ensure_config_template() {
+    if cfg!(test) {
+        return;
+    }
+    let path = config_file_path();
+    let blank = match std::fs::read_to_string(&path) {
+        Ok(data) => data.trim().is_empty(),
+        Err(_) => true,
+    };
+    if blank {
+        let _ = std::fs::create_dir_all(config_base_dir());
+        let _ = std::fs::write(&path, CONFIG_TEMPLATE);
+    }
+}
+
+/// Editor resolution precedence (pure for testability): configured key wins,
+/// then `$VISUAL`, then `$EDITOR`, then `vi`. Blank values are skipped.
+fn resolve_editor(configured: Option<&str>, visual: Option<&str>, editor: Option<&str>) -> String {
+    [configured, visual, editor]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|v| !v.is_empty())
+        .unwrap_or("vi")
+        .to_string()
+}
+
+fn load_file_config() -> Option<FileConfig> {
+    let path = config_file_path();
+    let data = std::fs::read_to_string(path).ok()?;
+    toml::from_str(&data).ok()
+}
+
+/// Expands the `~` prefix to the home directory.
+pub(crate) fn expand(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_overlay_applies_partial_keys() {
+        // The removed legacy dir key must be tolerated (ignored), not rejected,
+        // so an old config.toml keeps parsing.
+        let fc: FileConfig = toml::from_str(
+            "editor = \"code -w\"\nresume_codex = \"codex resume {id}\"\n\
+             claude_projects_dir = \"~/proj\"\n",
+        )
+        .expect("parse toml");
+        let mut cfg = Config::built_in();
+        cfg.apply(fc);
+        assert_eq!(cfg.editor.as_deref(), Some("code -w"));
+        assert_eq!(cfg.resume_codex, "codex resume {id}");
+        // Unspecified keys keep built-in defaults.
+        assert_eq!(cfg.new_codex, Config::built_in().new_codex);
+    }
+
+    #[test]
+    fn blank_editor_value_is_ignored() {
+        let fc: FileConfig = toml::from_str("editor = \"  \"\n").expect("parse toml");
+        let mut cfg = Config::built_in();
+        cfg.apply(fc);
+        assert_eq!(cfg.editor, None);
+    }
+
+    #[test]
+    fn template_is_fully_commented_and_matches_defaults() {
+        // As shipped, the template must override nothing.
+        let fc: FileConfig = toml::from_str(CONFIG_TEMPLATE).expect("template parses");
+        let mut cfg = Config::built_in();
+        cfg.apply(fc);
+        assert_eq!(cfg.editor, None);
+        assert_eq!(cfg.resume_claude, Config::built_in().resume_claude);
+
+        // Uncommented key lines (`# key = "..."`) must parse and equal the built-in
+        // defaults, guarding the template against drift when defaults change.
+        let uncommented: String = CONFIG_TEMPLATE
+            .lines()
+            .filter_map(|l| {
+                let rest = l.strip_prefix("# ")?;
+                let (key, _) = rest.split_once(" = ")?;
+                key.chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_')
+                    .then(|| format!("{rest}\n"))
+            })
+            .collect();
+        let fc: FileConfig = toml::from_str(&uncommented).expect("uncommented template parses");
+        let mut cfg = Config::built_in();
+        cfg.apply(fc);
+        let defaults = Config::built_in();
+        assert_eq!(cfg.editor.as_deref(), Some("vim")); // example value, no built-in default
+        assert_eq!(cfg.resume_claude, defaults.resume_claude);
+        assert_eq!(cfg.resume_codex, defaults.resume_codex);
+        assert_eq!(cfg.resume_antigravity, defaults.resume_antigravity);
+        assert_eq!(cfg.new_claude, defaults.new_claude);
+        assert_eq!(cfg.new_codex, defaults.new_codex);
+        assert_eq!(cfg.new_antigravity, defaults.new_antigravity);
+        // Session dir keys are profile-owned and intentionally absent from the template.
+        assert!(!CONFIG_TEMPLATE.contains("claude_projects_dir"));
+        assert!(!CONFIG_TEMPLATE.contains("codex_sessions_dir"));
+        assert!(!CONFIG_TEMPLATE.contains("antigravity_cli_dir"));
+    }
+
+    #[test]
+    fn resolve_editor_precedence_and_fallback() {
+        assert_eq!(
+            resolve_editor(Some("code -w"), Some("nvim"), Some("nano")),
+            "code -w"
+        );
+        assert_eq!(resolve_editor(None, Some("nvim"), Some("nano")), "nvim");
+        assert_eq!(resolve_editor(None, None, Some("nano")), "nano");
+        assert_eq!(resolve_editor(None, None, None), "vi");
+        // Blank entries are skipped rather than resolved to an empty command.
+        assert_eq!(resolve_editor(Some("  "), None, Some("nano")), "nano");
+        assert_eq!(resolve_editor(Some(""), Some(" "), None), "vi");
+    }
+}

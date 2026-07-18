@@ -1,0 +1,18 @@
+/target
+
+# 로컬 작업 산물(에이전트 하니스·수동 검증 샘플)
+/.agents/
+/handoff-samples/
+/skills-lock.json
+.VSCodeCounter
+
+# AI Agent instructions and local workspace states
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+
+# AI Agent local settings and runtimes
+/.claude/
+/.codex/
+.claude*
+.codex*

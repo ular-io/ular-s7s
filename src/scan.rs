@@ -1,0 +1,380 @@
+//! Scanner: incrementally collects sessions per profile, utilizing the cache.
+
+use crate::cache::Cache;
+use crate::config;
+use crate::model::{Agent, Session};
+use crate::parser;
+use crate::profile::Profile;
+use std::path::Path;
+use walkdir::WalkDir;
+
+/// Summary of scanning results.
+pub struct ScanResult {
+    pub sessions: Vec<Session>,
+    pub scanned_files: usize,
+    pub reparsed_files: usize,
+}
+
+/// Performs a full scan and persists the updated cache.
+///
+/// Iterates over session directories for each profile. Inactive profiles are also scanned
+/// (as per spec to show all sessions). If `rebuild_cache` is `true`, it ignores the existing
+/// cache completely and re-parses all files.
+pub fn scan(profiles: &[Profile], rebuild_cache: bool) -> ScanResult {
+    let cache_path = config::cache_path();
+    let old = if rebuild_cache {
+        Cache::default()
+    } else {
+        Cache::load(&cache_path)
+    };
+    let mut new = Cache::default();
+
+    let mut sessions: Vec<Session> = Vec::new();
+    let mut scanned = 0usize;
+    let mut reparsed = 0usize;
+
+    for profile in profiles {
+        let before = sessions.len();
+        match profile.agent {
+            Agent::Claude => {
+                let dir = profile.sessions_dir();
+                let claude_meta = parser::claude::load_title_meta(&dir);
+                scan_jsonl_tree(
+                    &dir,
+                    &old,
+                    &mut new,
+                    &mut sessions,
+                    &mut scanned,
+                    &mut reparsed,
+                    |path, mtime| {
+                        let id = path.file_stem().and_then(|s| s.to_str());
+                        let meta = id.and_then(|id| claude_meta.get(id));
+                        parser::claude::parse_file(path, mtime, meta)
+                    },
+                    |_name| true,
+                    |path, sessions| {
+                        apply_claude_title_meta(path, sessions, &claude_meta);
+                    },
+                );
+            }
+            Agent::Codex => {
+                let dir = profile.sessions_dir();
+                let codex_meta = parser::codex::load_title_meta(&dir);
+                scan_jsonl_tree(
+                    &dir,
+                    &old,
+                    &mut new,
+                    &mut sessions,
+                    &mut scanned,
+                    &mut reparsed,
+                    |path, mtime| parser::codex::parse_file(path, mtime, Some(&codex_meta)),
+                    |name| name.starts_with("rollout-"),
+                    |_, sessions| apply_codex_title_meta(sessions, &codex_meta),
+                );
+            }
+            Agent::Antigravity => scan_antigravity(
+                &profile.path,
+                &old,
+                &mut new,
+                &mut sessions,
+                &mut scanned,
+                &mut reparsed,
+            ),
+        }
+        // The profile_id stored in the cache is untrusted and always reassigned to the current profile
+        // (to prevent stale IDs when profiles are deleted or recreated).
+        for s in &mut sessions[before..] {
+            s.profile_id = profile.id.clone();
+        }
+    }
+
+    // Sort by last modified time descending.
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
+
+    let _ = new.save(&cache_path);
+
+    ScanResult {
+        sessions,
+        scanned_files: scanned,
+        reparsed_files: reparsed,
+    }
+}
+
+/// Recursively scans for *.jsonl files and parses them into one session per file (with cache applied).
+#[allow(clippy::too_many_arguments)]
+fn scan_jsonl_tree<P, F>(
+    root: &Path,
+    old: &Cache,
+    new: &mut Cache,
+    sessions: &mut Vec<Session>,
+    scanned: &mut usize,
+    reparsed: &mut usize,
+    parse: P,
+    name_filter: F,
+    refresh_cached: impl Fn(&Path, &mut Vec<Session>),
+) where
+    P: Fn(&Path, i64) -> Option<Session>,
+    F: Fn(&str) -> bool,
+{
+    if !root.exists() {
+        return;
+    }
+    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.ends_with(".jsonl") || !name_filter(name) {
+            continue;
+        }
+        *scanned += 1;
+        let mtime = match file_mtime_ms(path) {
+            Some(m) => m,
+            None => continue,
+        };
+        let ctime = file_ctime_ms(path).unwrap_or(mtime);
+        let size = file_size_bytes(path);
+        let key = path.to_string_lossy().to_string();
+
+        if let Some(cached) = old.get_fresh(&key, mtime) {
+            let mut cached = cached.clone();
+            refresh_cached(path, &mut cached);
+            set_ctime(&mut cached, ctime);
+            set_size(&mut cached, size);
+            sessions.extend(cached.iter().cloned());
+            new.put(key, mtime, cached);
+        } else {
+            *reparsed += 1;
+            let mut parsed: Vec<Session> = parse(path, mtime).into_iter().collect();
+            refresh_cached(path, &mut parsed);
+            set_ctime(&mut parsed, ctime);
+            set_size(&mut parsed, size);
+            sessions.extend(parsed.iter().cloned());
+            new.put(key, mtime, parsed);
+        }
+    }
+}
+
+fn apply_claude_title_meta(
+    path: &Path,
+    sessions: &mut [Session],
+    meta: &std::collections::HashMap<String, parser::claude::TitleMeta>,
+) {
+    let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let Some(meta) = meta.get(id) else {
+        return;
+    };
+    for session in sessions {
+        session.title_hint = meta.title.clone().or_else(|| session.title_hint.clone());
+        session.title_fixed = session.title_fixed || meta.fixed;
+        parser::reindex_search_blob(session);
+    }
+}
+
+fn apply_codex_title_meta(
+    sessions: &mut [Session],
+    meta: &std::collections::HashMap<String, parser::codex::TitleMeta>,
+) {
+    for session in sessions {
+        if let Some(meta) = meta.get(&session.id) {
+            session.title_hint = meta.title.clone().or_else(|| session.title_hint.clone());
+            session.title_fixed = meta.title.is_some();
+        }
+        parser::reindex_search_blob(session);
+    }
+}
+
+fn apply_antigravity_title_meta(
+    sessions: &mut [Session],
+    meta: &std::collections::HashMap<String, parser::antigravity::Meta>,
+) {
+    for session in sessions {
+        if let Some(meta) = meta.get(&session.id) {
+            if let Some(title) = meta.title.clone() {
+                session.title_hint = Some(title);
+                session.title_fixed = true;
+            } else {
+                session.title_hint = meta.preview.clone().or_else(|| session.title_hint.clone());
+                session.title_fixed = false;
+            }
+        }
+        parser::reindex_search_blob(session);
+    }
+}
+
+fn scan_antigravity(
+    cli_dir: &Path,
+    old: &Cache,
+    new: &mut Cache,
+    sessions: &mut Vec<Session>,
+    scanned: &mut usize,
+    reparsed: &mut usize,
+) {
+    let conv_dir = parser::antigravity::conversations_dir(cli_dir);
+    if !conv_dir.exists() {
+        return;
+    }
+    // Load metadata only once for fallbacks (workspace, preview, timestamps).
+    let meta = parser::antigravity::load_metadata(cli_dir);
+
+    for entry in WalkDir::new(&conv_dir)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !name.ends_with(".db") {
+            continue;
+        }
+        *scanned += 1;
+        let mtime = match file_mtime_ms(path) {
+            Some(m) => m,
+            None => continue,
+        };
+        let ctime = file_ctime_ms(path).unwrap_or(mtime);
+        let size = file_size_bytes(path);
+        let key = path.to_string_lossy().to_string();
+
+        if let Some(cached) = old.get_fresh(&key, mtime) {
+            let mut cached = cached.clone();
+            apply_antigravity_title_meta(&mut cached, &meta);
+            set_ctime(&mut cached, ctime);
+            set_size(&mut cached, size);
+            sessions.extend(cached.iter().cloned());
+            new.put(key, mtime, cached);
+        } else {
+            *reparsed += 1;
+            let mut parsed: Vec<Session> = parser::antigravity::parse_db(path, mtime, &meta)
+                .into_iter()
+                .collect();
+            apply_antigravity_title_meta(&mut parsed, &meta);
+            set_ctime(&mut parsed, ctime);
+            set_size(&mut parsed, size);
+            sessions.extend(parsed.iter().cloned());
+            new.put(key, mtime, parsed);
+        }
+    }
+}
+
+fn file_mtime_ms(path: &Path) -> Option<i64> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(dur.as_millis() as i64)
+}
+
+/// Returns the file creation time (birth time) in epoch milliseconds. Returns None if not supported by the filesystem.
+fn file_ctime_ms(path: &Path) -> Option<i64> {
+    let meta = std::fs::metadata(path).ok()?;
+    let created = meta.created().ok()?;
+    let dur = created.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(dur.as_millis() as i64)
+}
+
+/// Returns the file size in bytes (0 if metadata is unavailable).
+fn file_size_bytes(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// Populates the creation time for all sessions generated from a single file.
+fn set_ctime(sessions: &mut [Session], ctime: i64) {
+    for s in sessions {
+        s.ctime_ms = ctime;
+    }
+}
+
+/// Populates the source file size for all sessions generated from a single file.
+/// Applied on both cache hits and reparses so the value never requires a cache version bump.
+fn set_size(sessions: &mut [Session], size: u64) {
+    for s in sessions {
+        s.size_bytes = size;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Agent, Session};
+    use std::collections::HashMap;
+
+    #[test]
+    fn apply_codex_title_meta_updates_cached_sessions_by_session_id() {
+        let mut sessions = vec![Session {
+            agent: Agent::Codex,
+            profile_id: String::new(),
+            id: "019f36e8-9157-7c63-bee8-8937a6314982".to_string(),
+            source_path: None,
+            cwd: "/tmp/demo".into(),
+            folder: "demo".to_string(),
+            mtime_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec!["첫 질문".to_string()],
+            search_blob: String::new(),
+            title_hint: Some("첫 질문".to_string()),
+            title_fixed: false,
+        }];
+        let mut meta = HashMap::new();
+        meta.insert(
+            "019f36e8-9157-7c63-bee8-8937a6314982".to_string(),
+            parser::codex::TitleMeta {
+                title: Some("26-07 세션 타이틀 개선".to_string()),
+            },
+        );
+
+        apply_codex_title_meta(&mut sessions, &meta);
+
+        assert_eq!(sessions[0].title(), "26-07 세션 타이틀 개선");
+        assert!(sessions[0].title_fixed);
+        // Enforce search matching by including renamed titles in the search blob, even if they are not in the body.
+        assert!(sessions[0].search_blob.contains("타이틀"));
+        assert!(sessions[0].search_blob.contains("첫 질문"));
+    }
+
+    #[test]
+    fn apply_antigravity_title_meta_prefers_fixed_title_over_preview() {
+        let mut sessions = vec![Session {
+            agent: Agent::Antigravity,
+            profile_id: String::new(),
+            id: "8c456b4c-e7ba-46da-8c8a-9d37732e8e25".to_string(),
+            source_path: None,
+            cwd: "/tmp/demo".into(),
+            folder: "demo".to_string(),
+            mtime_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec!["첫 질문".to_string()],
+            search_blob: String::new(),
+            title_hint: Some("List GitLab Repository Commands".to_string()),
+            title_fixed: false,
+        }];
+        let mut meta = HashMap::new();
+        meta.insert(
+            "8c456b4c-e7ba-46da-8c8a-9d37732e8e25".to_string(),
+            parser::antigravity::Meta {
+                title: Some("26-07 컨테이너 레지스트리 이전".to_string()),
+                preview: Some("List GitLab Repository Commands".to_string()),
+                workspace: None,
+                updated_ms: None,
+            },
+        );
+
+        apply_antigravity_title_meta(&mut sessions, &meta);
+
+        assert_eq!(sessions[0].title(), "26-07 컨테이너 레지스트리 이전");
+        assert!(sessions[0].title_fixed);
+    }
+}
