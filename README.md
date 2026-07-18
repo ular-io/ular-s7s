@@ -2,6 +2,31 @@
 
 A terminal dashboard that integrates **search and management** across Claude Code, Antigravity CLI, and Codex conversation sessions in a **single, unified TUI**. It allows you to monitor usage, manage sessions, and instantly resume work in your project folders with their respective agent CLIs.
 
+
+## Screenshots
+
+### Main Dashboard
+![Main Dashboard](example/screenshot/main_dashboard.png)
+
+### Session Detail View
+![Session Detail View](example/screenshot/session_detail.png)
+
+### Profile Dashboard
+![Profile Dashboard](example/screenshot/profiles_dashboard.png)
+
+### Theme Selection
+![Theme Selection](example/screenshot/theme_selection.png)
+
+### New Session Dialog
+![New Session](example/screenshot/new_session.png)
+
+### New Session with Context
+![New Session with Context](example/screenshot/new_session_context.png)
+
+### Quick Command Palette
+![Quick Command](example/screenshot/quick_command.png)
+
+
 ## Key Features
 
 - **Rust-Powered & Blazingly Fast**: Built with Rust combined with database-backed caching for instantaneous loading. The initial scan builds the database cache, enabling subsequent lookups to query the cache directly for near-instantaneous load times.
@@ -46,6 +71,7 @@ cp target/release/s7s ~/bin/   # Copy to your desired PATH location
 
 ```bash
 s7s                         # Run TUI
+s7s demo                    # Run TUI in demo mode using mock English sessions (generates mock sandbox under project 'example' folder)
 s7s session <SESSION_ID>    # View past session context (no TUI, see below)
 s7s --rebuild-cache         # Force rebuild the entire session cache
 s7s --print                 # Print the session list only, without TUI (debug)
