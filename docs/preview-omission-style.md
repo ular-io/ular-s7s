@@ -1,29 +1,26 @@
 # Preview Omission Style
 
-프롬프트 프리뷰에서 긴 사용자 질의의 중간 내용을 생략하는 방식과 터미널 스타일
-조정 시 확인할 사항을 정리한다.
+This document outlines the method for omitting the middle content of long user queries in the prompt preview, and things to check when adjusting terminal styles.
 
-## 동작
+## Behavior
 
-- 사용자 질의가 8줄 이하면 모든 줄을 표시한다.
-- 8줄을 초과하면 앞 4줄과 뒤 4줄만 표시한다.
-- 가운데에는 생략된 실제 줄 수를 다음 형식으로 표시한다.
+- If the user query is 8 lines or fewer, all lines are displayed.
+- If it exceeds 8 lines, only the first 4 lines and the last 4 lines are displayed.
+- In the middle, the actual number of omitted lines is displayed in the following format.
 
 ```text
 ────── ⋯ 5 lines omitted ⋯ ──────
 ```
 
-원문 줄 수를 기준으로 먼저 축약한 뒤, 각 표시 줄을 프리뷰 패널 폭에 맞게
-`wrap_w`로 줄바꿈한다. 따라서 패널 폭 때문에 자동으로 접힌 줄은 축약 기준에
-포함되지 않는다.
+It is first abbreviated based on the original number of lines, and then each display line is wrapped according to the preview panel width using `wrap_w`. Therefore, lines that are automatically wrapped due to panel width are not included in the abbreviation criteria.
 
-## 구현 위치
+## Implementation Locations
 
-- 축약 판정: `src/ui/render.rs`의 `preview_turn_lines`
-- 생략 줄 표현: `PreviewTurnLine::Omission`
-- 색상과 속성: `draw_preview`의 `Span::styled`
+- Abbreviation logic: `preview_turn_lines` in `src/ui/render.rs`
+- Omitted line representation: `PreviewTurnLine::Omission`
+- Color and attributes: `Span::styled` in `draw_preview`
 
-최종 스타일은 다음과 같다.
+The final style is as follows.
 
 ```rust
 Style::default()
@@ -31,40 +28,34 @@ Style::default()
     .add_modifier(Modifier::DIM)
 ```
 
-`Color`는 전경색을 지정하고 `Modifier::DIM`은 터미널에 흐린 글자 속성을
-요청한다. 생략 표시는 일반 본문과 다른 `Span`으로 렌더링해야 해당 스타일이
-본문에 전파되지 않는다.
+`Color` specifies the foreground color, and `Modifier::DIM` requests the dim text attribute from the terminal. The omission indicator must be rendered as a different `Span` from the normal body text so that the style does not propagate to the body.
 
-## 시행착오
+## Trial and Error
 
 ### `DarkGray`
 
-- 처음에는 `Color::DarkGray`를 사용했다.
-- 배경색이나 터미널 테마에 따라 지나치게 어두워져 생략 안내를 알아보기
-  어려웠다.
+- Initially, `Color::DarkGray` was used.
+- Depending on the background color or terminal theme, it became too dark, making it difficult to read the omission indicator.
 
 ### `Gray`
 
-- `Color::Gray`로 변경해 밝기를 높였다.
-- 생략 안내는 읽기 쉬워졌지만 일반 본문과의 차이가 충분하지 않았다.
+- Changed to `Color::Gray` to increase brightness.
+- The omission indicator became easier to read, but there wasn't enough contrast with the normal body text.
 
 ### `Rgb(190, 190, 190)`
 
-- 더 밝은 회색을 명시하기 위해 RGB 색상을 사용했다.
-- 기존 `Gray`와 밝기가 비슷하고, 터미널의 색상 근사화 또는 테마 처리에 따라
-  동일하게 보일 수 있었다.
-- RGB 값만 조금 조정하는 방식은 터미널마다 일관된 시각 차이를 보장하지 못한다.
+- Used an RGB color to specify a lighter gray.
+- The brightness was similar to the existing `Gray`, and depending on the terminal's color approximation or theme handling, it could look identical.
+- Adjusting only the RGB value slightly does not guarantee a consistent visual difference across terminals.
 
 ### `Gray + DIM`
 
-- 최종적으로 색상과 별개인 `DIM` 속성을 함께 사용했다.
-- 색상값 차이에만 의존하지 않아 생략 안내를 읽을 수 있으면서 본문보다 흐리게
-  구분할 수 있다.
+- Ultimately, the `DIM` attribute, which is independent of color, was used together with the color.
+- By not relying solely on color value differences, the omission indicator remains readable while being distinguishable as dimmer than the body text.
 
-## 변경 시 확인사항
+## Checklist When Modifying
 
-- `cargo test -q`로 8줄 경계와 생략 줄 수 계산을 검증한다.
-- 사용하는 터미널이 `DIM` 속성을 지원하는지 실제 TUI에서 확인한다.
-- 일부 터미널이나 사용자 테마는 `DIM`을 무시하거나 색상으로 변환할 수 있다.
-- 스타일 차이가 보이지 않으면 RGB 미세 조정보다 `BOLD`, `ITALIC`, `DIM` 같은
-  속성과 문구·구분선을 함께 조정한다.
+- Run `cargo test -q` to verify the 8-line boundary and the calculation of omitted lines.
+- Verify in the actual TUI whether the terminal being used supports the `DIM` attribute.
+- Some terminals or user themes may ignore `DIM` or convert it into a color.
+- If the style difference is not visible, adjust attributes like `BOLD`, `ITALIC`, `DIM`, along with the phrasing and separator lines, rather than fine-tuning the RGB.

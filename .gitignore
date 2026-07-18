@@ -7,8 +7,6 @@
 .VSCodeCounter
 
 # AI Agent instructions and local workspace states
-/AGENTS.md
-/CLAUDE.md
 /GEMINI.md
 
 # AI Agent local settings and runtimes

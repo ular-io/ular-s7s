@@ -1,117 +1,81 @@
-# Model Selection (New Session 모델 드롭다운)
+# Model Selection (New Session Model Dropdown)
 
-New Session 대화상자의 Model 드롭다운에 표시할 "선택 가능 모델 목록"의
-조회·캐시·주입 설계. 구현: `src/models.rs`(조회·캐시), `src/ui/mod.rs`
-(드롭다운 상태·백그라운드 연동), `src/resume.rs::with_model_flag`(명령 주입).
+Design for querying, caching, and injecting the "selectable models list" to be displayed in the Model dropdown of the New Session dialog. Implementation: `src/models.rs` (query/cache), `src/ui/mod.rs` (dropdown state/background integration), `src/resume.rs::with_model_flag` (command injection).
 
-## 모델 목록 열거 방법 (2026-07 실측)
+## Model List Enumeration Methods (Observed July 2026)
 
-| 에이전트 | 방법 | 값 형식 | 기본 모델 출처 |
+| Agent | Method | Value Format | Default Model Source |
 | :-- | :-- | :-- | :-- |
-| claude | PTY로 `/model` 화면 스크래핑 (`usage::drive_screen` 공용) | alias 소문자 (`fable`) | 화면 목록의 `✔` 표시 |
-| codex | `codex debug models` JSON (`visibility=="list"`만) | slug (`gpt-5.6-sol`) | `<CODEX_HOME>/config.toml` 최상위 `model` 키 |
-| agy | `agy models` 줄 단위 출력 | 표시명 그대로 (`Gemini 3.1 Pro (Low)`) | `settings.json` 최상위 `model` 키 |
+| claude | Scraping `/model` screen via PTY (shared with `usage::drive_screen`) | alias lowercase (`fable`) | `✔` mark in the screen list |
+| codex | `codex debug models` JSON (only `visibility=="list"`) | slug (`gpt-5.6-sol`) | Top-level `model` key in `<CODEX_HOME>/config.toml` |
+| agy | Line-by-line output of `agy models` | Display name exactly as is (`Gemini 3.1 Pro (Low)`) | Top-level `model` key in `settings.json` |
 
-- claude만 열거 명령이 없어 PTY가 필요하다(프로필당 부팅 수 초). 목록은
-  플랜/계정에 따라 다를 수 있어 **프로필별**(`CLAUDE_CONFIG_DIR` 주입) 조회.
-- claude `/model` 화면의 `Default (recommended)` 행은 s7s 드롭다운의 자체
-  Default(미주입) 항목과 중복이라 목록에서 제외한다. `✔`가 이 행에 있으면
-  기본 모델을 None(CLI Default)으로 둔다.
-- codex도 프로필별(`CODEX_HOME` 주입) 조회지만 빠른 subprocess다. 카탈로그는
-  빈 CODEX_HOME에서도 출력됨을 확인(번들 카탈로그).
-- agy는 config env 주입이 불가해(아래 "agy env 주입 검증") **기본 경로 프로필만
-  전역 1회** 조회하고, 추가 agy 프로필은 그 결과를 공유한다
-  (`ModelCatalog::for_profile` 폴백).
+- Only claude lacks an enumeration command, so PTY is required (takes a few seconds to boot per profile). The list may differ depending on the plan/account, so it is queried **per profile** (injecting `CLAUDE_CONFIG_DIR`).
+- The `Default (recommended)` row in the claude `/model` screen duplicates s7s's own Default (no injection) item in the dropdown, so it is excluded from the list. If `✔` is on this row, the default model is set to None (CLI Default).
+- codex is also queried per profile (injecting `CODEX_HOME`), but it's a fast subprocess. The catalog is confirmed to be output even in an empty CODEX_HOME (bundled catalog).
+- agy cannot inject config env (see "agy env injection verification" below), so it is queried **globally once for the default path profile**, and additional agy profiles share that result (`ModelCatalog::for_profile` fallback).
 
-## CLI가 모델명을 검증하지 않는다 (실측)
+## CLI Does Not Validate Model Names (Observed)
 
-- agy: 무효 모델명을 주면 **오류 없이 기본 모델로 조용히 폴백**한다.
-- codex: 부팅 시 검증 없이 무효 slug를 그대로 표시한다(첫 메시지에서 실패).
-- 따라서 **목록 정확성은 s7s 책임**이다: 동적 열거 결과만 드롭다운에 올리고,
-  조회 실패 시 기존 캐시를 덮지 않으며(빈 목록 저장 금지), 설정 기본 모델이
-  목록에 없으면 OK를 비활성화한다(아래 UI 규칙).
+- agy: If an invalid model name is provided, it **quietly falls back to the default model without errors**.
+- codex: Displays the invalid slug as is without validation upon booting (fails on the first message).
+- Therefore, **list accuracy is the responsibility of s7s**: Only dynamically enumerated results are placed in the dropdown, existing caches are not overwritten upon query failure (prohibiting saving empty lists), and if the configured default model is not in the list, OK is disabled (UI rules below).
 
-## 캐시와 갱신 시점
+## Cache and Update Timing
 
-- 캐시: `~/.config/s7s/models.json` (profile id 키, `ModelCatalog`).
-  항목에 조회 시점 CLI 버전(`--version` 첫 줄)을 함께 저장한다.
-- **앱 시작**: 백그라운드 조회를 시작하되 **버전 게이트** — 캐시된 CLI 버전과
-  현재 버전이 같으면 재조회를 생략(`ModelsResult::Skipped`)해 claude PTY
-  부팅 비용을 없앤다. 모델 목록은 CLI 업그레이드/플랜 변경 때만 바뀐다.
-- **ctrl+u**: 강제 재조회(버전 게이트 무시) — 플랜 변경까지 커버.
-- **프로필 저장**: 저장된 프로필만 증분 강제 조회(path가 바뀌었을 수 있음).
-- **프로필 삭제**: 캐시 항목 제거.
-- 사용량 조회와 달리 **조용히** 진행한다: Loading 표시·완료 메시지 없음.
-  사용량 `Loading...`이 사라져도 모델 조회는 계속될 수 있다.
-- 로그인 안 됨/폴더 없음/CLI 미설치는 `Unavailable`로 스킵(캐시 유지).
+- Cache: `~/.config/s7s/models.json` (profile id key, `ModelCatalog`). The CLI version at the time of query (first line of `--version`) is saved along with the items.
+- **App Startup**: Initiates background querying but with a **version gate** — if the cached CLI version and current version match, re-querying is skipped (`ModelsResult::Skipped`) to eliminate the cost of booting the claude PTY. The model list only changes upon CLI upgrade/plan change.
+- **ctrl+u**: Force re-query (ignores version gate) — covers plan changes.
+- **Profile Save**: Only saved profiles are incrementally force-queried (path might have changed).
+- **Profile Delete**: Removes the cached item.
+- Unlike usage querying, this proceeds **quietly**: No Loading indicator or completion message. Even if the usage `Loading...` disappears, the model query may still continue.
+- Not logged in / folder missing / CLI not installed are skipped as `Unavailable` (cache maintained).
 
-## New Session 대화상자 UI 규칙
+## New Session Dialog UI Rules
 
-- 컨트롤 순서(tab/↑↓): Profile → **Model** → Folder → OK/Cancel. 모달 높이 14행.
-- 드롭다운 0번은 항상 **Default**(`--model` 미주입 — CLI 자체 기본 모델 사용).
-- 초기 선택 = CLI 설정의 기본 모델. 목록에 없으면 **missing 자리표시 항목**
-  (빨강, "not in the fetched model list")을 선택해 두고 **OK 비활성화** —
-  사용자가 다른 항목(Default 포함)을 골라야 실행 가능(오타/낡은 설정을
-  조용히 실행하지 않기 위함).
-- 프로필 확정 변경 시 모델 항목을 해당 agent 기준으로 재구성한다.
-- 백그라운드 조회 완료가 **열려 있는 대화상자의 목록을 즉시 교체하지 않는다**
-  (커서 점프 방지) — 다음에 열 때 반영된다.
-- 캐시가 전혀 없으면 내장 폴백: claude만 alias 4종(fable/opus/sonnet/haiku).
-  codex/agy는 열거가 빨라 폴백 없이 Default만 표시된다(첫 조회 후 채워짐).
-- resume(이어하기)의 모델 선택은 미구현(2026-07-14 결정: 추후 별도).
+- Control order (tab/↑↓): Profile → **Model** → Folder → OK/Cancel. Modal height 14 lines.
+- Dropdown 0 is always **Default** (no `--model` injection — uses the CLI's own default model).
+- Initial selection = The default model in the CLI configuration. If not in the list, a **missing placeholder item** (red, "not in the fetched model list") is selected, and **OK is disabled** — the user must choose another item (including Default) to execute (to prevent quietly executing typos/stale configurations).
+- Upon confirming a profile change, the model items are reconfigured based on that agent.
+- Background query completion **does not immediately replace the list in an open dialog** (to prevent cursor jumping) — it is reflected the next time it opens.
+- If there is no cache at all, built-in fallbacks are used: claude has 4 aliases (fable/opus/sonnet/haiku). codex/agy enumerate quickly, so only Default is shown without a fallback (filled after the first query).
+- Model selection for resume (continue) is not implemented (decided 2026-07-14: separately later).
 
-## 명령 주입 (append 방식)
+## Command Injection (Append Method)
 
-- `NewSessionRequest.model`(Option) → `resume::run_new`/`preview_new_command`가
-  템플릿 꼬리에 ` --model '<값>'`을 덧붙인다. Default(None)면 그대로.
-- 템플릿(`config.toml`의 `new_*`)은 손대지 않으므로 기존 사용자 설정과 호환.
-- 값은 항상 작은따옴표 쿼팅(agy 표시명의 공백·괄호 대비).
-- 세 CLI 모두 `--model` 장플래그 동작을 부팅 배너/상태줄로 실측 확인:
-  claude alias·전체명(`claude-haiku-4-5-20251001`), codex slug, agy 표시명.
+- `NewSessionRequest.model` (Option) → `resume::run_new`/`preview_new_command` appends ` --model '<value>'` to the tail of the template. If Default (None), it leaves it as is.
+- Templates (`new_*` in `config.toml`) are not touched, ensuring compatibility with existing user settings.
+- The value is always wrapped in single quotes (in preparation for spaces/parentheses in agy display names).
+- The `--model` long flag behavior for all three CLIs was empirically verified via the boot banner/status bar: claude alias/full name (`claude-haiku-4-5-20251001`), codex slug, agy display name.
 
-## Add Profile에서 Antigravity 차단
+## Blocking Antigravity in Add Profile
 
-- agy는 추가 프로필이 무의미(env 주입 불가 → usage 스킵·resume 기본 계정)라
-  **신규 추가/타 에이전트에서의 전환 시 Antigravity 라디오를 dim + 선택 불가**
-  처리한다(`ProfileFormState::agy_allowed`, 저장 단계 방어 검증 포함).
-  기존 Antigravity 프로필의 편집·삭제는 유지된다. builtin agy 프로필은
-  시드로 항상 존재하므로 접근성 손실이 없다.
+- For agy, additional profiles are meaningless (cannot inject env → skips usage, resumes with default account), so **during new addition or switching from another agent, the Antigravity radio button is dimmed and unselectable** (`ProfileFormState::agy_allowed`, including defensive validation during the save phase). Editing/deleting existing Antigravity profiles is maintained. The builtin agy profile is always present as a seed, so there is no loss of accessibility.
 
-### agy env 주입 검증 (2026-07-14, agy 1.1.2)
+### agy Env Injection Verification (2026-07-14, agy 1.1.2)
 
-- `strings $(which agy)`의 `ANTIGRAVITY_*` 환경변수 전수 목록에
-  `ANTIGRAVITY_CONFIG_DIR` **없음**(서드파티 문서의 해당 변수는 이 CLI에
-  코드 경로가 존재하지 않음).
-- 빈 폴더를 `ANTIGRAVITY_CONFIG_DIR`로 지정해 부팅해도 기존 계정으로 뜨고
-  폴더는 빈 채로 남음 — **완전 무시 확인**.
-- `HOME` 오버라이드는 동작하지만(새 `.gemini` 트리 생성 + 로그인 플로우)
-  에이전트 작업 환경 왜곡·키체인 계정 충돌 미검증으로 채택하지 않음.
-- agy 업그레이드 시 `strings $(which agy) | grep -o 'ANTIGRAVITY_[A-Z_]*'`로
-  전용 변수 신설 여부를 재확인하고, 생기면 차단을 해제한다.
+- The exhaustive list of `ANTIGRAVITY_*` environment variables from `strings $(which agy)` **does not include** `ANTIGRAVITY_CONFIG_DIR` (the code path for that variable from third-party docs does not exist in this CLI).
+- Booting with an empty folder specified as `ANTIGRAVITY_CONFIG_DIR` still boots with the existing account and leaves the folder empty — **confirmed completely ignored**.
+- `HOME` override works (creates a new `.gemini` tree + login flow), but it is not adopted because agent workspace distortion and keychain account conflicts have not been verified.
+- Upon agy upgrade, re-verify the creation of dedicated variables with `strings $(which agy) | grep -o 'ANTIGRAVITY_[A-Z_]*'`, and unblock if one appears.
 
-## 검증 방법
+## Verification Method
 
-모델 파싱 코드를 바꿨거나 agent CLI가 업그레이드됐다면:
+If model parsing code is changed or the agent CLI is upgraded:
 
 ```bash
-# TUI 없이 전체 프로필의 모델 목록 강제 조회(캐시 미갱신)
+# Force query the model list of all profiles without TUI (does not update cache)
 cargo build --release && ./target/release/s7s --model-probe
 
-# claude /model 화면 텍스트 덤프(파서 디버깅용, claude-model.screen.txt)
+# Text dump of the claude /model screen (for parser debugging, claude-model.screen.txt)
 mkdir -p /tmp/dump && ULAR_USAGE_DUMP=/tmp/dump ./target/release/s7s --model-probe
 ```
 
-- claude는 실제 `claude`에서 `/model`을 열어 목록·✔ 위치와 대조한다.
-- codex는 `codex debug models` 출력(visibility=list)과, agy는 `agy models`
-  출력과 대조한다.
-- CLI가 무효 모델명을 걸러주지 않으므로, 프로브 결과의 value로 실제 세션을
-  한 번 띄워 배너/상태줄의 활성 모델 표기를 확인하는 것이 최종 검증이다.
-- 단위 테스트(`src/models.rs::tests`)의 claude 화면 픽스처는 실측 캡처
-  (2026-07-14, 2.1.207)를 사용한다. 화면 포맷이 바뀌면 픽스처도 갱신한다.
+- For claude, open `/model` in actual `claude` and compare with the list and ✔ position.
+- For codex, compare with `codex debug models` output (visibility=list), and for agy, with `agy models` output.
+- Since CLIs do not filter out invalid model names, the final verification is to actually launch a session once with the value from the probe result and check the active model notation in the banner/status bar.
+- The claude screen fixture in unit tests (`src/models.rs::tests`) uses actual captures (2026-07-14, 2.1.207). If the screen format changes, update the fixture as well.
 
-## New Session with Context와 모델 선택
+## New Session with Context and Model Selection
 
-컨텍스트 첨부 새 세션([상세](session-context.md))은 기존 New Session 대화상자를
-그대로 재사용하므로 Model 드롭다운의 동작(목록 출처·기본 선택·missing 처리)도
-변경 없이 동일하다. 선택된 모델의 `--model` 플래그는 부트스트랩 프롬프트보다
-앞에 주입된다(`<템플릿> --model '<값>' '<프롬프트>'`).
+The new session with context attached ([Details](session-context.md)) reuses the existing New Session dialog exactly, so the behavior of the Model dropdown (list source, default selection, missing handling) is also identically maintained without changes. The `--model` flag of the selected model is injected before the bootstrap prompt (`<template> --model '<value>' '<prompt>'`).
