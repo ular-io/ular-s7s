@@ -60,6 +60,10 @@ pub enum UiMode {
     ProfileDirConfirm,
     /// New session creation dialog (profile selection + folder lookup/input). Accessible globally via Ctrl+N.
     NewSession,
+    /// Project folder creation confirmation modal shown when the New Session folder input is a
+    /// bare name (no path separator) with no matching folder under `config::projects_dir()`.
+    /// Create makes the folder and starts the session; Cancel returns to the New Session dialog.
+    ProjectDirConfirm,
     /// `:`/`!` Quick Command window (palette: incremental search and command trigger;
     /// terminal: shell command input with history in the selected session's folder).
     QuickCommand,
@@ -550,7 +554,10 @@ pub struct App {
     /// Target profile index pending deletion.
     pub pending_profile_delete: Option<usize>,
     /// Focused button in the config directory creation confirmation modal: OK (true) or Cancel (false).
+    /// Shared by ProfileDirConfirm and ProjectDirConfirm (only one confirm modal is open at a time).
     pub dir_create_ok_focused: bool,
+    /// Project folder pending creation (present when mode == ProjectDirConfirm).
+    pub project_dir_pending: Option<PathBuf>,
     /// Active new session folder input/select dialog (present when mode == NewSession).
     pub new_session: Option<NewSessionState>,
     /// Active Quick Command palette state (present when mode == QuickCommand).
@@ -644,6 +651,7 @@ impl App {
             profile_form: None,
             pending_profile_delete: None,
             dir_create_ok_focused: false,
+            project_dir_pending: None,
             new_session: None,
             quick: None,
             theme: crate::theme::current(),
@@ -1294,6 +1302,33 @@ impl App {
         }
     }
 
+    fn cancel_project_dir_create(&mut self) {
+        self.project_dir_pending = None;
+        self.mode = UiMode::NewSession;
+    }
+
+    /// Confirms project folder creation: creates the pending folder under
+    /// `config::projects_dir()` and starts the session in it with the profile/model/context
+    /// already selected in the New Session dialog.
+    fn confirm_project_dir_create(&mut self) {
+        let Some(path) = self.project_dir_pending.take() else {
+            self.mode = UiMode::NewSession;
+            return;
+        };
+        // Validation/creation failures must land back in the dialog.
+        self.mode = UiMode::NewSession;
+        let cwd = match std::fs::create_dir_all(&path).and_then(|_| fs::canonicalize(&path)) {
+            Ok(cwd) => cwd,
+            Err(e) => {
+                if let Some(state) = self.new_session.as_mut() {
+                    state.error = Some(format!("failed to create folder: {e}"));
+                }
+                return;
+            }
+        };
+        self.start_new_session_at(cwd);
+    }
+
     /// Opens profile deletion confirmation modal. Blocked for built-in profiles.
     fn open_profile_delete(&mut self) {
         let Some(p) = self.profiles.profiles.get(self.profile_selected) else {
@@ -1552,7 +1587,20 @@ impl App {
             state.error = Some("Select a folder first".to_string());
             return;
         }
-        let path = resolve_input_path(raw);
+        // Bare project name: resolved under `config::projects_dir()` only (never relative to
+        // the process cwd). A missing folder is a creation candidate, not an error.
+        let bare = is_bare_project_name(raw);
+        let path = if bare {
+            crate::config::projects_dir().join(raw)
+        } else {
+            resolve_input_path(raw)
+        };
+        if bare && !path.exists() {
+            self.project_dir_pending = Some(path);
+            self.dir_create_ok_focused = true; // Default focus to Create (creation is the natural workflow).
+            self.mode = UiMode::ProjectDirConfirm;
+            return;
+        }
         let cwd = match fs::canonicalize(&path) {
             Ok(path) if path.is_dir() => path,
             Ok(_) => {
@@ -1563,6 +1611,16 @@ impl App {
                 state.error = Some(format!("Cannot open path: {err}"));
                 return;
             }
+        };
+        self.start_new_session_at(cwd);
+    }
+
+    /// Validates profile/model/context and issues the `NewSessionRequest` for a resolved
+    /// `cwd`. Validation failures surface on the dialog state (mode must be NewSession).
+    fn start_new_session_at(&mut self, cwd: PathBuf) {
+        let Some(state) = self.new_session.as_mut() else {
+            self.mode = UiMode::Table;
+            return;
         };
 
         // Prevent execution if placeholder missing model is selected.
@@ -2680,6 +2738,29 @@ impl App {
         }
     }
 
+    pub fn on_key_project_dir_confirm(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char('h')
+            | KeyCode::Char('l') => {
+                self.dir_create_ok_focused = !self.dir_create_ok_focused;
+            }
+            KeyCode::Enter => {
+                if self.dir_create_ok_focused {
+                    self.confirm_project_dir_create();
+                } else {
+                    self.cancel_project_dir_create();
+                }
+            }
+            KeyCode::Esc => self.cancel_project_dir_create(),
+            _ => {}
+        }
+    }
+
     /// Handles key inputs in the new session creation dialog (profile, model, and folder dropdown controls).
     ///
     /// - Tab/Shift+Tab: Cycles focus through Profile → Model → Folder → OK → Cancel.
@@ -3181,6 +3262,12 @@ impl NewSessionState {
     }
 }
 
+/// Bare project name: no path separator and no `~` prefix (dots and spaces allowed).
+/// Such input resolves under `config::projects_dir()` instead of the process cwd.
+fn is_bare_project_name(raw: &str) -> bool {
+    !raw.starts_with('~') && !raw.chars().any(std::path::is_separator)
+}
+
 fn resolve_input_path(raw: &str) -> PathBuf {
     let path = crate::config::expand(raw);
     if path.is_absolute() {
@@ -3218,7 +3305,8 @@ fn next_char_boundary(s: &str, cursor: usize) -> usize {
 mod tests {
     use super::quick::QuickMode;
     use super::{
-        App, DetailFocus, Focus, MessageKind, NewSessionFocus, Screen, TerminalKind, UiMode,
+        is_bare_project_name, App, DetailFocus, Focus, MessageKind, NewSessionFocus, Screen,
+        TerminalKind, UiMode,
     };
     use crate::config::Config;
     use crate::model::{Agent, Session};
@@ -4700,6 +4788,91 @@ mod tests {
         assert!(app.new_session_request.is_none());
         let state = app.new_session.as_ref().expect("dialog stays open");
         assert_eq!(state.error.as_deref(), Some("Select a folder first"));
+    }
+
+    #[test]
+    fn bare_project_name_detection() {
+        assert!(is_bare_project_name("myproj"));
+        assert!(is_bare_project_name("my.proj"));
+        assert!(is_bare_project_name("my proj"));
+        assert!(!is_bare_project_name("foo/bar"));
+        assert!(!is_bare_project_name("./foo"));
+        assert!(!is_bare_project_name("~/foo"));
+        assert!(!is_bare_project_name("~foo"));
+    }
+
+    #[test]
+    fn new_session_bare_name_missing_opens_project_dir_confirm_and_cancel_returns() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        let name = format!("s7s-test-missing-project-{}", std::process::id());
+        app.new_session.as_mut().unwrap().input.value = name.clone();
+        app.confirm_new_session();
+
+        assert_eq!(app.mode, UiMode::ProjectDirConfirm);
+        assert!(app.dir_create_ok_focused);
+        assert_eq!(
+            app.project_dir_pending.as_deref(),
+            Some(crate::config::projects_dir().join(&name).as_path())
+        );
+        assert!(app.new_session_request.is_none());
+
+        // Cancel returns to the New Session dialog with the typed name kept.
+        app.on_key_project_dir_confirm(key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.mode, UiMode::NewSession);
+        assert!(app.project_dir_pending.is_none());
+        assert_eq!(app.new_session.as_ref().unwrap().input.value, name);
+        assert!(app.new_session_request.is_none());
+    }
+
+    #[test]
+    fn project_dir_create_makes_folder_and_starts_session() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        // Pending path stands in for projects_dir()/<name> so the test never
+        // touches the real user config directory.
+        let dir =
+            std::env::temp_dir().join(format!("s7s-test-project-create-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        app.project_dir_pending = Some(dir.clone());
+        app.mode = UiMode::ProjectDirConfirm;
+        app.dir_create_ok_focused = true;
+
+        app.on_key_project_dir_confirm(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(dir.is_dir());
+        let req = app.new_session_request.as_ref().expect("request issued");
+        assert_eq!(req.cwd, std::fs::canonicalize(&dir).unwrap());
+        assert_eq!(app.mode, UiMode::Table);
+        assert!(app.new_session.is_none());
+        assert!(app.project_dir_pending.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_session_missing_path_input_still_errors() {
+        let mut app = app_with_profiles();
+        app.screen = Screen::Profile;
+        app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+        // Path-form input (contains a separator) must keep the current error behavior
+        // instead of offering project creation.
+        app.new_session.as_mut().unwrap().input.value =
+            "/definitely/missing/s7s-path".to_string();
+        app.confirm_new_session();
+
+        assert_eq!(app.mode, UiMode::NewSession);
+        assert!(app.project_dir_pending.is_none());
+        assert!(app.new_session_request.is_none());
+        let state = app.new_session.as_ref().expect("dialog stays open");
+        assert!(state
+            .error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("Cannot open path")));
     }
 
     #[test]

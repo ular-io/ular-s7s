@@ -197,6 +197,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         UiMode::ProfileDeleteConfirm => draw_profile_delete_confirm(f, app),
         UiMode::ProfileDirConfirm => draw_profile_dir_confirm(f, app),
         UiMode::NewSession => draw_new_session_modal(f, app),
+        UiMode::ProjectDirConfirm => draw_project_dir_confirm(f, app),
         UiMode::QuickCommand => draw_quick_command(f, app),
         UiMode::ThemeSelect => draw_theme_select(f, app),
         UiMode::Help => draw_help(f, app),
@@ -1403,6 +1404,61 @@ fn draw_profile_dir_confirm(f: &mut Frame, app: &App) {
             th.soft_dim(),
         )));
     }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new(content).wrap(Wrap { trim: false }), rows[0]);
+
+    let (focused_style, unfocused) = button_styles(th);
+    let (ok_style, cancel_style) = if app.dir_create_ok_focused {
+        (focused_style, unfocused)
+    } else {
+        (unfocused, focused_style)
+    };
+    let buttons = Line::from(vec![
+        Span::styled("  Create  ", ok_style),
+        Span::raw("     "),
+        Span::styled("  Cancel  ", cancel_style),
+    ]);
+    f.render_widget(
+        Paragraph::new(buttons).alignment(Alignment::Center),
+        rows[2],
+    );
+}
+
+/// Confirmation modal for creating a new project folder under `config::projects_dir()`
+/// when the New Session folder input is a bare name with no existing folder.
+/// Create makes the folder and starts the session; Cancel returns to the dialog.
+fn draw_project_dir_confirm(f: &mut Frame, app: &App) {
+    let th = &app.theme;
+    let path_str = app
+        .project_dir_pending
+        .as_ref()
+        .map(|p| display_path(p))
+        .unwrap_or_else(|| "?".to_string());
+
+    let area = centered_fixed_rect(70, 8, f.area());
+    let block =
+        modal_block(" Create Project Folder ", th.warning).padding(Padding::new(1, 1, 1, 0));
+    let inner = render_modal(f, area, block, th);
+    let inner_w = inner.width as usize;
+
+    let content = vec![
+        Line::from(Span::styled(
+            truncate_w(&path_str, inner_w),
+            Style::default().fg(th.warning).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "This folder does not exist. Create it and start the session?",
+            th.soft_dim(),
+        )),
+    ];
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -3614,6 +3670,7 @@ mod tests {
             UiMode::ProfileDeleteConfirm,
             UiMode::ProfileDirConfirm,
             UiMode::NewSession,
+            UiMode::ProjectDirConfirm,
             UiMode::QuickCommand,
             UiMode::Message,
         ] {

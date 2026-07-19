@@ -287,6 +287,7 @@ fn dispatch_event(app: &mut App, ev: Event) {
                 UiMode::ProfileDeleteConfirm => app.on_key_profile_delete_confirm(key),
                 UiMode::ProfileDirConfirm => app.on_key_profile_dir_confirm(key),
                 UiMode::NewSession => app.on_key_new_session(key),
+                UiMode::ProjectDirConfirm => app.on_key_project_dir_confirm(key),
                 UiMode::QuickCommand => app.on_key_quick(key),
                 UiMode::ThemeSelect => app.on_key_theme_select(key),
                 UiMode::Help => app.on_key_help(key),

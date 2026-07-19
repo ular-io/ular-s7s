@@ -158,6 +158,12 @@ pub(crate) fn config_file_path() -> PathBuf {
     config_base_dir().join("config.toml")
 }
 
+/// Root for user project folders created from the New Session dialog when a
+/// bare name (no path separator, no `~` prefix) is entered: `~/.config/s7s/projects`.
+pub(crate) fn projects_dir() -> PathBuf {
+    config_base_dir().join("projects")
+}
+
 /// Seed template written by `Edit Config` when config.toml is missing or blank.
 /// Every key is commented out showing its built-in default, so the file documents
 /// itself without pinning any value (commented keys never override defaults).
