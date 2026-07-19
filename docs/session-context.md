@@ -32,6 +32,12 @@ src/handoff.rs      HandoffTurn compatibility adapter + Markdown exporter (share
 src/session_cli.rs  Execute `s7s session` subcommand (clap)
 ```
 
+`load()` strips the trailing `AssistantText` entry from each turn when it is a
+verbatim echo of `last_assistant_text` (the parsers record every assistant text
+in both places). Work entries therefore hold intermediate work only, and every
+consumer (TUI Detail, handoff Markdown, CLI `--turn`) renders the final answer
+exactly once. Earlier mid-turn repetitions of the same text are kept.
+
 ## Turn Parity Invariants
 
 List Q count == Detail screen turn number == CLI turn number.

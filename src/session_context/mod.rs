@@ -42,7 +42,7 @@ pub fn load(session: &Session) -> SessionContext {
         cwd: session.cwd.clone(),
     };
 
-    let (turns, completeness) = match parse_detailed(session) {
+    let (mut turns, completeness) = match parse_detailed(session) {
         // Antigravity transcripts rotate: a "full" transcript can start mid-session
         // (observed: transcript_full.jsonl beginning at step_index 125). When the
         // transcript carries fewer turns than the DB-derived list, fall back to
@@ -66,10 +66,36 @@ pub fn load(session: &Session) -> SessionContext {
         }
     };
 
+    for turn in &mut turns {
+        strip_final_answer_echo(turn);
+    }
+
     SessionContext {
         source,
         completeness,
         turns,
+    }
+}
+
+/// Removes the last `AssistantText` entry when it is a verbatim echo of
+/// `last_assistant_text`. The parsers record every assistant text both as a
+/// work entry and as the turn's last assistant text, so without this pass the
+/// final answer is rendered twice by every consumer (TUI Detail, handoff
+/// Markdown, CLI `--turn`). Earlier assistant texts — including ones that
+/// happen to repeat the final answer mid-turn — are kept as genuine
+/// intermediate work.
+fn strip_final_answer_echo(turn: &mut ContextTurn) {
+    let Some(answer) = turn.last_assistant_text.as_deref() else {
+        return;
+    };
+    if let Some(idx) = turn
+        .entries
+        .iter()
+        .rposition(|e| e.kind == ContextEntryKind::AssistantText)
+    {
+        if turn.entries[idx].text == answer {
+            turn.entries.remove(idx);
+        }
     }
 }
 
@@ -282,6 +308,84 @@ fn trim_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(kind: ContextEntryKind, text: &str) -> ContextEntry {
+        ContextEntry {
+            kind,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn strip_final_answer_echo_removes_trailing_duplicate() {
+        let mut turn = ContextTurn {
+            user: "질문".to_string(),
+            last_assistant_text: Some("최종 답변".to_string()),
+            entries: vec![
+                entry(ContextEntryKind::AssistantText, "중간 설명"),
+                entry(ContextEntryKind::ToolCall, "cargo test"),
+                entry(ContextEntryKind::AssistantText, "최종 답변"),
+            ],
+        };
+        strip_final_answer_echo(&mut turn);
+        assert_eq!(turn.entries.len(), 2);
+        assert!(turn.entries.iter().all(|e| e.text != "최종 답변"));
+        assert_eq!(turn.last_assistant_text.as_deref(), Some("최종 답변"));
+    }
+
+    #[test]
+    fn strip_final_answer_echo_removes_even_when_tools_follow() {
+        // task-notification flow: the last assistant text is not the last entry.
+        let mut turn = ContextTurn {
+            user: "질문".to_string(),
+            last_assistant_text: Some("답변".to_string()),
+            entries: vec![
+                entry(ContextEntryKind::AssistantText, "답변"),
+                entry(ContextEntryKind::ToolResult, "<task-notification>done"),
+            ],
+        };
+        strip_final_answer_echo(&mut turn);
+        assert_eq!(turn.entries.len(), 1);
+        assert_eq!(turn.entries[0].kind, ContextEntryKind::ToolResult);
+    }
+
+    #[test]
+    fn strip_final_answer_echo_keeps_earlier_identical_text() {
+        // A mid-turn repetition of the final answer text is genuine work; only
+        // the trailing echo (the entry that produced last_assistant_text) goes.
+        let mut turn = ContextTurn {
+            user: "질문".to_string(),
+            last_assistant_text: Some("같은 문장".to_string()),
+            entries: vec![
+                entry(ContextEntryKind::AssistantText, "같은 문장"),
+                entry(ContextEntryKind::ToolCall, "ls"),
+                entry(ContextEntryKind::AssistantText, "같은 문장"),
+            ],
+        };
+        strip_final_answer_echo(&mut turn);
+        assert_eq!(turn.entries.len(), 2);
+        assert_eq!(turn.entries[0].kind, ContextEntryKind::AssistantText);
+        assert_eq!(turn.entries[0].text, "같은 문장");
+    }
+
+    #[test]
+    fn strip_final_answer_echo_no_op_without_match() {
+        let mut turn = ContextTurn {
+            user: "질문".to_string(),
+            last_assistant_text: None,
+            entries: vec![entry(ContextEntryKind::AssistantText, "텍스트")],
+        };
+        strip_final_answer_echo(&mut turn);
+        assert_eq!(turn.entries.len(), 1);
+
+        let mut turn = ContextTurn {
+            user: "질문".to_string(),
+            last_assistant_text: Some("다른 답".to_string()),
+            entries: vec![entry(ContextEntryKind::AssistantText, "텍스트")],
+        };
+        strip_final_answer_echo(&mut turn);
+        assert_eq!(turn.entries.len(), 1);
+    }
 
     /// Manual parity audit over the machine's real sessions: for every session
     /// whose detailed parse succeeds, the context turn count must equal the list

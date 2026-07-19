@@ -522,6 +522,8 @@ mod tests {
         );
         // Action records: answer text + tool_calls + tool execution results.
         // Excludes SYSTEM_MESSAGE; skipped ASK_QUESTION turns remain as ToolResult.
+        // The trailing assistant text equal to the final answer is stripped
+        // (rendered once as Final Answer instead of twice).
         let kinds: Vec<WorkKind> = turns[0].work_entries.iter().map(|e| e.kind).collect();
         assert_eq!(
             kinds,
@@ -529,7 +531,6 @@ mod tests {
                 WorkKind::AssistantText,
                 WorkKind::ToolCall,
                 WorkKind::ToolResult,
-                WorkKind::AssistantText,
                 WorkKind::ToolCall,
                 WorkKind::ToolResult,
                 WorkKind::ToolCall,
@@ -537,7 +538,7 @@ mod tests {
         );
         assert!(turns[0].work_entries[1].text.contains("glab repo list"));
         assert!(turns[0].work_entries[2].text.starts_with("[RUN_COMMAND]"));
-        assert!(turns[0].work_entries[5].text.contains("User Skipped"));
+        assert!(turns[0].work_entries[4].text.contains("User Skipped"));
 
         // Promoted Q&A turn: formatted as `· Question -> Answer`, matching the list view.
         assert_eq!(turns[1].user, "· 배포할까요? → 네 배포해주세요.");
@@ -637,6 +638,44 @@ mod tests {
             .work_entries
             .iter()
             .any(|e| e.kind == WorkKind::ToolResult && e.text.contains("<task-notification>")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn claude_final_answer_is_not_duplicated_as_work_entry() {
+        // Regression: a plain text-only reply used to appear both as
+        // "Assistant Text 1" and as "Final Answer" on the Detail screen.
+        let root = std::env::temp_dir().join(format!(
+            "s7s-claude-final-echo-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let path = root.join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"안녕"}}"#, "\n",
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"안녕하세요. 무엇을 도와드릴까요?"}]}}"#, "\n",
+            ),
+        )
+        .expect("write claude jsonl");
+
+        let mut s = session(vec!["안녕"]);
+        s.agent = Agent::Claude;
+        s.source_path = Some(path);
+
+        let turns = load_turns(&s);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].final_answer.as_deref(),
+            Some("안녕하세요. 무엇을 도와드릴까요?")
+        );
+        assert!(turns[0].work_entries.is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }
