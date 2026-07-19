@@ -2765,8 +2765,8 @@ impl App {
     ///
     /// - Tab/Shift+Tab: Cycles focus through Profile → Model → Folder → OK → Cancel.
     ///   Closes open dropdowns, committing the active cursor selection first (commit-then-move).
-    /// - ↑/↓: Closed dropdowns → moves focus vertically (stops at bounds, enters buttons row focusing OK first).
-    ///   cycles through dropdown items if open.
+    /// - ↑/↓: Closed dropdowns → rotates focus vertically (wraps at bounds like Tab,
+    ///   enters buttons row focusing OK first). Cycles through dropdown items if open.
     /// - Enter: closed -> opens dropdown list (if Buttons, executes: OK=start, Cancel=cancel) /
     ///   open -> commits cursor selection and closes dropdown.
     /// - Space: open -> commits selection but keeps dropdown open (folders are instantly reflected in input).
@@ -3175,8 +3175,9 @@ impl NewSessionState {
     }
 
     /// ↑/↓ (closed dropdowns): Moves focus vertically between rows.
-    /// Cycles through Profile (0) ↔ Model (1) ↔ Folder (2) ↔ Buttons (3) clamping at bounds.
-    /// Moves vertically matching TUI layout (unlike Tab). Entering button row focuses OK first.
+    /// Rotates through Profile (0) ↔ Model (1) ↔ Folder (2) ↔ Buttons (3), wrapping at
+    /// bounds like Tab. Unlike Tab, the button row is a single vertical stop (OK/Cancel
+    /// share a row); entering it focuses OK first.
     fn move_focus_vertical(&mut self, delta: isize) {
         let cur = match self.focus {
             NewSessionFocus::Profile => 0isize,
@@ -3185,7 +3186,7 @@ impl NewSessionState {
             NewSessionFocus::Buttons => 3,
         };
         let was_buttons = matches!(self.focus, NewSessionFocus::Buttons);
-        self.focus = match (cur + delta).clamp(0, 3) {
+        self.focus = match (cur + delta).rem_euclid(4) {
             0 => NewSessionFocus::Profile,
             1 => NewSessionFocus::Model,
             2 => NewSessionFocus::Folder,
@@ -4928,14 +4929,22 @@ mod tests {
             app.new_session.as_ref().unwrap().focus,
             NewSessionFocus::Buttons
         );
-        // Down key at bottom clamps (no wrapping).
+        // Down key at bottom wraps back to the top (rotation, like Tab).
         app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(
             app.new_session.as_ref().unwrap().focus,
-            NewSessionFocus::Buttons
+            NewSessionFocus::Profile
         );
 
-        // Up key: Buttons -> Folder -> Model -> Profile, clamping at top.
+        // Up key at top wraps to the button row, focusing OK first.
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
+        {
+            let state = app.new_session.as_ref().unwrap();
+            assert_eq!(state.focus, NewSessionFocus::Buttons);
+            assert!(state.ok_focused);
+        }
+
+        // Up key: Buttons -> Folder -> Model -> Profile.
         app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(
             app.new_session.as_ref().unwrap().focus,
@@ -4946,7 +4955,6 @@ mod tests {
             app.new_session.as_ref().unwrap().focus,
             NewSessionFocus::Model
         );
-        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
         app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(
             app.new_session.as_ref().unwrap().focus,
