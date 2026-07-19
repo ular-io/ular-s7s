@@ -88,7 +88,7 @@ struct Cli {
 enum CliCommand {
     /// Read context from a previous session
     Session(session_cli::SessionArgs),
-    /// Run s7s in demo mode using mock English sessions
+    /// Run s7s in demo mode using mock English sessions (disposable sandbox under the OS cache dir)
     Demo,
 }
 
@@ -97,7 +97,7 @@ fn main() -> Result<()> {
 
     if let Some(CliCommand::Demo) = &cli.command {
         config::set_demo_mode(true);
-        demo::ensure_demo_sandbox()?;
+        demo::ensure_demo_sandbox(&config::demo_root())?;
     }
 
     // Session CLI mode: no TUI, no scan spinner; context to stdout, errors to stderr.

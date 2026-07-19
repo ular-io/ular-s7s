@@ -17,8 +17,3 @@
 .claude*
 .codex*
 
-# Demo mode temporary folders
-/example/cache/
-/example/config/
-/example/sessions/
-

@@ -50,12 +50,33 @@ Therefore, whenever an agent CLI is upgraded, the implementation must be reverif
 3. If successful, trust the result
 4. If failed, update the meta JSON + manually append the JSONL event
 
+### Read precedence
+
+Body events are the authoritative title source; the meta file is a fallback only:
+
+1. body `custom-title` (explicit `/rename`)
+2. body `agent-name`
+3. body `ai-title`
+4. meta `name` (applied only when no body-derived title exists — both at parse
+   time and on cache-hit refreshes, so a stale meta name can never clobber a
+   body title)
+
+`nameSource` marks the title as fixed only for explicit sources (`custom`,
+`user`). `derived`/`auto`/missing sources are not fixed: the CLI writes auto
+names with no `nameSource` at times, including degenerate ones (the session id
+used as the name), and non-fixed titles go through the bad-auto-title fallback
+in `title::resolve`.
+
 ### Verified behavior
 
 - `--name` leaves title events even in non-interactive environments.
 - The `/rename ...` prompt does not currently work in the print environment.
 - Calling only `--name` without a prompt may fail if there are no deferred markers.
 - Thus, the current implementation determines success based on whether the actual file changed after calling `--name`.
+- (2026-07-19) `claude --resume <id> --name <t> -p --output-format json` writes
+  both `custom-title` and `agent-name` body events but does **not**
+  create/update `~/.claude/sessions/<id>.json`; the meta file comes from s7s's
+  fallback rename and from CLI auto naming.
 
 ### Failure modes
 

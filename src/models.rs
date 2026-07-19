@@ -163,6 +163,47 @@ fn models_file_path() -> PathBuf {
     config_base_dir().join("models.json")
 }
 
+/// Static demo-mode model list per agent for the New Session dropdown.
+fn demo_models(agent: Agent) -> ProfileModels {
+    let entry = |value: &str, label: &str, note: &str| ModelEntry {
+        value: value.to_string(),
+        label: label.to_string(),
+        note: note.to_string(),
+    };
+    let (models, default_model) = match agent {
+        Agent::Claude => (
+            vec![
+                entry("fable", "Fable", "Most intelligent for complex work"),
+                entry("opus", "Opus", "Powerful all-round model"),
+                entry("sonnet", "Sonnet", "Balanced speed and capability"),
+                entry("haiku", "Haiku", "Fastest for simple tasks"),
+            ],
+            Some("fable"),
+        ),
+        Agent::Codex => (
+            vec![
+                entry("gpt-5.3-codex", "gpt-5.3-codex", "default"),
+                entry("gpt-5.3-codex-mini", "gpt-5.3-codex-mini", "faster, lighter"),
+            ],
+            Some("gpt-5.3-codex"),
+        ),
+        Agent::Antigravity => (
+            vec![
+                entry("Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (High)", ""),
+                entry("Gemini 3.1 Pro (Low)", "Gemini 3.1 Pro (Low)", ""),
+                entry("Gemini 3 Flash", "Gemini 3 Flash", ""),
+            ],
+            Some("Gemini 3.1 Pro (High)"),
+        ),
+    };
+    ProfileModels {
+        agent,
+        cli_version: Some("demo".to_string()),
+        models,
+        default_model: default_model.map(String::from),
+    }
+}
+
 /// Starts concurrent querying of model lists for profiles and returns a receiver channel of (profile_id, ModelsResult).
 ///
 /// Profiles where `cached_versions` (profile ID -> cached CLI version) matches the current `--version`
@@ -174,6 +215,15 @@ pub fn spawn_fetch(
     force: bool,
 ) -> Receiver<(String, ModelsResult)> {
     let (tx, rx) = mpsc::channel();
+    // Demo mode: static plausible model lists; never spawn CLI processes
+    // (`--version` checks included) so the sandbox stays side-effect free.
+    if crate::config::is_demo_mode() {
+        for profile in targets {
+            let models = demo_models(profile.agent);
+            let _ = tx.send((profile.id, ModelsResult::Ready(models)));
+        }
+        return rx;
+    }
     thread::spawn(move || {
         // Query the CLI version for each agent only once (low cost, but avoids repeating for each profile).
         let mut versions: HashMap<Agent, Option<String>> = HashMap::new();

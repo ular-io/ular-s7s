@@ -148,6 +148,27 @@ impl UsageState {
     }
 }
 
+/// Static demo-mode snapshot per agent (all profiles read as logged-in with realistic numbers).
+fn demo_usage(agent: Agent) -> UsageResult {
+    let window = |pct_left: u8, days: u16, hours: u8, minutes: u8| UsageWindow {
+        pct_left,
+        reset: Some(ResetCountdown {
+            days,
+            hours,
+            minutes,
+        }),
+    };
+    let (current, weekly) = match agent {
+        Agent::Claude => (window(72, 0, 2, 40), window(48, 3, 6, 0)),
+        Agent::Codex => (window(64, 0, 4, 15), window(81, 2, 12, 30)),
+        Agent::Antigravity => (window(89, 0, 1, 5), window(57, 5, 3, 20)),
+    };
+    UsageResult::Ready(UsageSnapshot {
+        current: Some(current),
+        weekly: Some(weekly),
+    })
+}
+
 /// Minimum duration to show the Loading state so that users can perceive that a check has occurred.
 const MIN_LOADING: Duration = Duration::from_millis(500);
 
@@ -207,6 +228,12 @@ pub fn probe() {
 /// instantly (0.4~0.5s), requiring stabilization via `min_wait`, whereas agy shows `? for shortcuts` only when
 /// ready (~3.1s), meaning the marker itself serves as a gate even if `min_wait` is zero.
 fn fetch(profile: &Profile) -> UsageResult {
+    // Demo mode: return static plausible snapshots without launching real CLIs.
+    // A real fetch would inject the sandbox path via CLAUDE_CONFIG_DIR/CODEX_HOME,
+    // show logged-out states, and could let the CLI write state files into the sandbox.
+    if crate::config::is_demo_mode() {
+        return demo_usage(profile.agent);
+    }
     // Verifying folder existence and query availability is part of the query process - determined
     // here only during explicit updates (avoiding auto-detection during rendering) and stored in the phase.
     if !profile.path.is_dir() {

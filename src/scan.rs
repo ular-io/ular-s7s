@@ -21,11 +21,16 @@ pub struct ScanResult {
 /// (as per spec to show all sessions). If `rebuild_cache` is `true`, it ignores the existing
 /// cache completely and re-parses all files.
 pub fn scan(profiles: &[Profile], rebuild_cache: bool) -> ScanResult {
-    let cache_path = config::cache_path();
+    scan_at(profiles, rebuild_cache, &config::cache_path())
+}
+
+/// Same as `scan` but with an explicit cache file path. Split out so tests can
+/// scan generated fixtures without touching the user's real cache.
+pub(crate) fn scan_at(profiles: &[Profile], rebuild_cache: bool, cache_path: &Path) -> ScanResult {
     let old = if rebuild_cache {
         Cache::default()
     } else {
-        Cache::load(&cache_path)
+        Cache::load(cache_path)
     };
     let mut new = Cache::default();
 
@@ -38,7 +43,9 @@ pub fn scan(profiles: &[Profile], rebuild_cache: bool) -> ScanResult {
         match profile.agent {
             Agent::Claude => {
                 let dir = profile.sessions_dir();
-                let claude_meta = parser::claude::load_title_meta(&dir);
+                // Title meta lives under the profile root (`<root>/sessions/*.json`),
+                // not under the scanned `<root>/projects` tree.
+                let claude_meta = parser::claude::load_title_meta(&profile.path);
                 scan_jsonl_tree(
                     &dir,
                     &old,
@@ -91,7 +98,7 @@ pub fn scan(profiles: &[Profile], rebuild_cache: bool) -> ScanResult {
     // Sort by last modified time descending.
     sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
 
-    let _ = new.save(&cache_path);
+    let _ = new.save(cache_path);
 
     ScanResult {
         sessions,
@@ -136,7 +143,7 @@ fn scan_jsonl_tree<P, F>(
             Some(m) => m,
             None => continue,
         };
-        let ctime = file_ctime_ms(path).unwrap_or(mtime);
+        let ctime = file_ctime_ms(path, mtime);
         let size = file_size_bytes(path);
         let key = path.to_string_lossy().to_string();
 
@@ -171,7 +178,14 @@ fn apply_claude_title_meta(
         return;
     };
     for session in sessions {
-        session.title_hint = meta.title.clone().or_else(|| session.title_hint.clone());
+        // Body events (custom-title/agent-name/ai-title) are the authoritative
+        // claude title source; the meta json only fills the gap, mirroring
+        // parse_file's precedence. Every supported rename path also appends a
+        // body event (see docs/session-title-compat.md), so cache-hit refreshes
+        // must not let stale meta names clobber body-derived titles.
+        if session.title_hint.is_none() {
+            session.title_hint = meta.title.clone();
+        }
         session.title_fixed = session.title_fixed || meta.fixed;
         parser::reindex_search_blob(session);
     }
@@ -244,7 +258,7 @@ fn scan_antigravity(
             Some(m) => m,
             None => continue,
         };
-        let ctime = file_ctime_ms(path).unwrap_or(mtime);
+        let ctime = file_ctime_ms(path, mtime);
         let size = file_size_bytes(path);
         let key = path.to_string_lossy().to_string();
 
@@ -270,38 +284,23 @@ fn scan_antigravity(
 }
 
 fn file_mtime_ms(path: &Path) -> Option<i64> {
-    if crate::config::is_demo_mode() {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if let Some(pos) = stem.find("demo-session-") {
-                let idx_str = &stem[pos + "demo-session-".len()..];
-                if let Ok(idx) = idx_str.parse::<i64>() {
-                    return Some(1784430000000 - idx * 233280000); // 2.7 days per index, up to ~3 months
-                }
-            }
-        }
-    }
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
     let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
     Some(dur.as_millis() as i64)
 }
 
-/// Returns the file creation time (birth time) in epoch milliseconds. Returns None if not supported by the filesystem.
-fn file_ctime_ms(path: &Path) -> Option<i64> {
-    if crate::config::is_demo_mode() {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if let Some(pos) = stem.find("demo-session-") {
-                let idx_str = &stem[pos + "demo-session-".len()..];
-                if let Ok(idx) = idx_str.parse::<i64>() {
-                    return Some(1784430000000 - idx * 233280000);
-                }
-            }
-        }
-    }
-    let meta = std::fs::metadata(path).ok()?;
-    let created = meta.created().ok()?;
-    let dur = created.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some(dur.as_millis() as i64)
+/// Returns the file creation time (birth time) in epoch milliseconds, clamped to `mtime`:
+/// a session cannot have been created after its last modification, and birth time cannot be
+/// backdated the way mtime can (e.g. demo sandbox files), so mtime wins when it is earlier.
+/// Falls back to `mtime` if the filesystem does not support birth time.
+fn file_ctime_ms(path: &Path, mtime: i64) -> i64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.created().ok())
+        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|dur| (dur.as_millis() as i64).min(mtime))
+        .unwrap_or(mtime)
 }
 
 /// Returns the file size in bytes (0 if metadata is unavailable).
@@ -362,6 +361,91 @@ mod tests {
         // Enforce search matching by including renamed titles in the search blob, even if they are not in the body.
         assert!(sessions[0].search_blob.contains("타이틀"));
         assert!(sessions[0].search_blob.contains("첫 질문"));
+    }
+
+    fn claude_session(id: &str, title_hint: Option<&str>) -> Session {
+        Session {
+            agent: Agent::Claude,
+            profile_id: String::new(),
+            id: id.to_string(),
+            source_path: None,
+            cwd: "/tmp/demo".into(),
+            folder: "demo".to_string(),
+            mtime_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec!["첫 질문".to_string()],
+            search_blob: String::new(),
+            title_hint: title_hint.map(str::to_string),
+            title_fixed: false,
+        }
+    }
+
+    #[test]
+    fn apply_claude_title_meta_fills_gap_but_never_overrides_body_title() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "abc-123".to_string(),
+            parser::claude::TitleMeta {
+                title: Some("메타 제목".to_string()),
+                fixed: true,
+            },
+        );
+        let path = std::path::PathBuf::from("/tmp/x/abc-123.jsonl");
+
+        // Cached body-derived title wins over the meta name.
+        let mut sessions = vec![claude_session("abc-123", Some("본문 제목"))];
+        apply_claude_title_meta(&path, &mut sessions, &meta);
+        assert_eq!(sessions[0].title_hint.as_deref(), Some("본문 제목"));
+        assert!(sessions[0].title_fixed);
+
+        // Without a body title the meta name fills the gap (and enters the search blob).
+        let mut sessions = vec![claude_session("abc-123", None)];
+        apply_claude_title_meta(&path, &mut sessions, &meta);
+        assert_eq!(sessions[0].title_hint.as_deref(), Some("메타 제목"));
+        assert!(sessions[0].search_blob.contains("메타 제목"));
+    }
+
+    #[test]
+    fn scan_loads_claude_title_meta_from_profile_root() {
+        // Meta lives at `<root>/sessions/*.json` while bodies live under
+        // `<root>/projects/...` — regression for passing the projects dir to
+        // load_title_meta (which made the meta fallback unreachable).
+        let root = std::env::temp_dir().join(format!(
+            "s7s-scan-title-meta-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let project_dir = root.join("projects/-tmp-app");
+        std::fs::create_dir_all(&project_dir).expect("create projects");
+        std::fs::create_dir_all(root.join("sessions")).expect("create sessions");
+        std::fs::write(
+            project_dir.join("abc-123.jsonl"),
+            "{\"uuid\":\"u1\",\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"첫 질문\"},\"cwd\":\"/tmp/app\"}\n",
+        )
+        .expect("write body");
+        std::fs::write(
+            root.join("sessions/abc-123.json"),
+            r#"{"sessionId":"abc-123","name":"메타 제목","nameSource":"custom"}"#,
+        )
+        .expect("write meta");
+
+        let profiles = vec![crate::profile::Profile {
+            id: "t".to_string(),
+            agent: Agent::Claude,
+            name: "t".to_string(),
+            path: root.clone(),
+            oauth_token: None,
+            active: true,
+            shortcut: None,
+            builtin: false,
+        }];
+        let result = scan_at(&profiles, true, &root.join("index.bin"));
+        assert_eq!(result.sessions.len(), 1);
+        assert_eq!(result.sessions[0].title(), "메타 제목");
+        assert!(result.sessions[0].title_fixed);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

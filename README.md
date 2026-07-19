@@ -71,7 +71,7 @@ cp target/release/s7s ~/bin/   # Copy to your desired PATH location
 
 ```bash
 s7s                         # Run TUI
-s7s demo                    # Run TUI in demo mode using mock English sessions (generates mock sandbox under project 'example' folder)
+s7s demo                    # Run TUI in demo mode using mock English sessions (disposable sandbox under the OS cache dir, e.g. macOS ~/Library/Caches/s7s/demo)
 s7s session <SESSION_ID>    # View past session context (no TUI, see below)
 s7s --rebuild-cache         # Force rebuild the entire session cache
 s7s --print                 # Print the session list only, without TUI (debug)

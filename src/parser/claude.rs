@@ -54,9 +54,14 @@ pub fn load_title_meta(cli_dir: &Path) -> HashMap<String, TitleMeta> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let fixed = !matches!(
+        // Only explicit sources mark the title as fixed: every supported rename
+        // path writes "custom" (real meta files carry "custom"/"derived"/absent).
+        // Treating a missing nameSource as fixed would let degenerate CLI auto
+        // names (e.g. the session id used as the name) bypass the bad-auto-title
+        // fallback in title::resolve.
+        let fixed = matches!(
             v.get("nameSource").and_then(Value::as_str),
-            Some("derived") | Some("auto")
+            Some("custom") | Some("user")
         );
         out.insert(id, TitleMeta { title, fixed });
     }
@@ -276,6 +281,35 @@ fn folder_name(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn title_meta_fixed_only_for_explicit_name_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "s7s-claude-meta-fixed-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions");
+        std::fs::create_dir_all(&dir).expect("create sessions dir");
+        for (file, body) in [
+            ("a.json", r#"{"sessionId":"id-custom","name":"제목","nameSource":"custom"}"#),
+            ("b.json", r#"{"sessionId":"id-user","name":"제목","nameSource":"user"}"#),
+            ("c.json", r#"{"sessionId":"id-derived","name":"ular-s7s-2b","nameSource":"derived"}"#),
+            ("d.json", r#"{"sessionId":"id-none","name":"4a72d37c"}"#),
+        ] {
+            std::fs::write(dir.join(file), body).expect("write meta");
+        }
+
+        let meta = load_title_meta(&root);
+        assert!(meta.get("id-custom").expect("custom").fixed);
+        assert!(meta.get("id-user").expect("user").fixed);
+        assert!(!meta.get("id-derived").expect("derived").fixed);
+        // Missing nameSource must not be fixed: degenerate CLI auto names
+        // (session id as name) would otherwise bypass the bad-auto-title fallback.
+        assert!(!meta.get("id-none").expect("none").fixed);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn extracts_question_answers_from_tool_use_result() {
