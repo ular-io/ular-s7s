@@ -270,6 +270,16 @@ fn scan_antigravity(
 }
 
 fn file_mtime_ms(path: &Path) -> Option<i64> {
+    if crate::config::is_demo_mode() {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if let Some(pos) = stem.find("demo-session-") {
+                let idx_str = &stem[pos + "demo-session-".len()..];
+                if let Ok(idx) = idx_str.parse::<i64>() {
+                    return Some(1784430000000 - idx * 233280000); // 2.7 days per index, up to ~3 months
+                }
+            }
+        }
+    }
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
     let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -278,6 +288,16 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
 
 /// Returns the file creation time (birth time) in epoch milliseconds. Returns None if not supported by the filesystem.
 fn file_ctime_ms(path: &Path) -> Option<i64> {
+    if crate::config::is_demo_mode() {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if let Some(pos) = stem.find("demo-session-") {
+                let idx_str = &stem[pos + "demo-session-".len()..];
+                if let Ok(idx) = idx_str.parse::<i64>() {
+                    return Some(1784430000000 - idx * 233280000);
+                }
+            }
+        }
+    }
     let meta = std::fs::metadata(path).ok()?;
     let created = meta.created().ok()?;
     let dur = created.duration_since(std::time::UNIX_EPOCH).ok()?;

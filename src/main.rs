@@ -2,6 +2,7 @@
 
 mod cache;
 mod config;
+mod demo;
 mod filter;
 mod handoff;
 mod model;
@@ -87,10 +88,17 @@ struct Cli {
 enum CliCommand {
     /// Read context from a previous session
     Session(session_cli::SessionArgs),
+    /// Run s7s in demo mode using mock English sessions
+    Demo,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(CliCommand::Demo) = &cli.command {
+        config::set_demo_mode(true);
+        demo::ensure_demo_sandbox()?;
+    }
 
     // Session CLI mode: no TUI, no scan spinner; context to stdout, errors to stderr.
     if let Some(CliCommand::Session(args)) = &cli.command {

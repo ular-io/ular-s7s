@@ -1,6 +1,8 @@
 /target
+/dist
 
-# 로컬 작업 산물(에이전트 하니스·수동 검증 샘플)
+
+# Local work artifacts (agent harnesses, manual verification samples)
 /.agents/
 /handoff-samples/
 /skills-lock.json
@@ -14,3 +16,9 @@
 /.codex/
 .claude*
 .codex*
+
+# Demo mode temporary folders
+/example/cache/
+/example/config/
+/example/sessions/
+
