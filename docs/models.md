@@ -35,11 +35,21 @@ Design for querying, caching, and injecting the "selectable models list" to be d
 
 - Control order (tab/↑↓): Profile → **Model** → Folder → OK/Cancel. Modal height 14 lines.
 - Dropdown 0 is always **Default** (no `--model` injection — uses the CLI's own default model).
-- Initial selection = The default model in the CLI configuration. If not in the list, a **missing placeholder item** (red, "not in the fetched model list") is selected, and **OK is disabled** — the user must choose another item (including Default) to execute (to prevent quietly executing typos/stale configurations).
+- **Initial selection priority: last launched pick → CLI-configured default → missing placeholder.**
+  - **Last pick (`last_selected`)**: the model the user last launched a new session with for this profile (see "Last-selected memory" below). Wins when it is still present in the fetched list. A remembered **Default** pick selects Default (index 0). A remembered model that is no longer in the list (e.g. removed after a CLI upgrade) is skipped and falls through to the CLI default — it never produces a placeholder.
+  - **CLI default (`default_model`)**: used when there is no usable last pick. If it is not in the list, a **missing placeholder item** (red, "not in the fetched model list") is selected and **OK is disabled** — the user must choose another item (including Default) to execute (to prevent quietly executing typos/stale configurations).
 - Upon confirming a profile change, the model items are reconfigured based on that agent.
 - Background query completion **does not immediately replace the list in an open dialog** (to prevent cursor jumping) — it is reflected the next time it opens.
 - If there is no cache at all, built-in fallbacks are used: claude has 4 aliases (fable/opus/sonnet/haiku). codex/agy enumerate quickly, so only Default is shown without a fallback (filled after the first query).
 - Model selection for resume (continue) is not implemented (decided 2026-07-14: separately later).
+
+### Last-selected memory
+
+- On launching a new session, the chosen model is stored per profile as `ProfileModels.last_selected` in `models.json` (`LastSelection::Default` for the Default entry, `LastSelection::Model(value)` for a specific model). This is what drives the "last pick" tier of the initial-selection priority above.
+- `None` = never recorded (fall back to the CLI default). An explicit **Default** pick is remembered distinctly from "never picked", so choosing Default sticks.
+- Stored on the same `models.json` entry as the fetched list. Since background re-fetches build a fresh `ProfileModels` (with `last_selected == None`), `ModelCatalog::insert` **carries over** the previously stored pick so refreshes never wipe it.
+- Written via `ModelCatalog::set_last_selected` + `save()` at launch time; a no-op if the profile has no cached entry yet (rare first-run window before any fetch completes). `save()` is test-guarded so unit tests never touch the real cache.
+- Motivation: when a CLI renames models across versions (e.g. agy display-name → slug), the CLI's own `default_model` in its config can go stale and no longer match the fetched list. Once the user picks a valid model once, `last_selected` becomes the dialog default and the stale config no longer resurfaces.
 
 ## Command Injection (Append Method)
 

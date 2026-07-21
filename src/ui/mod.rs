@@ -6,7 +6,7 @@ pub mod render;
 use crate::config::Config;
 use crate::filter::{self, Filter};
 use crate::model::{Agent, Session};
-use crate::models::{self, ModelCatalog};
+use crate::models::{self, LastSelection, ModelCatalog};
 use crate::profile::ProfileStore;
 use crate::usage::{self, UsagePhase, UsageState};
 use anyhow::{anyhow, Context, Result};
@@ -1503,8 +1503,10 @@ impl App {
     /// - Index 0 is always reserved for Default (no --model flag injected).
     /// - Lists populated from model caches (extra agy profiles share the default profile cache),
     ///   falling back to hardcoded configurations if empty (claude aliases only).
-    /// - Default selection falls back to CLI configurations. If missing in fetched lists,
-    ///   creates a missing placeholder option and disables the OK button until user updates.
+    /// - Initial selection priority: the user's last launched pick (`last_selected`) →
+    ///   the CLI-configured default (`default_model`) → a missing placeholder. A last pick
+    ///   that is no longer in the fetched list is skipped (falls through to the CLI default);
+    ///   the placeholder (which disables OK) only appears when the CLI default itself is missing.
     fn new_session_model_options(&self, profile_idx: usize) -> (Vec<ModelOption>, usize) {
         let default_only = || {
             (
@@ -1520,9 +1522,13 @@ impl App {
         let Some(profile) = self.profiles.profiles.get(profile_idx) else {
             return default_only();
         };
-        let (entries, default_model) = match self.models.for_profile(profile) {
-            Some(pm) => (pm.models.clone(), pm.default_model.clone()),
-            None => (models::fallback_models(profile.agent), None),
+        let (entries, default_model, last_selected) = match self.models.for_profile(profile) {
+            Some(pm) => (
+                pm.models.clone(),
+                pm.default_model.clone(),
+                pm.last_selected.clone(),
+            ),
+            None => (models::fallback_models(profile.agent), None, None),
         };
         let mut options = vec![ModelOption {
             value: None,
@@ -1539,6 +1545,19 @@ impl App {
             note: m.note.clone(),
             missing: false,
         }));
+        // 1) The last launched pick wins when it is still resolvable.
+        if let Some(last) = &last_selected {
+            match last {
+                LastSelection::Default => return (options, 0),
+                LastSelection::Model(v) => {
+                    if let Some(pos) = entries.iter().position(|m| &m.value == v) {
+                        return (options, pos + 1);
+                    }
+                    // Stale pick (removed after a CLI upgrade): fall through to the CLI default.
+                }
+            }
+        }
+        // 2) CLI-configured default, else 3) a missing placeholder that disables OK.
         let idx = match default_model {
             None => 0,
             Some(d) => match entries.iter().position(|m| m.value == d) {
@@ -1660,6 +1679,16 @@ impl App {
                 return;
             }
         }
+
+        // Remember this pick as the profile's next default (last_selected → CLI default →
+        // placeholder). Persist immediately; the profile has a cached catalog whenever the
+        // dialog could offer real models, so set_last_selected finds an entry to hold it.
+        let selection = match &model {
+            Some(v) => LastSelection::Model(v.clone()),
+            None => LastSelection::Default,
+        };
+        self.models.set_last_selected(&profile_id, selection);
+        self.models.save().ok();
 
         self.new_session_request = Some(NewSessionRequest {
             profile_id,
@@ -3310,6 +3339,7 @@ mod tests {
         TerminalKind, UiMode,
     };
     use crate::config::Config;
+    use crate::models::LastSelection;
     use crate::model::{Agent, Session};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
@@ -5008,6 +5038,7 @@ mod tests {
             cli_version: None,
             models: values.iter().map(|v| model_entry(v)).collect(),
             default_model: default_model.map(str::to_string),
+            last_selected: None,
         }
     }
 
@@ -5123,6 +5154,101 @@ mod tests {
         assert_eq!(state.profile_idx, 0);
         assert_eq!(state.model_options.len(), 2); // Default + opus
         assert_eq!(state.model_idx, 1); // Initial selection default model "opus".
+    }
+
+    #[test]
+    fn new_session_last_selected_model_overrides_cli_default() {
+        let mut app = app_with_profiles();
+        let mut pm = profile_models(Agent::Claude, &["opus", "fable", "sonnet"], Some("fable"));
+        pm.last_selected = Some(LastSelection::Model("sonnet".to_string()));
+        app.models.insert("profile-x".to_string(), pm);
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        let state = app.new_session.as_ref().unwrap();
+        // "sonnet" (index 3: Default + opus/fable/sonnet) beats CLI default "fable" (index 2).
+        assert_eq!(state.model_idx, 3);
+        assert_eq!(state.model_options[3].value.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn new_session_last_selected_default_overrides_cli_default() {
+        let mut app = app_with_profiles();
+        // CLI default "fable" would normally select index 2, but a remembered "Default" pick
+        // must select index 0 and never surface a placeholder.
+        let mut pm = profile_models(Agent::Claude, &["opus", "fable"], Some("fable"));
+        pm.last_selected = Some(LastSelection::Default);
+        app.models.insert("profile-x".to_string(), pm);
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        assert_eq!(app.new_session.as_ref().unwrap().model_idx, 0);
+    }
+
+    #[test]
+    fn new_session_stale_last_selected_falls_back_to_cli_default() {
+        let mut app = app_with_profiles();
+        // Last pick "legacy" is no longer in the list -> skip it and use CLI default "opus".
+        let mut pm = profile_models(Agent::Claude, &["opus", "sonnet"], Some("opus"));
+        pm.last_selected = Some(LastSelection::Model("legacy".to_string()));
+        app.models.insert("profile-x".to_string(), pm);
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        let state = app.new_session.as_ref().unwrap();
+        assert_eq!(state.model_idx, 1); // Default + opus -> opus at 1
+        assert_eq!(state.model_options[1].value.as_deref(), Some("opus"));
+        assert!(state.model_options.iter().all(|o| !o.missing));
+    }
+
+    #[test]
+    fn new_session_launch_records_last_selected() {
+        let mut app = app_with_profiles();
+        app.models.insert(
+            "profile-x".to_string(),
+            profile_models(Agent::Claude, &["opus", "fable", "sonnet"], Some("fable")),
+        );
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        // Pick "opus" and launch.
+        app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 2 = fable)
+        app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor 1 = opus
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // select & close
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> Folder
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> OK
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // start
+        assert_eq!(
+            app.new_session_request.as_ref().unwrap().model.as_deref(),
+            Some("opus")
+        );
+        // The pick is remembered in the in-memory catalog for next time.
+        assert_eq!(
+            app.models
+                .for_profile(&app.profiles.profiles[1])
+                .and_then(|m| m.last_selected.clone()),
+            Some(LastSelection::Model("opus".to_string()))
+        );
+    }
+
+    #[test]
+    fn new_session_launch_default_records_default_selection() {
+        let mut app = app_with_profiles();
+        app.models.insert(
+            "profile-x".to_string(),
+            profile_models(Agent::Claude, &["opus", "sonnet"], None),
+        );
+        app.selected = 1;
+        open_new_session_at_profile_focus(&mut app);
+        // Initial selection is Default (idx 0) because no CLI default; launch as-is.
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> Model
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> Folder
+        app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // -> OK
+        app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // start
+        assert_eq!(app.new_session_request.as_ref().unwrap().model, None);
+        assert_eq!(
+            app.models
+                .for_profile(&app.profiles.profiles[1])
+                .and_then(|m| m.last_selected.clone()),
+            Some(LastSelection::Default)
+        );
     }
 
     #[test]

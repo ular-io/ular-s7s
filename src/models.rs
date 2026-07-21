@@ -43,6 +43,20 @@ pub struct ModelEntry {
     pub note: String,
 }
 
+/// The model the user last picked in the New Session dialog for a profile.
+///
+/// Distinct from `Option<String>` because we must remember an explicit "Default"
+/// (no `--model`) pick separately from "never picked" (fall back to the CLI default):
+/// `Option::None` on the field means never recorded, `Some(Default)` means the user
+/// deliberately chose the CLI's own default, and `Some(Model(v))` a specific model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LastSelection {
+    /// User picked the "Default" dropdown entry (no `--model` injected).
+    Default,
+    /// User picked a specific model (`--model <value>`).
+    Model(String),
+}
+
 /// Query result of a profile's model list (cached unit).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProfileModels {
@@ -52,6 +66,11 @@ pub struct ProfileModels {
     pub models: Vec<ModelEntry>,
     /// Default model currently used by the CLI (value format). If None, CLI's own default.
     pub default_model: Option<String>,
+    /// The model the user last launched with for this profile. Takes precedence over
+    /// `default_model` as the New Session dialog's initial selection (see `LastSelection`).
+    /// Preserved across background re-fetches (see `ModelCatalog::insert`).
+    #[serde(default)]
+    pub last_selected: Option<LastSelection>,
 }
 
 /// Background query thread -> UI channel payload.
@@ -95,6 +114,11 @@ impl ModelCatalog {
 
     /// Saves to models.json (failures are non-fatal and can be ignored by callers).
     pub fn save(&self) -> std::io::Result<()> {
+        // Unit tests must never touch the real user cache (start_new_session_at persists the
+        // last pick through this path). `save_to` stays unguarded for roundtrip tests.
+        if cfg!(test) {
+            return Ok(());
+        }
         self.save_to(&models_file_path())
     }
 
@@ -110,8 +134,25 @@ impl ModelCatalog {
         std::fs::write(path, data)
     }
 
-    pub fn insert(&mut self, profile_id: String, models: ProfileModels) {
+    /// Inserts (replaces) a profile's model catalog. Background re-fetches produce a fresh
+    /// `ProfileModels` with `last_selected == None`, so we carry over the previously stored
+    /// user pick to avoid wiping it on every refresh.
+    pub fn insert(&mut self, profile_id: String, mut models: ProfileModels) {
+        if models.last_selected.is_none() {
+            if let Some(prev) = self.entries.get(&profile_id) {
+                models.last_selected = prev.last_selected.clone();
+            }
+        }
         self.entries.insert(profile_id, models);
+    }
+
+    /// Records the model the user last launched with for a profile. No-op if the profile has
+    /// no cached entry yet (rare: first run before any fetch completes — the pick simply isn't
+    /// remembered until a catalog exists to hold it).
+    pub fn set_last_selected(&mut self, profile_id: &str, selection: LastSelection) {
+        if let Some(pm) = self.entries.get_mut(profile_id) {
+            pm.last_selected = Some(selection);
+        }
     }
 
     /// Clears cache when a profile is deleted.
@@ -201,6 +242,7 @@ fn demo_models(agent: Agent) -> ProfileModels {
         cli_version: Some("demo".to_string()),
         models,
         default_model: default_model.map(String::from),
+        last_selected: None,
     }
 }
 
@@ -346,6 +388,7 @@ fn fetch(profile: &Profile, cli_version: Option<String>) -> ModelsResult {
             cli_version,
             models,
             default_model,
+            last_selected: None,
         }),
         // Treat empty lists as parsing failures to avoid overwriting the cache.
         Ok(_) => ModelsResult::Unavailable(format!("{bin}: empty model list")),
@@ -627,6 +670,7 @@ uu
                     note: String::new(),
                 }],
                 default_model: Some("Gemini 3.5 Flash (High)".to_string()),
+                last_selected: None,
             },
         );
         // Extra profiles of agy that cannot have env injected share the default profile's model list.
@@ -669,6 +713,7 @@ uu
                     note: String::new(),
                 }],
                 default_model: Some("gpt-5.6-sol".to_string()),
+                last_selected: None,
             },
         );
         catalog.save_to(&path).unwrap();
@@ -676,6 +721,65 @@ uu
         assert_eq!(
             loaded.cached_version("builtin-codex"),
             Some(Some("codex-cli 0.144.3".to_string()))
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn insert_preserves_last_selected_across_refetch() {
+        let mut catalog = ModelCatalog::default();
+        let base = |default_model: Option<&str>| ProfileModels {
+            agent: Agent::Codex,
+            cli_version: Some("codex-cli 0.144.6".to_string()),
+            models: vec![ModelEntry {
+                value: "gpt-5.6-sol".to_string(),
+                label: "GPT-5.6-Sol".to_string(),
+                note: String::new(),
+            }],
+            default_model: default_model.map(str::to_string),
+            last_selected: None,
+        };
+        catalog.insert("builtin-codex".to_string(), base(Some("gpt-5.6-sol")));
+        catalog.set_last_selected("builtin-codex", LastSelection::Model("gpt-5.5".to_string()));
+        // A fresh fetch result (last_selected == None) must not wipe the stored pick.
+        catalog.insert("builtin-codex".to_string(), base(Some("gpt-5.6-terra")));
+        let pm = catalog.entries.get("builtin-codex").unwrap();
+        assert_eq!(
+            pm.last_selected,
+            Some(LastSelection::Model("gpt-5.5".to_string()))
+        );
+        // But the rest of the catalog is refreshed as usual.
+        assert_eq!(pm.default_model.as_deref(), Some("gpt-5.6-terra"));
+
+        // set_last_selected on an unknown profile is a no-op (no panic).
+        catalog.set_last_selected("ghost", LastSelection::Default);
+        assert!(!catalog.entries.contains_key("ghost"));
+    }
+
+    #[test]
+    fn last_selected_survives_save_load_roundtrip() {
+        let dir =
+            std::env::temp_dir().join(format!("ular-models-last-sel-{}", std::process::id()));
+        let path = dir.join("models.json");
+        let mut catalog = ModelCatalog::default();
+        catalog.insert(
+            "builtin-antigravity".to_string(),
+            ProfileModels {
+                agent: Agent::Antigravity,
+                cli_version: Some("1.1.5".to_string()),
+                models: Vec::new(),
+                default_model: None,
+                last_selected: Some(LastSelection::Default),
+            },
+        );
+        catalog.save_to(&path).unwrap();
+        let loaded = ModelCatalog::load_from(&path);
+        assert_eq!(
+            loaded
+                .entries
+                .get("builtin-antigravity")
+                .and_then(|m| m.last_selected.clone()),
+            Some(LastSelection::Default)
         );
         std::fs::remove_dir_all(&dir).ok();
     }
