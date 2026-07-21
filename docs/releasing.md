@@ -15,6 +15,10 @@ Ensure you have the following tools installed and authenticated on your local ma
 
 An automated release script is provided under `scripts/release.sh`. It automatically adds required build targets, compiles release binaries for both ARM64 and AMD64 architectures, builds tarball archives, pushes a git tag, and creates a GitHub Release.
 
+The script creates an **annotated** tag (`git tag -a`) so the Tags/Release page shows the `Release <version>` tag message rather than falling back to the pointed-to commit subject. The GitHub Release body is filled with `--generate-notes` (auto-generated from merged PRs/commits since the previous tag; falls back to a Full Changelog link when there are no PRs).
+
+Bump the version in `Cargo.toml` (and sync `Cargo.lock`), commit, and push to `main` before running the script — the script only pushes the tag, not the branch commit it points to.
+
 To create and publish a new version (e.g., `v0.1.0`):
 
 ```bash

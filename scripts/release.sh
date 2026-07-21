@@ -31,13 +31,17 @@ echo "AMD64 SHA256: $AMD_HASH"
 echo "--------------------------------------------------"
 
 echo "=== 5. Creating Git tag and pushing ==="
-git tag "$VERSION"
+# Annotated tag (-a): carries its own message/tagger so the Tags/Release page
+# shows this message instead of falling back to the pointed-to commit subject.
+git tag -a "$VERSION" -m "Release $VERSION"
 git push origin "$VERSION"
 
 echo "=== 6. Creating GitHub Release and uploading assets ==="
+# --generate-notes auto-fills the release body from merged PRs/commits since the
+# previous tag (falls back to a Full Changelog link when there are no PRs).
 gh release create "$VERSION" dist/s7s-mac-arm64.tar.gz dist/s7s-mac-amd64.tar.gz \
   --title "$VERSION" \
-  --notes "Release $VERSION"
+  --generate-notes
 
 echo "=== Release task-124 finished successfully ==="
 echo "Copy the SHA256 hashes above to update your Homebrew Formula."
