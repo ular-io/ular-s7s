@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn initial_prompt_appends_shell_quoted_once() {
         let cfg = Config::load();
-        let prompt = "<s7s-context-bootstrap>\nRun `s7s session 'abc' --bootstrap`.\n</s7s-context-bootstrap>";
+        let prompt = "<s7s-context-bootstrap>\nRun `s7s session show 'abc' --bootstrap`.\n</s7s-context-bootstrap>";
         let preview = preview_new_command(
             Agent::Claude,
             Path::new("/tmp/demo"),

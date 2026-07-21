@@ -1,15 +1,36 @@
-//! `s7s session` subcommand: query context from a previous session without TUI.
+//! `s7s session` subcommand group: query previous sessions without the TUI.
 //!
-//! Output discipline: primary context goes to stdout, errors/diagnostics to
+//! Subcommands:
+//!   show <id>       Render one session's context (reference / --turn / --bootstrap).
+//!   search <query>  List sessions matching a keyword (+ folder/agent/profile filters).
+//!
+//! Output discipline: primary output goes to stdout, errors/diagnostics to
 //! stderr, no ANSI styling, no scan spinner. Exit codes: 0 success, 2 invalid
 //! arguments (clap), 1 for lookup/parse failures.
 
+use crate::filter::Filter;
 use crate::model::Agent;
 use crate::profile::ProfileStore;
 use crate::session_context::{self, render, resolve, ContextCompleteness};
-use clap::Args;
+use clap::{Args, Subcommand};
+use std::collections::HashSet;
 
-/// Read context from a previous session.
+/// Query previous sessions (context and search).
+#[derive(Args, Debug)]
+pub struct SessionArgs {
+    #[command(subcommand)]
+    pub command: SessionCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionCommand {
+    /// Read context from a previous session
+    Show(ShowArgs),
+    /// Search sessions by keyword (optionally filtered by folder/agent/profile)
+    Search(SearchArgs),
+}
+
+/// Render one previous session's context.
 #[derive(Args, Debug)]
 #[command(after_help = "\
 MODES:
@@ -34,11 +55,11 @@ RESOLUTION:
   exist is an error — resolution never falls back to another profile.
 
 EXAMPLES:
-  s7s session 019f36e8-9157-7c63-bee8-8937a6314982
-  s7s session 019f36e8-9157-7c63-bee8-8937a6314982 --user-only
-  s7s session 019f36e8-9157-7c63-bee8-8937a6314982 --turn 7
-  s7s session 019f36e8-9157-7c63-bee8-8937a6314982 --agent codex --profile builtin-codex --bootstrap")]
-pub struct SessionArgs {
+  s7s session show 019f36e8-9157-7c63-bee8-8937a6314982
+  s7s session show 019f36e8-9157-7c63-bee8-8937a6314982 --user-only
+  s7s session show 019f36e8-9157-7c63-bee8-8937a6314982 --turn 7
+  s7s session show 019f36e8-9157-7c63-bee8-8937a6314982 --agent codex --profile builtin-codex --bootstrap")]
+pub struct ShowArgs {
     /// Full session ID of the source session
     pub session_id: String,
     /// Restrict resolution to one agent
@@ -58,8 +79,53 @@ pub struct SessionArgs {
     pub bootstrap: bool,
 }
 
-/// Executes the session query. Returns the process exit code.
+/// Search sessions by keyword across every configured profile.
+#[derive(Args, Debug)]
+#[command(after_help = "\
+MATCHING:
+  Space-separated query tokens are AND-matched, each against the user body,
+  title, folder name, then the last assistant answer of every turn, then the
+  session ID (tokens of 5+ chars). --folder/--agent/--profile are AND'd with the
+  query; repeating an option OR's its values. Folder matches the cwd basename
+  exactly. Results are most-recent first, capped by --limit (0 = no cap).
+
+NOT SUPPORTED:
+  Keyword OR (all tokens are AND); phrase/adjacency matching (quoting a query
+  changes nothing — \"a b\" matches the same as a b); negation, regex, and
+  substring folder matching.
+
+EXAMPLES:
+  s7s session search \"final message\"
+  s7s session search test --folder vqs-gw --folder vqs-api --agent codex --agent claude
+  s7s session search rename --profile builtin-claude --limit 50")]
+pub struct SearchArgs {
+    /// Keyword query; space-separated tokens are AND-matched
+    #[arg(required = true, num_args = 1.., value_name = "QUERY")]
+    pub query: Vec<String>,
+    /// Restrict to folder name(s) (cwd basename, exact match; repeatable → OR)
+    #[arg(long, value_name = "NAME")]
+    pub folder: Vec<String>,
+    /// Restrict to agent(s) (repeatable → OR)
+    #[arg(long, value_parser = ["claude", "codex", "antigravity"])]
+    pub agent: Vec<String>,
+    /// Restrict to profile ID(s) (repeatable → OR)
+    #[arg(long, value_name = "ID")]
+    pub profile: Vec<String>,
+    /// Maximum number of results, most recent first (0 = no limit)
+    #[arg(long, default_value_t = 20, value_name = "N")]
+    pub limit: usize,
+}
+
+/// Executes the session subcommand. Returns the process exit code.
 pub fn run(args: &SessionArgs) -> i32 {
+    match &args.command {
+        SessionCommand::Show(a) => run_show(a),
+        SessionCommand::Search(a) => run_search(a),
+    }
+}
+
+/// Renders one session's context (reference / --turn / --bootstrap).
+fn run_show(args: &ShowArgs) -> i32 {
     let profiles = ProfileStore::load();
 
     // A requested-but-missing profile must fail up front (account safety):
@@ -67,15 +133,7 @@ pub fn run(args: &SessionArgs) -> i32 {
     if let Some(profile_id) = args.profile.as_deref() {
         if profiles.find(profile_id).is_none() {
             eprintln!("error: profile '{profile_id}' does not exist.");
-            eprintln!(
-                "hint: known profile IDs: {}",
-                profiles
-                    .profiles
-                    .iter()
-                    .map(|p| p.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
             return 1;
         }
     }
@@ -167,6 +225,84 @@ pub fn run(args: &SessionArgs) -> i32 {
     0
 }
 
+/// Lists sessions matching a keyword (+ optional folder/agent/profile filters).
+fn run_search(args: &SearchArgs) -> i32 {
+    let profiles = ProfileStore::load();
+
+    // Warn (don't fail) on an unknown --profile: search is a discovery tool, so
+    // an empty result set from a typo is more confusing than an up-front notice.
+    for profile_id in &args.profile {
+        if profiles.find(profile_id).is_none() {
+            eprintln!("warning: profile '{profile_id}' does not exist (ignored).");
+            eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
+        }
+    }
+
+    let agents: HashSet<Agent> = args
+        .agent
+        .iter()
+        // clap validates the values; parse_agent stays as a defensive check.
+        .filter_map(|a| resolve::parse_agent(a))
+        .collect();
+
+    let filter = Filter {
+        keyword: args.query.join(" "),
+        agents,
+        folders: args.folder.iter().cloned().collect(),
+        profile_ids: args.profile.iter().cloned().collect(),
+    };
+
+    // Quiet incremental scan (shares the TUI mtime cache); scan() already sorts
+    // most-recent first, and filter::apply preserves that order.
+    let result = crate::scan::scan(&profiles.profiles, false);
+    let indices = crate::filter::apply(&result.sessions, &filter);
+
+    let total = indices.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        total.min(args.limit)
+    };
+
+    if total == 0 {
+        println!("No sessions matched.");
+        return 0;
+    }
+
+    if total == shown {
+        println!("{total} match(es), most recent first:\n");
+    } else {
+        println!("{total} match(es), most recent first (showing {shown}):\n");
+    }
+
+    for &idx in indices.iter().take(shown) {
+        let s = &result.sessions[idx];
+        println!(
+            "  {}  {}/{}  [{}]  {}  Q{}",
+            s.id,
+            s.agent.key(),
+            s.profile_id,
+            s.folder,
+            s.updated_str(),
+            s.user_turns.len(),
+        );
+        println!("    {}", crate::model::one_line(&s.title()));
+    }
+
+    println!("\nRead one:  s7s session show <ID> --agent <AGENT> --profile <PROFILE> [--turn N]");
+    0
+}
+
+/// Comma-separated list of configured profile IDs (for error/warning hints).
+fn known_profile_ids(profiles: &ProfileStore) -> String {
+    profiles
+        .profiles
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,11 +325,26 @@ mod tests {
         })
     }
 
+    fn show(args: &[&str]) -> Result<ShowArgs, clap::Error> {
+        parse(args).map(|s| match s.command {
+            SessionCommand::Show(a) => a,
+            _ => panic!("expected show subcommand"),
+        })
+    }
+
+    fn search(args: &[&str]) -> Result<SearchArgs, clap::Error> {
+        parse(args).map(|s| match s.command {
+            SessionCommand::Search(a) => a,
+            _ => panic!("expected search subcommand"),
+        })
+    }
+
     #[test]
-    fn parses_all_supported_options() {
-        let s = parse(&[
+    fn show_parses_all_supported_options() {
+        let s = show(&[
             "s7s",
             "session",
+            "show",
             "abc-def",
             "--agent",
             "codex",
@@ -213,20 +364,84 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_options_and_invalid_values() {
+    fn show_rejects_unknown_options_and_invalid_values() {
         // Unknown options must fail instead of being ignored.
-        assert!(parse(&["s7s", "session", "abc", "--unknown-flag"]).is_err());
+        assert!(show(&["s7s", "session", "show", "abc", "--unknown-flag"]).is_err());
         // Missing session id fails.
-        assert!(parse(&["s7s", "session"]).is_err());
+        assert!(parse(&["s7s", "session", "show"]).is_err());
         // Invalid agent value fails at parse time.
-        assert!(parse(&["s7s", "session", "abc", "--agent", "gpt"]).is_err());
+        assert!(show(&["s7s", "session", "show", "abc", "--agent", "gpt"]).is_err());
         // Non-numeric turn fails.
-        assert!(parse(&["s7s", "session", "abc", "--turn", "x"]).is_err());
+        assert!(show(&["s7s", "session", "show", "abc", "--turn", "x"]).is_err());
     }
 
     #[test]
-    fn bootstrap_conflicts_with_turn() {
-        assert!(parse(&["s7s", "session", "abc", "--bootstrap", "--turn", "1"]).is_err());
-        assert!(parse(&["s7s", "session", "abc", "--bootstrap"]).is_ok());
+    fn show_bootstrap_conflicts_with_turn() {
+        assert!(show(&[
+            "s7s",
+            "session",
+            "show",
+            "abc",
+            "--bootstrap",
+            "--turn",
+            "1"
+        ])
+        .is_err());
+        assert!(show(&["s7s", "session", "show", "abc", "--bootstrap"]).is_ok());
+    }
+
+    #[test]
+    fn requires_a_known_subcommand() {
+        // A bare `session <id>` is no longer valid; it must be `session show <id>`.
+        assert!(parse(&["s7s", "session", "abc-def"]).is_err());
+        assert!(parse(&["s7s", "session"]).is_err());
+    }
+
+    #[test]
+    fn search_parses_query_and_repeatable_filters() {
+        let s = search(&[
+            "s7s",
+            "session",
+            "search",
+            "test",
+            "--folder",
+            "vqs-gw",
+            "--folder",
+            "vqs-api",
+            "--agent",
+            "codex",
+            "--agent",
+            "claude",
+            "--profile",
+            "builtin-codex",
+            "--limit",
+            "50",
+        ])
+        .expect("parse");
+        assert_eq!(s.query, vec!["test"]);
+        assert_eq!(s.folder, vec!["vqs-gw", "vqs-api"]);
+        assert_eq!(s.agent, vec!["codex", "claude"]);
+        assert_eq!(s.profile, vec!["builtin-codex"]);
+        assert_eq!(s.limit, 50);
+    }
+
+    #[test]
+    fn search_joins_multiple_query_tokens() {
+        let s = search(&["s7s", "session", "search", "final", "message"]).expect("parse");
+        assert_eq!(s.query, vec!["final", "message"]);
+        assert_eq!(s.query.join(" "), "final message");
+    }
+
+    #[test]
+    fn search_defaults_and_rejects_bad_input() {
+        // limit defaults to 20.
+        let s = search(&["s7s", "session", "search", "x"]).expect("parse");
+        assert_eq!(s.limit, 20);
+        // A query is required.
+        assert!(parse(&["s7s", "session", "search"]).is_err());
+        // Invalid agent value fails at parse time.
+        assert!(search(&["s7s", "session", "search", "x", "--agent", "gpt"]).is_err());
+        // Non-numeric limit fails.
+        assert!(search(&["s7s", "session", "search", "x", "--limit", "many"]).is_err());
     }
 }

@@ -72,7 +72,8 @@ cp target/release/s7s ~/bin/   # Copy to your desired PATH location
 ```bash
 s7s                         # Run TUI
 s7s demo                    # Run TUI in demo mode using mock English sessions (disposable sandbox under the OS cache dir, e.g. macOS ~/Library/Caches/s7s/demo)
-s7s session <SESSION_ID>    # View past session context (no TUI, see below)
+s7s session show <ID>       # View one past session's context (no TUI, see below)
+s7s session search <QUERY>  # List past sessions matching a keyword (no TUI, see below)
 s7s --rebuild-cache         # Force rebuild the entire session cache
 s7s --print                 # Print the session list only, without TUI (debug)
 s7s --usage-probe           # Print usage probe results only, without TUI (debug)
@@ -125,29 +126,52 @@ All filters (Keyword · Agent · Folder · Profile) operate with an **AND combin
 
 You can view the conversation history of a past session as a reference context, or start a new session by attaching the selected session as context — [Details](docs/session-context.md).
 
-### `s7s session` — Context View CLI
+### `s7s session` — Context CLI
+
+Two subcommands: `show` renders one session's context, `search` finds sessions by keyword. Both run without the TUI and share the same session index as the TUI (cheap incremental scan).
+
+#### `s7s session show <ID>`
 
 ```bash
 # All active user turns + assistant excerpts (past 500 chars / last turn 2,000 chars)
-s7s session 019f36e8-9157-7c63-bee8-8937a6314982
+s7s session show 019f36e8-9157-7c63-bee8-8937a6314982
 
 # User turns only
-s7s session 019f36e8-9157-7c63-bee8-8937a6314982 --user-only
+s7s session show 019f36e8-9157-7c63-bee8-8937a6314982 --user-only
 
 # Full (redacted) details of a single turn
-s7s session 019f36e8-9157-7c63-bee8-8937a6314982 --turn 7
+s7s session show 019f36e8-9157-7c63-bee8-8937a6314982 --turn 7
 
 # For new session initialization (includes instruction envelope)
-s7s session 019f36e8-9157-7c63-bee8-8937a6314982 --agent codex --profile builtin-codex --bootstrap
+s7s session show 019f36e8-9157-7c63-bee8-8937a6314982 --agent codex --profile builtin-codex --bootstrap
 ```
 
 - The default output is a **neutral reference mode**: It contains only trust boundary phrases and has no stop/wait/language instructions, making it safe to run inside another ongoing agent session.
 - The full session ID is interpreted as an exact match across all profiles, and if multiple matches occur, it lists the candidates and requires `--agent`/`--profile` specification. Secrets are masked before excerpting.
-- See `s7s session --help` for detailed options, excerpt limits, and error rules.
+
+#### `s7s session search <QUERY>`
+
+Lists sessions matching a keyword so an agent can find a past conversation and then read it with `show`. Space-separated query tokens are AND-matched against the same search index as the TUI `/` filter (user body + title + folder + each turn's last assistant answer + session ID).
+
+```bash
+# Keyword search (most recent first, capped by --limit, default 20)
+s7s session search "final message"
+
+# Narrow by folder / agent / profile (repeat an option to OR its values)
+s7s session search test --folder vqs-gw --folder vqs-api --agent codex --agent claude
+
+# Larger result set from one profile
+s7s session search rename --profile builtin-claude --limit 50
+```
+
+- `--folder` matches the folder name (cwd basename) exactly; `--agent` accepts `claude`/`codex`/`antigravity`. Query and filters are AND'd; repeated values of one option are OR'd. `--limit 0` removes the cap.
+- Each result shows `ID  agent/profile  [folder]  updated  Q<turns>` and the title, then a hint for reading a result with `s7s session show`.
+- Not supported: keyword OR (all tokens are AND), phrase/adjacency matching (quoting a query is equivalent to unquoted tokens), negation, regex, and substring folder matching.
+- See `s7s session --help`, `s7s session show --help`, and `s7s session search --help` for detailed options, excerpt limits, matching, and error rules.
 
 ### New Session with Context
 
-Pressing `ctrl+shift+n` (or **New Session with Context** in the `:` palette) on the Session/Detail screen opens the existing New Session dialog with the focused session captured as the **source session** (indicated in the title). Profile/Model/Folder can be freely selected as usual — you can also start with a different agent/project than the source. Upon OK, a short bootstrap prompt is injected into the new agent, and the new agent reads the source using `s7s session ... --bootstrap`, leaving a ready message in the source language without performing past tasks. Subsequent actual requests (including long text/images) can be entered in the agent's own UI.
+Pressing `ctrl+shift+n` (or **New Session with Context** in the `:` palette) on the Session/Detail screen opens the existing New Session dialog with the focused session captured as the **source session** (indicated in the title). Profile/Model/Folder can be freely selected as usual — you can also start with a different agent/project than the source. Upon OK, a short bootstrap prompt is injected into the new agent, and the new agent reads the source using `s7s session show ... --bootstrap`, leaving a ready message in the source language without performing past tasks. Subsequent actual requests (including long text/images) can be entered in the agent's own UI.
 
 > **Terminal Compatibility**: Legacy terminals cannot distinguish between `Ctrl+Shift+N` and `Ctrl+N` (same control byte). s7s only distinguishes chords in terminals that support the kitty keyboard protocol; in other environments, **New Session with Context** in the `:` palette is the guaranteed fallback.
 

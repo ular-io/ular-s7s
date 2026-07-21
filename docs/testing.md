@@ -79,8 +79,8 @@ If rename/session-title logic has been changed or an external CLI has upgraded, 
 If session context (`src/session_context/` · `s7s session`) or New Session with Context paths have been changed, or if agent CLIs have upgraded, verify the following ([Details](./session-context.md)).
 
 1. `cargo test real_data_turn_parity -- --ignored --nocapture` — Full real-data turn parity (list Q count == context turn count, claude/codex strict).
-2. `s7s session <actual ID>` — Verify that the reference output has no stop/wait/language instructions, and check each projection (`--turn`/`--user-only`/`--bootstrap`).
-3. Actual contextual launch (each agent): Check if the bootstrap prompt is recorded as a user turn in the transcript, if `s7s session ... --bootstrap` succeeds, if there are no past tasks/file changes executed, and if the ready message is in the source user turn's primary language.
+2. `s7s session show <actual ID>` — Verify that the reference output has no stop/wait/language instructions, and check each projection (`--turn`/`--user-only`/`--bootstrap`). Also spot-check `s7s session search <keyword>` (with/without `--folder`/`--agent`/`--profile`/`--limit`) against known sessions.
+3. Actual contextual launch (each agent): Check if the bootstrap prompt is recorded as a user turn in the transcript, if `s7s session show ... --bootstrap` succeeds, if there are no past tasks/file changes executed, and if the ready message is in the source user turn's primary language.
 4. Check that the launched session does not contaminate the s7s list's Q count/preview/title/search (sessions with only a bootstrap are hidden from the list), and remains the same even after `--rebuild-cache`.
 5. Reverify the initial prompt injection method upon CLI upgrade: claude/codex positional (`[prompt]`/`[PROMPT]`), agy `--prompt-interactive` (positional unsupported).
 

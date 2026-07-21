@@ -62,7 +62,9 @@ CONFIG:   ~/.config/s7s/config.toml overrides command templates ({prompt} token 
 CACHE:    <OS cache dir>/s7s/index.bin — macOS ~/Library/Caches/s7s
           (mtime incremental; rebuild with --rebuild-cache)
 
-Run `s7s session --help` for session query examples."
+SESSION:   `s7s session show <id>` renders one session's context;
+           `s7s session search <query>` lists matching sessions.
+           Run `s7s session --help` / `s7s session search --help` for examples."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -86,7 +88,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Read context from a previous session
+    /// Query previous sessions: `show` one session's context or `search` by keyword
     Session(session_cli::SessionArgs),
     /// Run s7s in demo mode using mock English sessions (disposable sandbox under the OS cache dir)
     Demo,
