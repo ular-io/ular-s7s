@@ -431,6 +431,7 @@ mod tests {
             size_bytes: 0,
             user_turns: turns.into_iter().map(str::to_string).collect(),
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: Some("Demo Handoff".to_string()),
             title_fixed: true,
         }

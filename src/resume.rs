@@ -329,6 +329,7 @@ mod tests {
             size_bytes: 0,
             user_turns: Vec::new(),
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         }

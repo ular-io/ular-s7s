@@ -14,6 +14,8 @@ Covers the shared model (`src/session_context/`) for querying previous session c
 | User turn | Human-authored input + promoted question/answer (Q&A) turns |
 | Last assistant text | The last assistant text extracted from a turn (not guaranteed to be the semantic final answer) |
 
+> The list scanner reuses this **last assistant text per turn** to build `Session::assistant_blob`, a secondary keyword-search target (`src/filter.rs`). Claude/Codex extract it in their own lightweight list parsers (rewind/rollback abandoned answers and the bootstrap ready response are excluded, matching the detailed parsers); Antigravity has no assistant text in its DB, so the list parser reuses `session_context::antigravity::parse_turns` over the transcript JSONL and folds the transcript mtime into the cache-freshness key.
+
 ## Architecture
 
 ```

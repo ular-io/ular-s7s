@@ -30,7 +30,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 ## Key Features
 
 - **Rust-Powered & Blazingly Fast**: Built with Rust combined with database-backed caching for instantaneous loading. The initial scan builds the database cache, enabling subsequent lookups to query the cache directly for near-instantaneous load times.
-- **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen.
+- **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen. Keyword search spans user prompts, titles, folder names, and each turn's last assistant answer, so you can find a session by something the agent said.
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, or delete redundant histories directly from the TUI.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
@@ -88,7 +88,7 @@ s7s --version               # Print version
 | :-- | :-- |
 | `:` | Screen selection menu (`s` Session / `p` Profile) |
 | `!` | Terminal command in session folder (run shell command in the selected session's folder) |
-| `/` | Keyword search mode (real-time body/title matching, space=AND) |
+| `/` | Keyword search mode (real-time matching over body/title/folder + last assistant answers + session id, space=AND) |
 | `a` | Agents modal (`space` toggle, `enter` apply) |
 | `1` ~ `5` | Active profile exclusive filter (header number order) |
 | `0` | Reset all filters |

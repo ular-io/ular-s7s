@@ -254,31 +254,42 @@ fn scan_antigravity(
             continue;
         }
         *scanned += 1;
-        let mtime = match file_mtime_ms(path) {
+        let db_mtime = match file_mtime_ms(path) {
             Some(m) => m,
             None => continue,
         };
-        let ctime = file_ctime_ms(path, mtime);
+        // Assistant answers are read from the JSONL transcript, a file separate from
+        // the DB. Fold the transcript's mtime into the cache-freshness key only (not the
+        // displayed session mtime) so a new answer reparses the session even when the DB
+        // is unchanged, without letting a freshly-written transcript reorder sessions.
+        let transcript_mtime = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|id| crate::session_context::antigravity::transcript_path(path, id))
+            .and_then(|tp| file_mtime_ms(&tp))
+            .unwrap_or(0);
+        let freshness = db_mtime.max(transcript_mtime);
+        let ctime = file_ctime_ms(path, db_mtime);
         let size = file_size_bytes(path);
         let key = path.to_string_lossy().to_string();
 
-        if let Some(cached) = old.get_fresh(&key, mtime) {
+        if let Some(cached) = old.get_fresh(&key, freshness) {
             let mut cached = cached.clone();
             apply_antigravity_title_meta(&mut cached, &meta);
             set_ctime(&mut cached, ctime);
             set_size(&mut cached, size);
             sessions.extend(cached.iter().cloned());
-            new.put(key, mtime, cached);
+            new.put(key, freshness, cached);
         } else {
             *reparsed += 1;
-            let mut parsed: Vec<Session> = parser::antigravity::parse_db(path, mtime, &meta)
+            let mut parsed: Vec<Session> = parser::antigravity::parse_db(path, db_mtime, &meta)
                 .into_iter()
                 .collect();
             apply_antigravity_title_meta(&mut parsed, &meta);
             set_ctime(&mut parsed, ctime);
             set_size(&mut parsed, size);
             sessions.extend(parsed.iter().cloned());
-            new.put(key, mtime, parsed);
+            new.put(key, freshness, parsed);
         }
     }
 }
@@ -343,6 +354,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: Some("첫 질문".to_string()),
             title_fixed: false,
         }];
@@ -376,6 +388,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: title_hint.map(str::to_string),
             title_fixed: false,
         }
@@ -411,10 +424,7 @@ mod tests {
         // Meta lives at `<root>/sessions/*.json` while bodies live under
         // `<root>/projects/...` — regression for passing the projects dir to
         // load_title_meta (which made the meta fallback unreachable).
-        let root = std::env::temp_dir().join(format!(
-            "s7s-scan-title-meta-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("s7s-scan-title-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let project_dir = root.join("projects/-tmp-app");
         std::fs::create_dir_all(&project_dir).expect("create projects");
@@ -462,6 +472,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: Some("List GitLab Repository Commands".to_string()),
             title_fixed: false,
         }];

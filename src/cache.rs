@@ -10,7 +10,7 @@ use std::path::Path;
 
 /// Cache format/parser version. Increment this value to automatically invalidate
 /// existing cache when parser logic or the Session structure changes.
-pub const CACHE_VERSION: u32 = 11;
+pub const CACHE_VERSION: u32 = 12;
 
 /// Cache entry: mtime of the source file (or logical key) and derived sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +54,13 @@ impl Cache {
         }
         let bytes = bincode::serialize(self)?;
         std::fs::write(path, bytes)?;
+        // The cache now holds redacted assistant answers; restrict it to the owner on
+        // Unix so other local users cannot read one account's session content.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 

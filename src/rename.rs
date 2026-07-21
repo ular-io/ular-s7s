@@ -488,6 +488,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         };
@@ -569,6 +570,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         };
@@ -629,6 +631,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec![],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         };
@@ -666,6 +669,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec![],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         };

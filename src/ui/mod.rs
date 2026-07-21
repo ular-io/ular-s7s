@@ -3350,6 +3350,7 @@ mod tests {
                 size_bytes: 0,
                 user_turns: vec!["hello".to_string()],
                 search_blob: "hello".to_string(),
+                assistant_blob: String::new(),
                 title_hint: Some("hello".to_string()),
                 title_fixed: false,
             }],
@@ -3761,6 +3762,7 @@ mod tests {
                 size_bytes: 0,
                 user_turns: vec!["hello".to_string()],
                 search_blob: "hello".to_string(),
+                assistant_blob: String::new(),
                 title_hint: Some(name.to_string()),
                 title_fixed: false,
             }
@@ -3901,6 +3903,7 @@ mod tests {
                 size_bytes: 0,
                 user_turns: vec!["hi".to_string()],
                 search_blob: "hi".to_string(),
+                assistant_blob: String::new(),
                 title_hint: Some("hi".to_string()),
                 title_fixed: false,
             }],
@@ -3984,6 +3987,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["hi".to_string()],
             search_blob: "hi".to_string(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         };
@@ -4862,8 +4866,7 @@ mod tests {
 
         // Path-form input (contains a separator) must keep the current error behavior
         // instead of offering project creation.
-        app.new_session.as_mut().unwrap().input.value =
-            "/definitely/missing/s7s-path".to_string();
+        app.new_session.as_mut().unwrap().input.value = "/definitely/missing/s7s-path".to_string();
         app.confirm_new_session();
 
         assert_eq!(app.mode, UiMode::NewSession);

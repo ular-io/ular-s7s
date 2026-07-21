@@ -10,11 +10,24 @@
 //! dead branch. Only turns on the active path (walked from the last non-sidechain entry back
 //! to the root) are shown. Verified against claude CLI 2.1.211 — a rewind alone writes
 //! nothing, so it is only detectable once the user sends a message afterwards.
-use super::{clean_turn, finalize, is_noise_turn, turn};
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, turn};
 use crate::model::{Agent, Session};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// Ordered conversation event used to reconstruct turn boundaries for both the user
+/// turn list and the per-turn last assistant answer (search index). Every event
+/// carries the uuid of its source line so the active-path (`/rewind`) filter applies.
+enum Event {
+    /// A real user turn: opens a new turn and contributes to `user_turns`.
+    User { uuid: Option<String>, text: String },
+    /// A countable-but-noise user line (slash command, bootstrap prompt): closes the
+    /// current turn without opening one, so a following answer is not indexed under it.
+    Boundary { uuid: Option<String> },
+    /// One assistant text block; the last one within a turn becomes that turn's answer.
+    Assistant { uuid: Option<String>, text: String },
+}
 
 /// Claude session title metadata.
 pub struct TitleMeta {
@@ -75,9 +88,9 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
     let id = path.file_stem()?.to_string_lossy().to_string();
 
     let mut cwd: Option<String> = None;
-    // Turn texts paired with the uuid of the line they came from; filtered to the
-    // active parentUuid chain after the scan (see module docs on `/rewind`).
-    let mut candidates: Vec<(Option<String>, String)> = Vec::new();
+    // Ordered events (user/boundary/assistant), each tagged with its line uuid; filtered
+    // to the active parentUuid chain after the scan (see module docs on `/rewind`).
+    let mut events: Vec<Event> = Vec::new();
     let mut parents: HashMap<String, Option<String>> = HashMap::new();
     let mut leaf: Option<String> = None;
     let mut explicit_title: Option<String> = None;
@@ -154,29 +167,65 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
             leaf = Some(u);
         }
 
-        if v.get("type").and_then(Value::as_str) != Some("user") {
-            continue;
-        }
-        if let Some(text) = turn::extract_user_text(&v) {
-            if !is_noise_turn(&text) {
-                if let Some(cleaned) = clean_turn(&text) {
-                    candidates.push((uuid.clone(), cleaned));
+        match v.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                if let Some(text) = turn::extract_user_text(&v) {
+                    if !is_noise_turn(&text) {
+                        if let Some(cleaned) = clean_turn(&text) {
+                            events.push(Event::User {
+                                uuid: uuid.clone(),
+                                text: cleaned,
+                            });
+                        }
+                    } else if !is_task_notification(&text) {
+                        // Slash commands, the bootstrap prompt, etc. close the current
+                        // turn but do not open one. Task notifications are the exception
+                        // (the real final answer follows), so they keep the turn open.
+                        events.push(Event::Boundary { uuid: uuid.clone() });
+                    }
+                }
+                if let Some(qa) = turn::extract_question_answers(&v) {
+                    if !is_noise_turn(&qa) {
+                        if let Some(cleaned) = clean_turn(&qa) {
+                            events.push(Event::User {
+                                uuid: uuid.clone(),
+                                text: cleaned,
+                            });
+                        }
+                    }
                 }
             }
-        }
-        if let Some(qa) = turn::extract_question_answers(&v) {
-            if !is_noise_turn(&qa) {
-                if let Some(cleaned) = clean_turn(&qa) {
-                    candidates.push((uuid, cleaned));
+            Some("assistant") => {
+                for text in assistant_texts(&v) {
+                    events.push(Event::Assistant {
+                        uuid: uuid.clone(),
+                        text,
+                    });
                 }
             }
+            _ => {}
         }
     }
 
-    let turns = active_path_turns(candidates, &parents, leaf.as_deref());
+    // Trust the parentUuid chain when it is intact; otherwise keep every event
+    // (same fallback as before — a format change must never blank a session).
+    let active = active_uuid_set(&parents, leaf.as_deref());
+    let is_active = |uuid: &Option<String>| match (&active, uuid) {
+        (Some(set), Some(u)) => set.contains(u.as_str()),
+        _ => true,
+    };
+
+    let turns: Vec<String> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            Event::User { uuid, text } if is_active(uuid) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
     if turns.is_empty() {
         return None;
     }
+    let assistant_per_turn = last_assistant_per_turn(&events, &is_active);
 
     let cwd = cwd.unwrap_or_else(|| decode_project_dir(path));
     let folder = folder_name(&cwd);
@@ -198,34 +247,83 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
         size_bytes: 0,
         user_turns: turns,
         search_blob: String::new(),
+        assistant_blob: String::new(),
         title_hint,
         title_fixed,
     };
     finalize(&mut session);
+    session.assistant_blob = build_assistant_blob(&assistant_per_turn);
     Some(session)
 }
 
-/// Keeps only turns on the active branch: walks `parentUuid` links from the leaf to the
-/// root and drops turns abandoned by `/rewind`. Falls back to all turns when the chain is
-/// broken (an entry references a uuid that is not in the file) so an unexpected format
-/// change can never blank out a session preview.
-fn active_path_turns(
-    candidates: Vec<(Option<String>, String)>,
-    parents: &HashMap<String, Option<String>>,
-    leaf: Option<&str>,
-) -> Vec<String> {
-    let Some(active) = active_uuid_set(parents, leaf) else {
-        return candidates.into_iter().map(|(_, text)| text).collect();
-    };
+/// Collects the plain text blocks of an assistant message (content array, `text` items).
+fn assistant_texts(v: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(Value::Array(items)) = v.get("message").and_then(|m| m.get("content")) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(t) = item.get("text").and_then(Value::as_str) {
+                    if !t.trim().is_empty() {
+                        out.push(t.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
 
-    candidates
-        .into_iter()
-        .filter(|(uuid, _)| match uuid {
-            Some(u) => active.contains(u.as_str()),
-            None => true,
-        })
-        .map(|(_, text)| text)
-        .collect()
+/// Whether a noise user line is a background task-completion notification.
+fn is_task_notification(text: &str) -> bool {
+    text.trim_start().starts_with("<task-notification>")
+}
+
+/// Walks the active events in order and returns each turn's last assistant text.
+/// A turn opens on a `User` event and closes on the next `User`/`Boundary`; only the
+/// last assistant text seen while a turn is open is kept (intermediate progress
+/// messages are dropped). Assistant text with no open turn (e.g. the bootstrap ready
+/// response before the first real question) is ignored.
+fn last_assistant_per_turn(
+    events: &[Event],
+    is_active: &impl Fn(&Option<String>) -> bool,
+) -> Vec<String> {
+    let mut per_turn = Vec::new();
+    let mut current: Option<String> = None;
+    let mut in_turn = false;
+    for ev in events {
+        match ev {
+            Event::User { uuid, .. } if is_active(uuid) => {
+                if in_turn {
+                    if let Some(a) = current.take() {
+                        per_turn.push(a);
+                    }
+                }
+                in_turn = true;
+                current = None;
+            }
+            Event::Boundary { uuid } if is_active(uuid) => {
+                if in_turn {
+                    if let Some(a) = current.take() {
+                        per_turn.push(a);
+                    }
+                }
+                in_turn = false;
+                current = None;
+            }
+            Event::Assistant { uuid, text } if is_active(uuid) => {
+                if in_turn {
+                    current = Some(text.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    if in_turn {
+        if let Some(a) = current {
+            per_turn.push(a);
+        }
+    }
+    per_turn
 }
 
 /// Set of uuids on the active branch (leaf -> root walk over `parentUuid` links).
@@ -284,17 +382,24 @@ mod tests {
 
     #[test]
     fn title_meta_fixed_only_for_explicit_name_sources() {
-        let root = std::env::temp_dir().join(format!(
-            "s7s-claude-meta-fixed-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("s7s-claude-meta-fixed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join("sessions");
         std::fs::create_dir_all(&dir).expect("create sessions dir");
         for (file, body) in [
-            ("a.json", r#"{"sessionId":"id-custom","name":"제목","nameSource":"custom"}"#),
-            ("b.json", r#"{"sessionId":"id-user","name":"제목","nameSource":"user"}"#),
-            ("c.json", r#"{"sessionId":"id-derived","name":"ular-s7s-2b","nameSource":"derived"}"#),
+            (
+                "a.json",
+                r#"{"sessionId":"id-custom","name":"제목","nameSource":"custom"}"#,
+            ),
+            (
+                "b.json",
+                r#"{"sessionId":"id-user","name":"제목","nameSource":"user"}"#,
+            ),
+            (
+                "c.json",
+                r#"{"sessionId":"id-derived","name":"ular-s7s-2b","nameSource":"derived"}"#,
+            ),
             ("d.json", r#"{"sessionId":"id-none","name":"4a72d37c"}"#),
         ] {
             std::fs::write(dir.join(file), body).expect("write meta");
@@ -448,6 +553,61 @@ mod tests {
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.title(), "26-07 주행정보 생성 성능 개선 검토");
         assert!(session.title_fixed);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn assistant_blob_indexes_last_answer_and_drops_intermediate() {
+        let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
+{"type":"assistant","uuid":"b1","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"중간설명 intermediatekw"}]}}
+{"type":"assistant","uuid":"b2","parentUuid":"b1","message":{"role":"assistant","content":[{"type":"text","text":"최종답변 finalkw"}]}}
+{"type":"user","uuid":"c","parentUuid":"b2","message":{"role":"user","content":"질문2"}}
+{"type":"assistant","uuid":"d","parentUuid":"c","message":{"role":"assistant","content":[{"type":"text","text":"두번째답변 secondkw"}]}}
+"#;
+        let path = write_temp("asst-blob", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        // Last answer of each turn is indexed; intermediate answers within a turn are not.
+        assert!(session.assistant_blob.contains("finalkw"));
+        assert!(session.assistant_blob.contains("secondkw"));
+        assert!(!session.assistant_blob.contains("intermediatekw"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn assistant_blob_excludes_rewound_answer() {
+        // Q2/A2 abandoned by /rewind: Q3 branches from the same parent (b).
+        let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
+{"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"답1 keepkw"}]}}
+{"type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"질문2 버려진 분기"}}
+{"type":"assistant","uuid":"d","parentUuid":"c","message":{"role":"assistant","content":[{"type":"text","text":"버려진답 dropkw"}]}}
+{"type":"user","uuid":"e","parentUuid":"b","message":{"role":"user","content":"질문3 리와인드 후"}}
+{"type":"assistant","uuid":"f","parentUuid":"e","message":{"role":"assistant","content":[{"type":"text","text":"답3 keep3kw"}]}}
+"#;
+        let path = write_temp("asst-rewind", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert!(session.assistant_blob.contains("keepkw"));
+        assert!(session.assistant_blob.contains("keep3kw"));
+        assert!(!session.assistant_blob.contains("dropkw"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn assistant_blob_excludes_bootstrap_ready_response() {
+        // The bootstrap ready response precedes the first real question and must not
+        // be indexed; the bootstrap prompt itself is not a user turn.
+        let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"<s7s-context-bootstrap>\nRun something\n</s7s-context-bootstrap>"}}
+{"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"readykw 확인했습니다"}]}}
+{"type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"진짜 질문"}}
+{"type":"assistant","uuid":"d","parentUuid":"c","message":{"role":"assistant","content":[{"type":"text","text":"realkw 답변"}]}}
+"#;
+        let path = write_temp("asst-bootstrap", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert_eq!(session.user_turns, vec!["진짜 질문"]);
+        assert!(session.assistant_blob.contains("realkw"));
+        assert!(!session.assistant_blob.contains("readykw"));
         let _ = std::fs::remove_file(path);
     }
 }

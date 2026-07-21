@@ -3634,6 +3634,7 @@ mod tests {
                 size_bytes: 0,
                 user_turns: vec!["first question".to_string(), "second question".to_string()],
                 search_blob: String::new(),
+                assistant_blob: String::new(),
                 title_hint: Some("demo".to_string()),
                 title_fixed: false,
             }],
@@ -4103,6 +4104,7 @@ mod tests {
                 size_bytes: 0,
                 user_turns: turns,
                 search_blob: String::new(),
+                assistant_blob: String::new(),
                 title_hint: Some("demo".to_string()),
                 title_fixed: false,
             }],
@@ -4134,6 +4136,7 @@ mod tests {
                 size_bytes: 0,
                 user_turns: vec!["question".to_string()],
                 search_blob: String::new(),
+                assistant_blob: String::new(),
                 title_hint: None,
                 title_fixed: false,
             })

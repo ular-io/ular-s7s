@@ -10,7 +10,7 @@
 //! by the rollback are removed from the preview. Verified against codex CLI 0.144.4 — the
 //! rollback happens in the same rollout file (no fork file is created).
 
-use super::{clean_turn, finalize, is_noise_turn, turn};
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, turn};
 use crate::model::{Agent, Session};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -82,6 +82,11 @@ pub fn parse_file(
     // Index into `turns` where each user turn starts; boundaries are recorded even for
     // noise-filtered user messages so `thread_rolled_back.num_turns` counts real turns.
     let mut turn_starts: Vec<usize> = Vec::new();
+    // Parallel to `turn_starts` (one slot per user-message turn): `(indexable, last
+    // assistant answer)`. `indexable` is false for noise turns (slash commands, the
+    // bootstrap prompt) so their answers are excluded from the search index. A rollback
+    // truncates this exactly like `turn_starts`.
+    let mut turn_asst: Vec<(bool, Option<String>)> = Vec::new();
     let mut title_hint: Option<String> = None;
 
     for line in content.lines() {
@@ -118,10 +123,13 @@ pub fn parse_file(
                     let cut = turn_starts.get(keep).copied().unwrap_or(turns.len());
                     turns.truncate(cut);
                     turn_starts.truncate(keep);
+                    turn_asst.truncate(keep);
                     continue;
                 }
                 if let Some(text) = turn::extract_user_text(&v) {
                     turn_starts.push(turns.len());
+                    let indexable = !is_noise_turn(&text) && clean_turn(&text).is_some();
+                    turn_asst.push((indexable, None));
                     if !is_noise_turn(&text) {
                         if let Some(cleaned) = clean_turn(&text) {
                             turns.push(cleaned);
@@ -133,6 +141,12 @@ pub fn parse_file(
                         if let Some(cleaned) = clean_turn(&qa) {
                             turns.push(cleaned);
                         }
+                    }
+                }
+                // Record each turn's last assistant answer for the search index.
+                if let Some(text) = assistant_text(&v) {
+                    if let Some(slot) = turn_asst.last_mut() {
+                        slot.1 = Some(text);
                     }
                 }
             }
@@ -164,11 +178,59 @@ pub fn parse_file(
         size_bytes: 0,
         user_turns: turns,
         search_blob: String::new(),
+        assistant_blob: String::new(),
         title_hint: meta.and_then(|m| m.title.clone()).or(title_hint),
         title_fixed: meta.and_then(|m| m.title.as_ref()).is_some(),
     };
     finalize(&mut session);
+    let assistant_per_turn: Vec<String> = turn_asst
+        .into_iter()
+        .filter(|(indexable, _)| *indexable)
+        .filter_map(|(_, answer)| answer)
+        .collect();
+    session.assistant_blob = build_assistant_blob(&assistant_per_turn);
     Some(session)
+}
+
+/// Extracts assistant answer text from an `event_msg`/`response_item` line, or None
+/// when the line is not an assistant message (user turns are handled separately).
+fn assistant_text(v: &Value) -> Option<String> {
+    let payload = v.get("payload").unwrap_or(v);
+    match payload.get("type").and_then(Value::as_str) {
+        Some("agent_message") => payload
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty()),
+        Some("message") if payload.get("role").and_then(Value::as_str) == Some("assistant") => {
+            message_text(payload)
+        }
+        _ => None,
+    }
+}
+
+/// Joins the text parts of a `response_item` assistant message content.
+fn message_text(payload: &Value) -> Option<String> {
+    match payload.get("content")? {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        Value::Array(items) => {
+            let mut parts = Vec::new();
+            for item in items {
+                if let Some(text) = item
+                    .get("text")
+                    .or_else(|| item.get("input_text"))
+                    .or_else(|| item.get("output_text"))
+                    .and_then(Value::as_str)
+                {
+                    if !text.trim().is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            (!parts.is_empty()).then(|| parts.join("\n\n"))
+        }
+        _ => None,
+    }
 }
 
 /// Returns `num_turns` when the line is a backtrack marker
@@ -328,6 +390,59 @@ mod tests {
         assert_eq!(session.title(), "26-07 세션 타이틀 개선");
 
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assistant_blob_indexes_answers_and_excludes_rollback() {
+        let content = r#"
+{"type":"session_meta","payload":{"id":"x1","cwd":"/tmp/demo"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"질문1"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"답1 keepkw"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"버려질 질문"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"버려질답 dropkw"}}
+{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}
+{"type":"event_msg","payload":{"type":"user_message","message":"수정된 질문"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"수정답 fixkw"}}
+"#;
+        let (root, path) = write_rollout("asst-rollback", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert!(session.assistant_blob.contains("keepkw"));
+        assert!(session.assistant_blob.contains("fixkw"));
+        assert!(!session.assistant_blob.contains("dropkw"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assistant_blob_keeps_single_copy_of_duplicated_answer_event() {
+        // The same answer arrives twice (agent_message then response_item); only the
+        // turn's last assistant text is indexed, so the keyword appears once.
+        let content = r#"
+{"type":"session_meta","payload":{"id":"x2","cwd":"/tmp/demo"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"질문"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"동일답변 dupkw"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"동일답변 dupkw"}]}}
+"#;
+        let (root, path) = write_rollout("asst-dup", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert_eq!(session.assistant_blob.matches("dupkw").count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assistant_blob_excludes_bootstrap_ready_response() {
+        let content = r#"
+{"type":"session_meta","payload":{"id":"x3","cwd":"/tmp/demo"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"<s7s-context-bootstrap>\nRun\n</s7s-context-bootstrap>"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"readykw 확인"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"진짜 질문"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"realkw 답"}}
+"#;
+        let (root, path) = write_rollout("asst-bootstrap", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert_eq!(session.user_turns, vec!["진짜 질문"]);
+        assert!(session.assistant_blob.contains("realkw"));
+        assert!(!session.assistant_blob.contains("readykw"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -81,6 +81,7 @@ mod tests {
             size_bytes: 0,
             user_turns: vec!["질문".to_string()],
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         }

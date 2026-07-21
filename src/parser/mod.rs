@@ -37,6 +37,21 @@ pub fn reindex_search_blob(session: &mut Session) {
     session.search_blob = normalize::nfc_lower(&joined);
 }
 
+/// Builds the assistant search blob from the last assistant answer of each active turn.
+///
+/// Redacts known secrets, then NFC-normalizes and lowercases (same normalization as
+/// `search_blob`). Only the last assistant text per turn is indexed — intermediate
+/// progress messages are intentionally dropped to bound cache growth. Rewind/rollback
+/// abandoned answers and the bootstrap ready response are excluded upstream by each
+/// agent's turn extraction, so callers pass only the answers that should be searchable.
+pub fn build_assistant_blob(per_turn_last: &[String]) -> String {
+    if per_turn_last.is_empty() {
+        return String::new();
+    }
+    let joined = per_turn_last.join("\n");
+    normalize::nfc_lower(&crate::session_context::redact::redact(&joined))
+}
+
 /// Appends the folder name to the blob source on its own line when present.
 fn append_folder(joined: &mut String, folder: &str) {
     if !folder.is_empty() {
@@ -102,6 +117,7 @@ mod tests {
             size_bytes: 0,
             user_turns: turns.iter().map(|t| t.to_string()).collect(),
             search_blob: String::new(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         }
@@ -127,6 +143,21 @@ mod tests {
         let mut s = session("", &["hello"]);
         finalize(&mut s);
         assert_eq!(s.search_blob, "hello");
+    }
+
+    #[test]
+    fn build_assistant_blob_redacts_normalizes_and_handles_empty() {
+        let out = build_assistant_blob(&[
+            "API_KEY=sk-secret1234567890".to_string(),
+            "Final Answer TEXT".to_string(),
+        ]);
+        // NFC-lowercased for case-insensitive matching.
+        assert!(out.contains("final answer text"));
+        // Secrets are redacted before indexing (never cached in the clear).
+        assert!(!out.contains("sk-secret"));
+        assert!(out.contains("[redacted]"));
+        // Empty input yields an empty blob (no work for user-only sessions).
+        assert!(build_assistant_blob(&[]).is_empty());
     }
 
     #[test]

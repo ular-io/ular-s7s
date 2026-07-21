@@ -14,7 +14,7 @@
 //!
 //! Since one file equals one session, file-level mtime cache is applied similar to claude/codex.
 
-use super::{clean_turn, finalize, is_noise_turn};
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn};
 use crate::model::{Agent, Session};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -209,6 +209,21 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.clone());
 
+    // Assistant answers live in the JSONL transcript, not the DB. Reuse the detailed
+    // transcript parser to pull each turn's last assistant text for the search index;
+    // a missing/rotated transcript simply yields fewer (or no) indexed answers, and
+    // search falls back to user turns for that session.
+    let assistant_per_turn: Vec<String> =
+        crate::session_context::antigravity::transcript_path(path, &id)
+            .and_then(|tp| crate::session_context::antigravity::parse_turns(&tp).ok())
+            .map(|turns| {
+                turns
+                    .into_iter()
+                    .filter_map(|t| t.last_assistant_text)
+                    .collect()
+            })
+            .unwrap_or_default();
+
     let mut s = Session {
         agent: Agent::Antigravity,
         profile_id: String::new(),
@@ -221,12 +236,14 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
         size_bytes: 0,
         user_turns: turns,
         search_blob: String::new(),
+        assistant_blob: String::new(),
         title_hint: m
             .and_then(|m| m.title.clone())
             .or_else(|| m.and_then(|m| m.preview.clone())),
         title_fixed: m.and_then(|m| m.title.as_ref()).is_some(),
     };
     finalize(&mut s);
+    s.assistant_blob = build_assistant_blob(&assistant_per_turn);
     Some(s)
 }
 

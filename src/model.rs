@@ -67,6 +67,12 @@ pub struct Session {
     /// Precomputed lowercase NFC text for searching (combines all user turns, title, and folder name).
     #[serde(default)]
     pub search_blob: String,
+    /// Precomputed lowercase NFC text of each active turn's last assistant answer,
+    /// used as an additional keyword-search target. Kept separate from `search_blob`
+    /// so a title rename never has to recompute it (assistant content is parse-only).
+    /// Redacted at parse time so cached secrets never reach disk.
+    #[serde(default)]
+    pub assistant_blob: String,
     /// Automatic or explicit title candidate.
     #[serde(default)]
     pub title_hint: Option<String>,

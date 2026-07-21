@@ -2,8 +2,10 @@
 //!
 //! All conditions are joined with AND. Empty conditions are treated as "match all".
 //! Keywords are matched against the precomputed `search_blob` (user turns + title + folder name) per
-//! session, avoiding runtime overhead during search. Tokens not found in the blob will fall back to
-//! partial match of the session id if they are at least [`ID_SEARCH_MIN_LEN`] long.
+//! session, avoiding runtime overhead during search. Tokens not found there fall back to the
+//! `assistant_blob` (each turn's last assistant answer), then to a partial match of the session id
+//! (if the token is at least [`ID_SEARCH_MIN_LEN`] long). A multi-token query can be satisfied by
+//! finding some tokens in the user body/title and others in past assistant answers.
 
 use crate::model::{Agent, Session};
 use crate::normalize;
@@ -46,6 +48,11 @@ impl Filter {
             let needle = normalize::nfc_lower(&self.keyword);
             for token in needle.split_whitespace() {
                 if s.search_blob.contains(token) {
+                    continue;
+                }
+                // Assistant answers are a secondary target: a token found only in a
+                // past answer still matches (AND semantics across tokens preserved).
+                if s.assistant_blob.contains(token) {
                     continue;
                 }
                 if token.len() >= ID_SEARCH_MIN_LEN && s.id.to_ascii_lowercase().contains(token) {
@@ -120,6 +127,7 @@ mod tests {
             size_bytes: 0,
             user_turns: Vec::new(),
             search_blob: blob.to_string(),
+            assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
         }
@@ -155,5 +163,25 @@ mod tests {
     fn keyword_id_match_is_ascii_case_insensitive() {
         let s = session("019F36E8-9157-7C63-BEE8-8937A6314982", "");
         assert!(keyword("019f36e8").matches(&s));
+    }
+
+    #[test]
+    fn keyword_matches_assistant_blob() {
+        let mut s = session("id", "질문 본문");
+        s.assistant_blob = "sqlite 전환은 필요 없습니다".to_string();
+        // Token present only in the assistant answer still matches.
+        assert!(keyword("sqlite").matches(&s));
+        // Token in neither blob nor id fails.
+        assert!(!keyword("존재하지않는키워드").matches(&s));
+    }
+
+    #[test]
+    fn keyword_and_across_user_and_assistant_blobs() {
+        let mut s = session("id", "질문 본문");
+        s.assistant_blob = "최종 답변 텍스트".to_string();
+        // One token from the user body, one from the assistant answer: AND holds.
+        assert!(keyword("질문 답변").matches(&s));
+        // Both tokens must be found somewhere; a missing one fails the whole query.
+        assert!(!keyword("질문 없는토큰").matches(&s));
     }
 }
