@@ -1,5 +1,6 @@
 //! TUI application state and state machine.
 
+pub mod background;
 pub mod components;
 pub mod detail;
 pub mod effect;
@@ -29,10 +30,9 @@ use crate::models::{self, ModelCatalog};
 use crate::profile::ProfileStore;
 use crate::usage::{self, UsagePhase, UsageState};
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashSet;
+use background::BackgroundState;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// Main screen variants. Cycled/switched via Quick Command (`:`) window commands or ←/→ arrows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,16 +217,12 @@ pub struct App {
 
     /// Usage (remaining %) display status per profile.
     pub usage: UsageState,
-    /// Receivers for active usage query results (removed on completion). Items are (profile_id, UsageResult).
-    /// Maintained as a vector to allow concurrent runs of full updates (Ctrl+U) and incremental updates (profile add/edit).
-    usage_rxs: Vec<Receiver<(String, usage::UsageResult)>>,
-
     /// Cache of model catalogs per profile (persisted in models.json). Used in the new session model dropdown.
     pub models: ModelCatalog,
-    /// Receivers for active model query results (removed on completion).
-    models_rxs: Vec<Receiver<(String, models::ModelsResult)>>,
-    /// Profile IDs with active model queries (prevents duplicate PTY queries for the same profile).
-    models_loading: HashSet<String>,
+    /// Coordination state for background usage/model probe jobs (receivers and
+    /// the model-loading dedup guard). The result caches above stay on `App`;
+    /// this owns only the job plumbing (`ui/background.rs`).
+    pub(crate) background: BackgroundState,
 }
 
 impl App {
@@ -294,7 +290,6 @@ impl App {
             terminal_request: None,
             pending_effect: None,
             usage: UsageState::new(),
-            usage_rxs: Vec::new(),
             // Unit tests do not load the actual models.json to prevent non-deterministic failures
             // in dropdown initial selections driven by system state.
             models: if cfg!(test) {
@@ -302,8 +297,7 @@ impl App {
             } else {
                 ModelCatalog::load()
             },
-            models_rxs: Vec::new(),
-            models_loading: HashSet::new(),
+            background: BackgroundState::default(),
         };
         app.recompute();
         app
@@ -423,23 +417,15 @@ impl App {
             // Retain the prior successful value (`last`) while turning on the progress indicator.
             self.usage.entry_mut(&p.id).phase = UsagePhase::Loading;
         }
-        self.usage_rxs.push(usage::spawn_fetch(targets));
+        self.background.spawn_usage(targets);
     }
 
     /// Applies background usage query results to app state. Returns true if updates occurred (triggering a redraw).
     pub fn poll_usage(&mut self) -> bool {
-        if self.usage_rxs.is_empty() {
+        if !self.background.usage_in_flight() {
             return false;
         }
-        // Iterate receivers to collect incoming messages; remove channels that are fully completed (Disconnected).
-        let mut results: Vec<(String, usage::UsageResult)> = Vec::new();
-        self.usage_rxs.retain(|rx| loop {
-            match rx.try_recv() {
-                Ok(item) => results.push(item),
-                Err(TryRecvError::Empty) => break true,
-                Err(TryRecvError::Disconnected) => break false,
-            }
-        });
+        let results = self.background.drain_usage();
         let updated = !results.is_empty();
         for (profile_id, res) in results {
             let entry = self.usage.entry_mut(&profile_id);
@@ -469,7 +455,7 @@ impl App {
                 usage::UsageResult::Failed(_) => entry.phase = UsagePhase::Failed,
             }
         }
-        if updated && self.usage_rxs.is_empty() {
+        if updated && !self.background.usage_in_flight() {
             self.status_msg = Some("usage update complete".to_string());
         }
         updated
@@ -477,7 +463,7 @@ impl App {
 
     /// Returns whether a usage query task is in progress (used to determine polling frequency in the main loop).
     pub fn usage_in_flight(&self) -> bool {
-        !self.usage_rxs.is_empty()
+        self.background.usage_in_flight()
     }
 
     /// Spawns parallel queries to fetch model catalogs for all profiles.
@@ -506,7 +492,7 @@ impl App {
             .profiles
             .iter()
             .filter(|p| profile_ids.contains(&p.id))
-            .filter(|p| !self.models_loading.contains(&p.id))
+            .filter(|p| !self.background.is_models_loading(&p.id))
             .cloned()
             .collect();
         if targets.is_empty() {
@@ -516,11 +502,8 @@ impl App {
             .iter()
             .filter_map(|p| self.models.cached_version(&p.id).map(|v| (p.id.clone(), v)))
             .collect();
-        for p in &targets {
-            self.models_loading.insert(p.id.clone());
-        }
-        self.models_rxs
-            .push(models::spawn_fetch(targets, cached_versions, force));
+        self.background
+            .spawn_models(targets, cached_versions, force);
     }
 
     /// Applies background model catalog query results. Returns true if updates occurred.
@@ -528,28 +511,18 @@ impl App {
     /// Preserves existing caches on query failure or unavailability. Since CLIs do not filter out
     /// invalid model names, we must not clear cached catalogs on unsuccessful updates.
     pub fn poll_models(&mut self) -> bool {
-        if self.models_rxs.is_empty() {
+        if !self.background.models_in_flight() {
             return false;
         }
-        let mut results: Vec<(String, models::ModelsResult)> = Vec::new();
-        self.models_rxs.retain(|rx| loop {
-            match rx.try_recv() {
-                Ok(item) => results.push(item),
-                Err(TryRecvError::Empty) => break true,
-                Err(TryRecvError::Disconnected) => break false,
-            }
-        });
+        // Draining clears the per-profile loading guard; applying the results to
+        // the model cache and persisting them stays here (the cache is App-owned).
+        let results = self.background.drain_models();
         let mut dirty = false;
         for (profile_id, res) in results {
-            self.models_loading.remove(&profile_id);
             if let models::ModelsResult::Ready(pm) = res {
                 self.models.insert(profile_id, pm);
                 dirty = true;
             }
-        }
-        if self.models_rxs.is_empty() {
-            // Defensively clear loading tracking to clean up trailing markers once all channels complete.
-            self.models_loading.clear();
         }
         if dirty {
             self.models.save().ok();
@@ -559,7 +532,7 @@ impl App {
 
     /// Returns whether any background query (usage or models) is in progress (used to determine polling frequency).
     pub fn background_in_flight(&self) -> bool {
-        !self.usage_rxs.is_empty() || !self.models_rxs.is_empty()
+        self.background.in_flight()
     }
 
     /// Polls and applies all background query results. Returns true if updates occurred (triggering a redraw).
