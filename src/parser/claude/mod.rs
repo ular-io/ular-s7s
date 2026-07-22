@@ -10,23 +10,27 @@
 //! dead branch. Only turns on the active path (walked from the last non-sidechain entry back
 //! to the root) are shown. Verified against claude CLI 2.1.211 — a rewind alone writes
 //! nothing, so it is only detectable once the user sends a message afterwards.
-use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, turn};
+pub(crate) mod events;
+
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn};
 use crate::model::{Agent, Session};
+use events::{AssistantItem, RecordKind, TitleEvent, UserTextKind};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Ordered conversation event used to reconstruct turn boundaries for both the user
-/// turn list and the per-turn last assistant answer (search index). Every event
-/// carries the uuid of its source line so the active-path (`/rewind`) filter applies.
+/// turn list and the per-turn last assistant answer (search index). Built from
+/// active-branch records only (the `/rewind` filter is applied while decoding),
+/// so no per-event uuid is needed.
 enum Event {
     /// A real user turn: opens a new turn and contributes to `user_turns`.
-    User { uuid: Option<String>, text: String },
+    User(String),
     /// A countable-but-noise user line (slash command, bootstrap prompt): closes the
     /// current turn without opening one, so a following answer is not indexed under it.
-    Boundary { uuid: Option<String> },
+    Boundary,
     /// One assistant text block; the last one within a turn becomes that turn's answer.
-    Assistant { uuid: Option<String>, text: String },
+    Assistant(String),
 }
 
 /// Claude session title metadata.
@@ -87,145 +91,95 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
     let content = std::fs::read_to_string(path).ok()?;
     let id = path.file_stem()?.to_string_lossy().to_string();
 
-    let mut cwd: Option<String> = None;
-    // Ordered events (user/boundary/assistant), each tagged with its line uuid; filtered
-    // to the active parentUuid chain after the scan (see module docs on `/rewind`).
+    let values = events::parse_lines(&content);
+
+    // Use the first occurrence of cwd from any line (sidechain and title records
+    // included — the field is per-line metadata, not conversation content).
+    let cwd = values
+        .iter()
+        .find_map(|v| {
+            v.get("cwd")
+                .and_then(Value::as_str)
+                .filter(|c| !c.is_empty())
+        })
+        .map(str::to_string);
+
+    // Pass 1: active-branch membership (see module docs on `/rewind`); a broken
+    // chain keeps everything — a format change must never blank a session.
+    let filter = events::chain_filter(&values);
+
+    // Pass 2: decode active-branch records into ordered events (user/boundary/
+    // assistant) and resolve the body title events.
     let mut events: Vec<Event> = Vec::new();
-    let mut parents: HashMap<String, Option<String>> = HashMap::new();
-    let mut leaf: Option<String> = None;
     let mut explicit_title: Option<String> = None;
     let mut auto_title: Option<String> = None;
 
-    for line in content.lines() {
-        if line.is_empty() {
+    for v in &values {
+        let Some(record) = events::decode(v) else {
             continue;
-        }
-        let v: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
         };
-
-        // Use the first occurrence of cwd from any line.
-        if cwd.is_none() {
-            if let Some(c) = v.get("cwd").and_then(Value::as_str) {
-                if !c.is_empty() {
-                    cwd = Some(c.to_string());
-                }
-            }
+        if !filter.is_active(record.uuid) {
+            continue; // Abandoned by /rewind.
         }
-
-        match v.get("type").and_then(Value::as_str) {
-            Some("custom-title") => {
-                if let Some(t) = v.get("customTitle").and_then(Value::as_str) {
-                    let t = t.trim();
-                    if !t.is_empty() {
-                        explicit_title = Some(t.to_string());
-                        // Explicit titles set via `/rename` always take precedence over auto-generated titles.
-                    }
-                }
-                continue;
+        match record.kind {
+            RecordKind::Title(TitleEvent::Custom(t)) => {
+                // Explicit titles set via `/rename` always take precedence over auto-generated titles.
+                explicit_title = Some(t.to_string());
             }
-            Some("agent-name") => {
+            RecordKind::Title(TitleEvent::AgentName(t)) => {
                 if explicit_title.is_none() {
-                    if let Some(t) = v.get("agentName").and_then(Value::as_str) {
-                        let t = t.trim();
-                        if !t.is_empty() {
-                            explicit_title = Some(t.to_string());
-                        }
-                    }
+                    explicit_title = Some(t.to_string());
                 }
-                continue;
             }
-            Some("ai-title") => {
+            RecordKind::Title(TitleEvent::Ai(t)) => {
                 if auto_title.is_none() && explicit_title.is_none() {
-                    if let Some(t) = v.get("aiTitle").and_then(Value::as_str) {
-                        let t = t.trim();
-                        if !t.is_empty() {
-                            auto_title = Some(t.to_string());
-                        }
-                    }
+                    auto_title = Some(t.to_string());
                 }
-                continue;
             }
-            _ => {}
-        }
-
-        // Exclude subagent (sidechain) conversations.
-        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-
-        // Record the parent link of every non-sidechain entry that carries a uuid;
-        // the last such entry is the head (leaf) of the active conversation branch.
-        let uuid = v.get("uuid").and_then(Value::as_str).map(str::to_string);
-        if let Some(u) = uuid.clone() {
-            let parent = v
-                .get("parentUuid")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            parents.insert(u.clone(), parent);
-            leaf = Some(u);
-        }
-
-        match v.get("type").and_then(Value::as_str) {
-            Some("user") => {
-                if let Some(text) = turn::extract_user_text(&v) {
-                    if !is_noise_turn(&text) {
-                        if let Some(cleaned) = clean_turn(&text) {
-                            events.push(Event::User {
-                                uuid: uuid.clone(),
-                                text: cleaned,
-                            });
-                        }
-                    } else if !is_task_notification(&text) {
+            RecordKind::User(u) => {
+                if !u.is_task_notification {
+                    match u.text_kind {
+                        UserTextKind::Turn { cleaned } => events.push(Event::User(cleaned)),
                         // Slash commands, the bootstrap prompt, etc. close the current
-                        // turn but do not open one. Task notifications are the exception
-                        // (the real final answer follows), so they keep the turn open.
-                        events.push(Event::Boundary { uuid: uuid.clone() });
+                        // turn but do not open one.
+                        UserTextKind::Boundary => events.push(Event::Boundary),
+                        UserTextKind::Blank | UserTextKind::NoText => {}
                     }
                 }
-                if let Some(qa) = turn::extract_question_answers(&v) {
+                // Task notifications produce no event (the real final answer
+                // follows, so they keep the turn open); Q&A answers still count.
+                if let Some(qa) = u.qa {
                     if !is_noise_turn(&qa) {
                         if let Some(cleaned) = clean_turn(&qa) {
-                            events.push(Event::User {
-                                uuid: uuid.clone(),
-                                text: cleaned,
-                            });
+                            events.push(Event::User(cleaned));
                         }
                     }
                 }
             }
-            Some("assistant") => {
-                for text in assistant_texts(&v) {
-                    events.push(Event::Assistant {
-                        uuid: uuid.clone(),
-                        text,
-                    });
+            RecordKind::Assistant(items) => {
+                for item in items {
+                    if let AssistantItem::Text(t) = item {
+                        if !t.trim().is_empty() {
+                            events.push(Event::Assistant(t.to_string()));
+                        }
+                    }
                 }
             }
-            _ => {}
+            RecordKind::Other => {}
         }
     }
-
-    // Trust the parentUuid chain when it is intact; otherwise keep every event
-    // (same fallback as before — a format change must never blank a session).
-    let active = active_uuid_set(&parents, leaf.as_deref());
-    let is_active = |uuid: &Option<String>| match (&active, uuid) {
-        (Some(set), Some(u)) => set.contains(u.as_str()),
-        _ => true,
-    };
 
     let turns: Vec<String> = events
         .iter()
         .filter_map(|ev| match ev {
-            Event::User { uuid, text } if is_active(uuid) => Some(text.clone()),
+            Event::User(text) => Some(text.clone()),
             _ => None,
         })
         .collect();
     if turns.is_empty() {
         return None;
     }
-    let assistant_per_turn = last_assistant_per_turn(&events, &is_active);
+    let assistant_per_turn = last_assistant_per_turn(&events);
 
     let cwd = cwd.unwrap_or_else(|| decode_project_dir(path));
     let folder = folder_name(&cwd);
@@ -256,43 +210,18 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
     Some(session)
 }
 
-/// Collects the plain text blocks of an assistant message (content array, `text` items).
-fn assistant_texts(v: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(Value::Array(items)) = v.get("message").and_then(|m| m.get("content")) {
-        for item in items {
-            if item.get("type").and_then(Value::as_str) == Some("text") {
-                if let Some(t) = item.get("text").and_then(Value::as_str) {
-                    if !t.trim().is_empty() {
-                        out.push(t.to_string());
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Whether a noise user line is a background task-completion notification.
-fn is_task_notification(text: &str) -> bool {
-    text.trim_start().starts_with("<task-notification>")
-}
-
 /// Walks the active events in order and returns each turn's last assistant text.
 /// A turn opens on a `User` event and closes on the next `User`/`Boundary`; only the
 /// last assistant text seen while a turn is open is kept (intermediate progress
 /// messages are dropped). Assistant text with no open turn (e.g. the bootstrap ready
 /// response before the first real question) is ignored.
-fn last_assistant_per_turn(
-    events: &[Event],
-    is_active: &impl Fn(&Option<String>) -> bool,
-) -> Vec<String> {
+fn last_assistant_per_turn(events: &[Event]) -> Vec<String> {
     let mut per_turn = Vec::new();
     let mut current: Option<String> = None;
     let mut in_turn = false;
     for ev in events {
         match ev {
-            Event::User { uuid, .. } if is_active(uuid) => {
+            Event::User(_) => {
                 if in_turn {
                     if let Some(a) = current.take() {
                         per_turn.push(a);
@@ -301,7 +230,7 @@ fn last_assistant_per_turn(
                 in_turn = true;
                 current = None;
             }
-            Event::Boundary { uuid } if is_active(uuid) => {
+            Event::Boundary => {
                 if in_turn {
                     if let Some(a) = current.take() {
                         per_turn.push(a);
@@ -310,10 +239,11 @@ fn last_assistant_per_turn(
                 in_turn = false;
                 current = None;
             }
-            Event::Assistant { uuid, text } if is_active(uuid) && in_turn => {
-                current = Some(text.clone());
+            Event::Assistant(text) => {
+                if in_turn {
+                    current = Some(text.clone());
+                }
             }
-            _ => {}
         }
     }
     if in_turn {
@@ -322,32 +252,6 @@ fn last_assistant_per_turn(
         }
     }
     per_turn
-}
-
-/// Set of uuids on the active branch (leaf -> root walk over `parentUuid` links).
-///
-/// Returns None when the chain cannot be trusted — no leaf, or a dangling parent
-/// reference — meaning the caller must keep every entry. Shared between the list
-/// parser and the detailed session-context parser so both views agree on which
-/// turns were abandoned by `/rewind`.
-pub(crate) fn active_uuid_set(
-    parents: &HashMap<String, Option<String>>,
-    leaf: Option<&str>,
-) -> Option<HashSet<String>> {
-    let leaf = leaf?;
-    let mut active: HashSet<String> = HashSet::new();
-    let mut cursor = Some(leaf.to_string());
-    while let Some(u) = cursor {
-        if !active.insert(u.clone()) {
-            break; // Cycle guard (corrupt file).
-        }
-        match parents.get(&u) {
-            Some(parent) => cursor = parent.clone(),
-            // Dangling reference: the chain cannot be trusted, keep everything.
-            None => return None,
-        }
-    }
-    Some(active)
 }
 
 /// Reconstructs (approximates) the path from the dash-encoded directory name when the cwd field is missing.
@@ -377,6 +281,7 @@ fn folder_name(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::turn;
 
     #[test]
     fn title_meta_fixed_only_for_explicit_name_sources() {
