@@ -23,7 +23,7 @@ src/session_context/
 ├── mod.rs          load(session) → SessionContext · shared turn builder helpers
 ├── model.rs        SessionContext · ContextTurn · ContextEntry · ContextCompleteness
 ├── claude.rs       Detailed parser (record decoding + parentUuid active path via parser::claude::events, shared with list parser)
-├── codex.rs        Detailed parser (thread_rolled_back rollback processing — parity with list parser)
+├── codex.rs        Detailed parser (record decoding + thread_rolled_back rollback via parser::codex::events, shared with list parser)
 ├── antigravity.rs  Detailed parser (transcript JSONL) + transcript path resolution
 ├── excerpt.rs      Unicode-safe excerpt (chars() based, byte slicing forbidden)
 ├── redact.rs       Secret masking (must be applied before excerpting)
@@ -45,7 +45,7 @@ exactly once. Earlier mid-turn repetitions of the same text are kept.
 List Q count == Detail screen turn number == CLI turn number.
 
 - **Claude**: Both parsers call the same decoder module, `parser::claude::events` (R12): `chain_filter` builds the `parentUuid` active-path set that excludes `/rewind` dead branches, and `decode` applies the shared turn-adoption gates (`extract_user_text` + `is_noise_turn` + `clean_turn`) plus sidechain and task-notification identity — so acceptance can no longer drift between the two views. The is-human field check is not used because older records lack `promptSource`/`origin`. The detailed tool call/result payloads are the only Claude-specific extraction left in `session_context::claude`; the decoder never materializes them (list stays lightweight, §5.5).
-- **Codex**: Truncates recent N user turns with the `thread_rolled_back {num_turns}` marker (noise-filtered user_message is also counted as a boundary — identical to the list parser). **Image-only inputs are recorded as empty `user_message`**, so turns are not created through the `clean_turn` gate (identical to the list).
+- **Codex**: Both parsers call the same decoder module, `parser::codex::events` (R13): `decode` classifies each rollout line (session_meta, ai-title, `thread_rolled_back`, user turn, QA, assistant text, tool call/result) and applies the shared turn-acceptance gates and user-turn form detection; each parser applies the rollback truncation itself. The `thread_rolled_back {num_turns}` marker truncates the recent N user turns (noise-filtered user messages are counted as boundaries so `num_turns` counts real CLI turns). **Image-only inputs are recorded as empty `user_message`**, so turns are not created through the `clean_turn` gate (identical to the list). R13 also unified two prior divergences: the user-turn form (both `event_msg user_message` and `response_item` role=user are now accepted by both views) and empty assistant-text filtering. The detailed tool call/result payloads are the only Codex-specific extraction left in `session_context::codex`.
 - **Antigravity**: The list is an SQLite DB, while details are from the transcript log; **the sources differ**.
   - If the transcript has rotated and has fewer turns than the list, it falls back to `UserTurnsOnly` so that turn numbers do not appear misaligned (Observed: A session where `transcript_full.jsonl` starts from step_index 125 exists).
   - If details are more numerous than the list (under-aggregation due to the DB list parser failing to read newer payloads), details are more complete, so Full is maintained — a known limitation.

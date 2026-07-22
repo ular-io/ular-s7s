@@ -50,7 +50,17 @@
 > 0 mismatches over 623 sessions, and a new permanent gate
 > `real_data_index_snapshot` confirmed the list index byte-identical across 626
 > sessions before/after; `CACHE_VERSION` stays 12 (no serialization change)
-> (done). R13 onward remain proposed.
+> (done). **R13** applies the same treatment to Codex
+> (`src/parser/codex/events.rs`): both consumers run one streaming `decode`
+> (session_meta / ai-title / `thread_rolled_back` / user turn / QA / assistant /
+> tool call/result per rollout line), with the backtrack truncation applied by
+> each accumulator and no pre-pass (the marker truncates in file order). Two
+> pre-R13 micro-divergences were unified (the user-turn form — both `event_msg`
+> and `response_item` are now accepted by both views; empty assistant-text
+> filtering). Behavior preserved: `real_data_turn_parity` 0 mismatches over 623
+> sessions, the `real_data_index_snapshot` gate showed all 324 Codex list rows
+> byte-identical before/after; `CACHE_VERSION` stays 12 (done). R14 onward
+> remain proposed.
 
 ## 1. Status and Purpose
 
@@ -777,7 +787,7 @@ branch.
 | R10b | Background job coordination (`BackgroundState`) — done | R6-R9 | High |
 | R11 | Generic PTY/process probe layer (`src/probe/`) — done | R3, R10 | High |
 | R12 | Claude normalized events (`src/parser/claude/events.rs`) — done | R3 | High |
-| R13 | Codex normalized events | R3 | High |
+| R13 | Codex normalized events (`src/parser/codex/events.rs`) — done | R3 | High |
 | R14 | Antigravity parser boundary review | R12-R13 | High |
 | R15 | Final cleanup and documentation audit | R2-R14 | Medium |
 

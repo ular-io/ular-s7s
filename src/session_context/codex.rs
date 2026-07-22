@@ -1,14 +1,21 @@
 //! OpenAI Codex detailed turn parser (session context).
 //!
-//! Backtrack parity: `event_msg` `thread_rolled_back {num_turns:N}` markers drop
-//! the last N user turns (with their attached QA/entries) using the same boundary
-//! accounting as the list parser (`parser::codex`), so rolled-back turns never
-//! appear in detailed context either. Boundaries are recorded even for
-//! noise-filtered user messages because `num_turns` counts real CLI turns.
+//! Record decoding and the `thread_rolled_back` backtrack marker are shared with
+//! the list parser (`parser::codex::events` — R13): turn-acceptance gates, the
+//! user-turn form (both `event_msg` and `response_item`), and rollback
+//! identification can no longer drift between the two views. This parser owns
+//! only the rollback boundary accounting and the detailed tool call/result
+//! payloads it serializes from the raw records the shared decoder hands back.
+//!
+//! Backtrack parity: a `thread_rolled_back {num_turns:N}` marker drops the last
+//! N user turns (with their attached QA/entries) using the same boundary
+//! accounting as the list parser, so rolled-back turns never appear in detailed
+//! context either. Boundaries are recorded even for noise-filtered user messages
+//! because `num_turns` counts real CLI turns.
 
 use super::model::{ContextEntryKind, ContextTurn};
 use super::{cleanup_user_text, compact_json, promote_qa_turn, push_entry, set_last_assistant};
-use crate::parser::{clean_turn, is_noise_turn, turn};
+use crate::parser::codex::events::{self, CodexRecord, UserTextKind};
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
@@ -26,88 +33,55 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let ty = v.get("type").and_then(Value::as_str);
-        let payload = v.get("payload").unwrap_or(&v);
 
-        if let Some(n) = rolled_back_turns(&v) {
-            // Flush the in-progress turn so truncation sees every completed turn.
-            if let Some(done) = current.take() {
-                turns.push(done);
-            }
-            let keep = turn_starts.len().saturating_sub(n);
-            let cut = turn_starts.get(keep).copied().unwrap_or(turns.len());
-            turns.truncate(cut);
-            turn_starts.truncate(keep);
-            continue;
-        }
-
-        // AskUserQuestion response is promoted to a virtual user turn, matching the list view.
-        if let Some(qa) = turn::extract_question_answers(&v) {
-            promote_qa_turn(&mut turns, &mut current, &qa);
-            continue;
-        }
-
-        match ty {
-            Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("user_message") =>
-            {
+        match events::decode(&v) {
+            CodexRecord::RolledBack(n) => {
+                // Flush the in-progress turn so truncation sees every completed turn.
                 if let Some(done) = current.take() {
                     turns.push(done);
                 }
-                // Boundary recorded even for noise-filtered messages (rollback parity).
+                let keep = turn_starts.len().saturating_sub(n);
+                let cut = turn_starts.get(keep).copied().unwrap_or(turns.len());
+                turns.truncate(cut);
+                turn_starts.truncate(keep);
+            }
+            // AskUserQuestion response is promoted to a virtual user turn, matching the list view.
+            CodexRecord::Qa(qa) => promote_qa_turn(&mut turns, &mut current, &qa),
+            CodexRecord::User(u) => {
+                if let Some(done) = current.take() {
+                    turns.push(done);
+                }
+                // Boundary recorded even for noise-filtered messages (rollback parity);
+                // an indexable turn opens only when it survives the shared gate (image-only
+                // inputs arrive as empty user messages and must not open a turn).
                 turn_starts.push(turns.len());
-                if let Some(text) = payload.get("message").and_then(Value::as_str) {
-                    // Turn acceptance mirrors the list parser exactly (`clean_turn`
-                    // gate): image-only inputs arrive as empty user_message events
-                    // and must not open a turn, or CLI turn numbers would drift
-                    // from the list's Q count.
-                    if !is_noise_turn(text) && clean_turn(text).is_some() {
-                        current = Some(ContextTurn {
-                            user: cleanup_user_text(text),
-                            last_assistant_text: None,
-                            entries: Vec::new(),
-                        });
-                    }
+                if let UserTextKind::Turn { .. } = u.kind {
+                    current = Some(ContextTurn {
+                        user: cleanup_user_text(&u.text),
+                        last_assistant_text: None,
+                        entries: Vec::new(),
+                    });
                 }
             }
-            Some("event_msg")
-                if payload.get("type").and_then(Value::as_str) == Some("agent_message") =>
-            {
-                if let Some(text) = payload.get("message").and_then(Value::as_str) {
-                    set_last_assistant(&mut current, text);
-                    push_entry(
-                        &mut current,
-                        ContextEntryKind::AssistantText,
-                        text.to_string(),
-                    );
-                }
+            CodexRecord::Assistant(text) => {
+                set_last_assistant(&mut current, &text);
+                push_entry(&mut current, ContextEntryKind::AssistantText, text);
             }
-            Some("response_item") => match payload.get("type").and_then(Value::as_str) {
-                Some("message")
-                    if payload.get("role").and_then(Value::as_str) == Some("assistant") =>
-                {
-                    if let Some(text) = codex_message_text(payload) {
-                        set_last_assistant(&mut current, &text);
-                        push_entry(&mut current, ContextEntryKind::AssistantText, text);
-                    }
-                }
-                Some("function_call") | Some("custom_tool_call") => {
-                    push_entry(
-                        &mut current,
-                        ContextEntryKind::ToolCall,
-                        compact_json(payload),
-                    );
-                }
-                Some("function_call_output") | Some("custom_tool_call_output") => {
-                    push_entry(
-                        &mut current,
-                        ContextEntryKind::ToolResult,
-                        compact_json(payload),
-                    );
-                }
-                _ => {}
-            },
-            _ => {}
+            CodexRecord::ToolCall(payload) => {
+                push_entry(
+                    &mut current,
+                    ContextEntryKind::ToolCall,
+                    compact_json(payload),
+                );
+            }
+            CodexRecord::ToolResult(payload) => {
+                push_entry(
+                    &mut current,
+                    ContextEntryKind::ToolResult,
+                    compact_json(payload),
+                );
+            }
+            CodexRecord::Meta { .. } | CodexRecord::Title(_) | CodexRecord::Other => {}
         }
     }
 
@@ -115,43 +89,6 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
         turns.push(done);
     }
     Ok(turns)
-}
-
-/// Returns `num_turns` when the line is a backtrack marker
-/// (`event_msg` with `payload.type=="thread_rolled_back"`).
-fn rolled_back_turns(v: &Value) -> Option<usize> {
-    let payload = v.get("payload")?;
-    if payload.get("type").and_then(Value::as_str) != Some("thread_rolled_back") {
-        return None;
-    }
-    Some(
-        payload
-            .get("num_turns")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-    )
-}
-
-fn codex_message_text(payload: &Value) -> Option<String> {
-    let content = payload.get("content")?;
-    match content {
-        Value::String(s) => Some(s.clone()),
-        Value::Array(items) => {
-            let mut parts = Vec::new();
-            for item in items {
-                if let Some(text) = item
-                    .get("text")
-                    .or_else(|| item.get("input_text"))
-                    .or_else(|| item.get("output_text"))
-                    .and_then(Value::as_str)
-                {
-                    parts.push(text.to_string());
-                }
-            }
-            (!parts.is_empty()).then(|| parts.join("\n\n"))
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
