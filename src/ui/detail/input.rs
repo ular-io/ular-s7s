@@ -78,7 +78,7 @@ impl App {
                 }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.update_sessions_and_usage();
+                self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
             }
             // Contextual New Session (matched before ordinary Ctrl+N; see on_key_table).
             KeyCode::Char('n') | KeyCode::Char('N')
