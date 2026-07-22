@@ -815,7 +815,7 @@ impl App {
             FilterByAgent => self.open_agent_modal(),
             FilterByFolder => self.open_folder_modal(),
             ClearFilters => self.clear_all_filters(),
-            RefreshAll => self.update_sessions_and_usage(),
+            RefreshAll => self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll),
             ToggleToolLogs => self.detail_show_tools = !self.detail_show_tools,
             EditConfig => self.request_edit_config(),
             ChangeTheme => self.open_theme_select(),

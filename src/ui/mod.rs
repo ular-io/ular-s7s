@@ -2,6 +2,7 @@
 
 pub mod components;
 pub mod detail;
+pub mod effect;
 pub mod new_session;
 pub mod overlays;
 pub mod profile;
@@ -208,6 +209,11 @@ pub struct App {
     pub login_request: Option<String>,
     /// Request to run a shell command in a session folder, if set.
     pub terminal_request: Option<TerminalRequest>,
+    /// Pending in-place effect (rescan / rename / delete) requested by a key
+    /// handler, executed at the `App` boundary via [`App::apply_effect`] while
+    /// the TUI stays mounted. Unlike the handover `*_request` fields above, these
+    /// do not unmount the terminal.
+    pub(crate) pending_effect: Option<effect::AppEffect>,
 
     /// Usage (remaining %) display status per profile.
     pub usage: UsageState,
@@ -286,6 +292,7 @@ impl App {
             new_session_request: None,
             login_request: None,
             terminal_request: None,
+            pending_effect: None,
             usage: UsageState::new(),
             usage_rxs: Vec::new(),
             // Unit tests do not load the actual models.json to prevent non-deterministic failures
@@ -376,19 +383,6 @@ impl App {
                 None => self.close_session_detail(),
             }
         }
-    }
-
-    /// Global Ctrl+U: Refreshes session lists, usage stats, and model catalogs concurrently (shared across all main screens).
-    /// Forcefully updates model catalogs (bypassing version gates) to capture potential plan changes,
-    /// though it runs silently in the background unlike usage query feedback (no status updates on completion).
-    fn update_sessions_and_usage(&mut self) {
-        self.refresh_sessions();
-        self.start_usage_fetch();
-        self.start_models_fetch(true);
-        self.status_msg = Some(format!(
-            "session update complete · {} · updating usage…",
-            self.scan_info
-        ));
     }
 
     /// Spawns parallel queries to fetch usage (remaining %) for all fetchable profiles. Ignored if queries are already in flight.
@@ -755,6 +749,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::effect::AppEffect;
     use super::new_session::state::is_bare_project_name;
     use super::quick::QuickMode;
     use super::{
@@ -834,6 +829,46 @@ mod tests {
         app.on_key_profile_dir_confirm(key(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.mode, UiMode::ProfileForm);
         assert!(app.profile_form.is_some());
+    }
+
+    #[test]
+    fn confirm_profile_form_enqueues_profile_saved_effect() {
+        let mut app = empty_app();
+        app.screen = Screen::Profile;
+        app.open_profile_form(None);
+
+        // An existing directory skips the create-confirm modal and commits directly.
+        let dir = std::env::temp_dir().join(format!(
+            "s7s-test-existing-cfg-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let form = app.profile_form.as_mut().unwrap();
+        form.name.value = "Team".to_string();
+        form.path.value = dir.to_string_lossy().into_owned();
+
+        app.confirm_profile_form();
+
+        // The store is mutated in memory, but persistence + rescan are deferred to
+        // the effect, so the form stays open until the boundary runs it.
+        match app.pending_effect.as_ref() {
+            Some(AppEffect::ProfileSaved {
+                name,
+                request_login,
+                ..
+            }) => {
+                assert_eq!(name, "Team");
+                assert!(!request_login);
+            }
+            other => panic!("expected ProfileSaved effect, got {other:?}"),
+        }
+        assert!(app.profiles.profiles.iter().any(|p| p.name == "Team"));
+        assert!(app.profile_form.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -982,10 +1017,48 @@ mod tests {
 
         // Must abort before touching any metadata store and keep the modal open.
         assert_eq!(app.mode, UiMode::Rename);
+        assert!(app.pending_effect.is_none());
         assert!(matches!(
             app.status_msg.as_deref(),
             Some(msg) if msg.starts_with("Rename failed: session profile not found")
         ));
+    }
+
+    #[test]
+    fn confirm_rename_enqueues_effect_when_valid() {
+        let mut app = app_with_session();
+        // Give the session an owning profile so pre-flight validation passes.
+        app.profiles.profiles.push(crate::profile::Profile {
+            id: "p1".to_string(),
+            agent: Agent::Codex,
+            name: "P1".to_string(),
+            path: PathBuf::from("/tmp/codex-p1"),
+            oauth_token: None,
+            active: true,
+            shortcut: None,
+            builtin: false,
+        });
+        app.sessions[0].profile_id = "p1".to_string();
+
+        app.on_key_table(key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, UiMode::Rename);
+        // The modal pre-fills the current title; confirm it unchanged.
+        let expected_title = app.sessions[0].title();
+        // Move focus to the buttons and confirm with the OK button focused.
+        app.on_key_rename_modal(key(KeyCode::Tab, KeyModifiers::NONE));
+        app.on_key_rename_modal(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        // The handler only enqueues; the dialog stays open until the boundary
+        // runs the effect (and closes it only on rename success).
+        assert_eq!(
+            app.pending_effect,
+            Some(AppEffect::RenameSession {
+                idx: 0,
+                title: expected_title,
+            })
+        );
+        assert_eq!(app.mode, UiMode::Rename);
+        assert!(app.rename_modal.is_some());
     }
 
     #[test]
@@ -994,7 +1067,12 @@ mod tests {
 
         app.on_key_table(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
 
+        // The handler only enqueues the effect; the rescan/status run at the boundary.
         assert_eq!(app.mode, UiMode::Table);
+        assert_eq!(app.pending_effect, Some(AppEffect::RefreshAll));
+
+        app.apply_effect();
+        assert!(app.pending_effect.is_none());
         assert!(matches!(
             app.status_msg.as_deref(),
             Some(msg) if msg.starts_with("session update complete · ")
@@ -1066,6 +1144,8 @@ mod tests {
         let mut app = empty_app();
         app.screen = Screen::Profile;
         app.on_key_profile_table(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.pending_effect, Some(AppEffect::RefreshAll));
+        app.apply_effect();
         assert!(matches!(
             app.status_msg.as_deref(),
             Some(msg) if msg.starts_with("session update complete · ")
@@ -1077,6 +1157,8 @@ mod tests {
         app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.screen, Screen::Detail);
         app.on_key_detail(key(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.pending_effect, Some(AppEffect::RefreshAll));
+        app.apply_effect();
         assert!(matches!(
             app.status_msg.as_deref(),
             Some(msg) if msg.starts_with("session update complete · ")
@@ -1240,6 +1322,14 @@ mod tests {
         assert_eq!(app.mode, UiMode::DeleteConfirm);
         app.on_key_delete_confirm(key(KeyCode::Right, KeyModifiers::NONE));
         app.on_key_delete_confirm(key(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Confirm only enqueues the effect; the filesystem removal and screen
+        // return happen when the boundary runs it.
+        assert_eq!(
+            app.pending_effect,
+            Some(AppEffect::DeleteSession { idx: 0 })
+        );
+        app.apply_effect();
 
         // Returns to search screen, selecting the next session (s2).
         assert_eq!(app.screen, Screen::Session);

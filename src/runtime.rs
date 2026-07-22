@@ -222,6 +222,7 @@ fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
             };
             if event::poll(timeout)? {
                 dispatch_event(app, event::read()?);
+                app.apply_effect();
                 break;
             }
             let updated = app.poll_background();
@@ -239,6 +240,7 @@ fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
             && event::poll(std::time::Duration::from_millis(0))?
         {
             dispatch_event(app, event::read()?);
+            app.apply_effect();
         }
 
         // Process resume request: exit TUI -> execute agent -> return to TUI.

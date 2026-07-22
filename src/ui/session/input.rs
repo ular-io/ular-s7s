@@ -61,7 +61,7 @@ impl App {
                 self.open_rename_modal()
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.update_sessions_and_usage();
+                self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
             }
             // Contextual New Session must match BEFORE ordinary Ctrl+N: terminals
             // with the enhanced keyboard protocol report the SHIFT modifier

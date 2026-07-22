@@ -62,6 +62,16 @@ Detail turn count, and CLI turn count must agree — enforced by
   switching, resume/terminal requests, and the session-deletion filesystem work
   invoked by the delete dialog). The per-feature key handlers and the overlay
   handlers now live in their feature/overlay modules.
+- `ui/effect.rs` — the in-place effect boundary (R10a). Key handlers describe
+  requested external work by enqueuing an `AppEffect` into `App.pending_effect`
+  (rescan `RefreshAll`, `RenameSession`, `DeleteSession`, `ProfileSaved`) instead
+  of performing the rename/delete/rescan/persist work inline. `App::apply_effect`
+  executes and clears it; the `runtime` loop calls it immediately after each
+  dispatched key event (no redraw in between, so per-event timing is unchanged).
+  Effects run synchronously/threaded exactly as before — no async runtime (§8.2).
+  The terminal-unmounting handovers (resume / new session / login / terminal)
+  keep their discrete `*_request` fields, drained by the `runtime` loop. Pure
+  state recomputation (`recompute`, `rebuild_all_folders`) is not an effect.
 - `ui/render.rs` — the shared frame chrome: the full-frame `draw` dispatcher, the
   `draw_header`/`draw_body`/`draw_status_bar` sub-dispatchers, the New Session
   project-directory confirmation (`draw_project_dir_confirm`), and the shared
@@ -124,12 +134,14 @@ Detail turn count, and CLI turn count must agree — enforced by
   synchronously in the session's folder, then returns to a rescan. `main.rs`
   coordinates the handover screens and input draining.
 
-> Note: `App` still concentrates the cross-feature state, transitions, and
-> effects in `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen
-> (R8a), the Session screen (R8b), and the overlays (R9) are the features carved
-> into their own state/input/render modules. The remaining staged split into
-> effect-based boundaries (App effects and background coordination — R10) is
-> described in [refactoring-plan.md](./refactoring-plan.md).
+> Note: `App` still concentrates the cross-feature state and transitions in
+> `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen (R8a), the
+> Session screen (R8b), and the overlays (R9) are the features carved into their
+> own state/input/render modules, and the in-place external effects are now
+> explicit and executed at the `App` boundary (`ui/effect.rs` — R10a). The
+> remaining background-job coordination split (usage/model receivers into a
+> `BackgroundState` — R10b) is described in
+> [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
 

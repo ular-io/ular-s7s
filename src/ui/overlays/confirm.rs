@@ -12,7 +12,7 @@
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
 use crate::ui::components::text::truncate_w;
 use crate::ui::render::{centered_fixed_rect, input_view};
-use crate::ui::{App, Screen, TextInput, UiMode};
+use crate::ui::{App, TextInput, UiMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Modifier, Style},
@@ -90,16 +90,20 @@ impl App {
         self.mode = UiMode::Table;
     }
 
+    /// Validates the rename request and enqueues the [`AppEffect::RenameSession`]
+    /// effect. The actual metadata rename and rescan run at the `App` boundary
+    /// (`apply_effect`), which also decides whether to close the modal (success)
+    /// or keep it open with an error (failure). Pre-flight validation stays here
+    /// as a pure decision so an invalid request never emits an effect.
     pub(crate) fn confirm_rename(&mut self) {
         let Some(state) = self.rename_modal.as_ref() else {
             self.mode = UiMode::Table;
             return;
         };
         // Session captured when opening modal (independent of active table cursor).
-        let Some(session) = self
+        let Some(idx) = self
             .rename_target
-            .and_then(|idx| self.sessions.get(idx))
-            .cloned()
+            .filter(|&idx| self.sessions.get(idx).is_some())
         else {
             self.status_msg = Some("No session selected".to_string());
             return;
@@ -113,25 +117,20 @@ impl App {
 
         // Metadata paths and CLI env derive from the owning profile; never fall
         // back to the default root (wrong account store for extra profiles).
-        let Some(profile) = self.profiles.find(&session.profile_id).cloned() else {
+        // Reject up front so a missing profile never emits an effect.
+        if self.profiles.find(&self.sessions[idx].profile_id).is_none() {
             self.status_msg =
                 Some("Rename failed: session profile not found — refresh with ctrl+u".to_string());
             return;
-        };
-        match crate::rename::rename_session(&profile, &session, &title) {
-            Ok(()) => {
-                self.rename_modal = None;
-                self.rename_target = None;
-                self.mode = UiMode::Table;
-                self.refresh_sessions();
-                self.status_msg = Some(format!("Renamed session: {}", title));
-            }
-            Err(err) => {
-                self.status_msg = Some(format!("Rename failed: {err}"));
-            }
         }
+
+        self.pending_effect = Some(crate::ui::effect::AppEffect::RenameSession { idx, title });
     }
 
+    /// Confirms deletion and enqueues the [`AppEffect::DeleteSession`] effect.
+    /// The filesystem removal, list rebuild, and detail-screen return run at the
+    /// `App` boundary (`apply_effect`); the handler only resolves the target and
+    /// returns to table mode.
     fn confirm_delete(&mut self) {
         let Some(idx) = self.pending_delete.take() else {
             self.mode = UiMode::Table;
@@ -139,29 +138,12 @@ impl App {
         };
         self.mode = UiMode::Table;
 
-        let Some(session) = self.sessions.get(idx).cloned() else {
+        if self.sessions.get(idx).is_none() {
             self.status_msg = Some("Delete target no longer exists".to_string());
             return;
-        };
-
-        if let Err(err) = self.delete_session_artifacts(&session) {
-            self.status_msg = Some(format!("Delete failed: {err}"));
-            return;
         }
 
-        self.sessions.remove(idx);
-        self.rebuild_all_folders();
-        self.recompute();
-        // If deleted within details view, close and return to search view. Since recompute
-        // clamps cursor within bounds, selection naturally shifts to the subsequent row.
-        if self.screen == Screen::Detail {
-            self.close_session_detail();
-        }
-        self.status_msg = Some(format!(
-            "Deleted [{}] {}",
-            session.agent.label(),
-            session.title()
-        ));
+        self.pending_effect = Some(crate::ui::effect::AppEffect::DeleteSession { idx });
     }
 
     /// Handles key inputs in the session deletion confirmation modal.

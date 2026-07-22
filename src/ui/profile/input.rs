@@ -167,14 +167,19 @@ impl App {
             self.mode = UiMode::ProfileDirConfirm;
             return;
         }
-        self.commit_profile_form();
+        self.commit_profile_form(false);
     }
 
-    /// Saves the profile after validation. Returns the saved profile ID (None on failure).
-    fn commit_profile_form(&mut self) -> Option<String> {
+    /// Mutates the profile store from the form and enqueues the
+    /// [`AppEffect::ProfileSaved`] effect. Persistence, the session rescan, the
+    /// incremental usage/model fetch, and (for the directory-confirmation path)
+    /// the login request all run at the `App` boundary (`apply_effect`), which
+    /// keeps the form open on a save failure. `request_login` is set only from
+    /// the config-directory creation path.
+    fn commit_profile_form(&mut self, request_login: bool) {
         let Some(form) = self.profile_form.as_ref() else {
             self.mode = UiMode::Table;
-            return None;
+            return;
         };
         let name = form.name.value.trim().to_string();
         let path_str = form.path.value.trim().to_string();
@@ -221,25 +226,11 @@ impl App {
                 id
             }
         };
-        if let Err(e) = self.profiles.save() {
-            if let Some(form) = self.profile_form.as_mut() {
-                form.error = Some(format!("failed to save profiles.json: {e}"));
-            }
-            // Restore profile form mode since this might have been called from the directory confirmation modal.
-            self.mode = UiMode::ProfileForm;
-            return None;
-        }
-
-        self.profile_form = None;
-        self.mode = UiMode::Table;
-        // Immediately load sessions for the new/modified profile directory (rescan is cheap thanks to mtime caching).
-        // Since usage and model catalogs queries require expensive PTY runs, only run incremental updates for the saved profile
-        // (models are forcefully queried in case the config directory path has changed).
-        self.refresh_sessions();
-        self.start_usage_fetch_for(std::slice::from_ref(&saved_id));
-        self.start_models_fetch_for(std::slice::from_ref(&saved_id), true);
-        self.status_msg = Some(format!("Profile saved: {name}"));
-        Some(saved_id)
+        self.pending_effect = Some(crate::ui::effect::AppEffect::ProfileSaved {
+            id: saved_id,
+            name,
+            request_login,
+        });
     }
 
     /// Cancels config folder creation modal: returns to profile form, keeping inputs for correction.
@@ -247,8 +238,9 @@ impl App {
         self.mode = UiMode::ProfileForm;
     }
 
-    /// Confirms config folder creation: creates target directories, saves profile data,
-    /// and requests launching the agent login sequence if applicable.
+    /// Confirms config folder creation: creates the target directory, then
+    /// enqueues the profile save (with the login request) as an effect. The
+    /// persistence, rescan, and login launch decision run at the `App` boundary.
     fn confirm_profile_dir_create(&mut self) {
         let Some(form) = self.profile_form.as_ref() else {
             self.mode = UiMode::Table;
@@ -262,27 +254,7 @@ impl App {
             self.mode = UiMode::ProfileForm;
             return;
         }
-        let Some(saved_id) = self.commit_profile_form() else {
-            return;
-        };
-        // Custom Antigravity paths do not support environment variable overrides, rendering login launches meaningless.
-        let (runnable, name) = self
-            .profiles
-            .find(&saved_id)
-            .map(|p| {
-                (
-                    crate::profile::login_runnable(p.agent, &p.path),
-                    p.name.clone(),
-                )
-            })
-            .unwrap_or((false, String::new()));
-        if runnable {
-            self.login_request = Some(saved_id);
-        } else {
-            self.status_msg = Some(format!(
-                "Profile saved: {name} — log in manually (custom config folder not supported)"
-            ));
-        }
+        self.commit_profile_form(true);
     }
 
     /// Opens profile deletion confirmation modal. Blocked for built-in profiles.
@@ -384,7 +356,7 @@ impl App {
                 self.open_profile_delete();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.update_sessions_and_usage();
+                self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
             }
             _ => {}
         }
