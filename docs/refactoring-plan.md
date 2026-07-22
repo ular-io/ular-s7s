@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R6 are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R7 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -8,11 +8,11 @@
 > `scripts/check.sh` is the canonical check, the app is now a library crate
 > (`src/lib.rs` + `src/runtime.rs`) with `main.rs` reduced to a thin entry shim,
 > shared UI primitives are extracted into `src/ui/components/` (input, modal,
-> scrollbar, text) — R5, and the New Session feature is extracted into
-> `src/ui/new_session/` (state, input, render) as the first feature-owned module —
-> R6 (a behavior-preserving move; effect-based decoupling per §8 is deferred). R7
-> onward (feature-module extraction: Profile, Session/Detail, overlays) remain
-> proposed.
+> scrollbar, text) — R5, the New Session feature is extracted into
+> `src/ui/new_session/` (state, input, render) — R6, and the Profile feature is
+> extracted into `src/ui/profile/` (state, input, render) — R7 (both
+> behavior-preserving moves; effect-based decoupling per §8 is deferred). R8
+> onward (feature-module extraction: Session/Detail, overlays) remain proposed.
 
 ## 1. Status and Purpose
 
