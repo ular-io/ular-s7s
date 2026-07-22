@@ -45,17 +45,6 @@ pub enum Screen {
     Detail,
 }
 
-impl Screen {
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Screen::Session => "Session",
-            Screen::Profile => "Profile",
-            Screen::Detail => "Session Detail",
-        }
-    }
-}
-
 /// UI modes determining input event dispatching branches (TUI state machine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
