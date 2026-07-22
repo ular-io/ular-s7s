@@ -203,8 +203,10 @@ diffing of any future list-parser change.
 > (`parser/claude/events.rs` — R12; `parser/codex/events.rs` — R13), and the
 > Antigravity list (SQLite) vs. context (JSONL) boundary has been reviewed and
 > documented (R14 — no code extracted; the only genuine common behavior was
-> already shared). The next proposed step is the final cleanup and documentation
-> audit (R15), described in [refactoring-plan.md](./refactoring-plan.md).
+> already shared), and the final cleanup and documentation audit is complete
+> (R15 — dead code removed and documentation aligned to the final module
+> structure). The staged refactoring (R0–R15) described in
+> [refactoring-plan.md](./refactoring-plan.md) is now implemented.
 
 ## Usage and model probe flow
 
@@ -256,7 +258,7 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | Model list / New Session model dropdown | `models.rs`, `ui/new_session/*` | `--model-probe` — [models.md](./models.md) |
 | PTY driving / process cleanup (both probes) | `probe/*` | `--usage-probe` **and** `--model-probe`, plus a leftover-process check (`ps`) |
 | Profiles / env injection | `profile.rs`, `ui/profile/*`, `resume.rs` | [profiles.md](./profiles.md) |
-| Rewind / backtrack parsing | `parser/claude.rs`, `parser/codex.rs`, `session_context/*` | Real CLI rewind + saved-file diff |
+| Rewind / backtrack parsing | `parser/claude/`, `parser/codex/`, `session_context/*` | Real CLI rewind + saved-file diff |
 | TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
 | Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
