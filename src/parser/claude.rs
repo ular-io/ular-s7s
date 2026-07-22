@@ -310,10 +310,8 @@ fn last_assistant_per_turn(
                 in_turn = false;
                 current = None;
             }
-            Event::Assistant { uuid, text } if is_active(uuid) => {
-                if in_turn {
-                    current = Some(text.clone());
-                }
+            Event::Assistant { uuid, text } if is_active(uuid) && in_turn => {
+                current = Some(text.clone());
             }
             _ => {}
         }

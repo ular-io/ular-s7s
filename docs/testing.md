@@ -1,16 +1,26 @@
 # Testing Guide
 
-The rename/session-title related logic in this project depends on the internal storage structures of external agent CLIs.
-Therefore, testing must not end with just "passing unit tests."
+This is the authoritative verification matrix for the repository. `AGENTS.md`
+carries only the concise routing rules and defers here for the full procedure.
 
-## Required checks
+Much of s7s depends on the internal storage structures and screen output of
+external agent CLIs, so testing must not end with "passing unit tests." Match
+the change area below and run every check listed for it.
 
-Perform at least the following when changing code:
+## Verification matrix by change area
 
-1. `cargo fmt --all`
-2. `cargo test -q`
-3. If rename/session-title related code was changed, manual verification in the actual local CLI
-4. If panel focus/style was changed, manual verification in the actual TUI
+| Change area | Required checks beyond the baseline | Details |
+| --- | --- | --- |
+| Any code change (baseline) | `scripts/check.sh` — `cargo fmt --all -- --check`, `cargo test -q`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo build --release` | this doc |
+| Rename / session-title | Manual CLI verification — external rename is trusted only when the actual storage file change is observed | [session-title-compat.md](./session-title-compat.md), §Manual verification below |
+| Usage parsing / usage display | `--usage-probe` cross-check against the real CLI screen (do not misread absolute times vs. countdowns) | [usage-display.md](./usage-display.md) |
+| Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
+| Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
+| Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
+| New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [panel-focus-style.md](./panel-focus-style.md) |
+| Panel focus / TUI style | Manual TUI or PTY visual check | [panel-focus-style.md](./panel-focus-style.md) |
+| Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
+| Storage structure change | Update code and the owning document together; consider whether `CACHE_VERSION` must bump | [session-title-compat.md](./session-title-compat.md) |
 
 ## Why unit tests are not enough
 

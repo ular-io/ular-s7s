@@ -44,8 +44,8 @@ pub fn resolve<'s>(sessions: &'s [Session], q: &Query) -> Result<&'s Session, Re
     let mut matches: Vec<&Session> = sessions
         .iter()
         .filter(|s| s.id == q.session_id)
-        .filter(|s| q.agent.map_or(true, |a| s.agent == a))
-        .filter(|s| q.profile_id.map_or(true, |p| s.profile_id == p))
+        .filter(|s| q.agent.is_none_or(|a| s.agent == a))
+        .filter(|s| q.profile_id.is_none_or(|p| s.profile_id == p))
         .collect();
     match matches.len() {
         0 => Err(ResolveError::NotFound),

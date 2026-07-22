@@ -254,6 +254,18 @@ pub(crate) fn expand(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+use std::sync::OnceLock;
+
+static IS_DEMO: OnceLock<bool> = OnceLock::new();
+
+pub fn set_demo_mode(demo: bool) {
+    let _ = IS_DEMO.set(demo);
+}
+
+pub fn is_demo_mode() -> bool {
+    *IS_DEMO.get().unwrap_or(&false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,17 +347,3 @@ mod tests {
         assert_eq!(resolve_editor(Some(""), Some(" "), None), "vi");
     }
 }
-
-use std::sync::OnceLock;
-
-static IS_DEMO: OnceLock<bool> = OnceLock::new();
-
-pub fn set_demo_mode(demo: bool) {
-    let _ = IS_DEMO.set(demo);
-}
-
-pub fn is_demo_mode() -> bool {
-    *IS_DEMO.get().unwrap_or(&false)
-}
-
-
