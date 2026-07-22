@@ -50,7 +50,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 
 ### Via Homebrew (macOS)
 ```bash
-brew tap ular-io/s7s
+brew tap ular-io/tap
 brew install s7s
 ```
 
