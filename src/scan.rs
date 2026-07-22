@@ -492,4 +492,45 @@ mod tests {
         assert_eq!(sessions[0].title(), "26-07 컨테이너 레지스트리 이전");
         assert!(sessions[0].title_fixed);
     }
+
+    /// Manual before/after gate for parser refactoring (§11.4): dumps one line per
+    /// session of the machine's real index — order, identity, title, Q count, and
+    /// blob hashes — so two runs (baseline vs. refactored) can be diffed exactly.
+    /// Uses a throwaway cache path with a forced rebuild, so every session is fully
+    /// reparsed by the current code and the user's real cache is never touched.
+    /// Run explicitly with:
+    /// `cargo test real_data_index_snapshot -- --ignored --nocapture | grep '^S7S-IDX'`
+    #[test]
+    #[ignore]
+    fn real_data_index_snapshot() {
+        use std::hash::{Hash, Hasher};
+        fn h(s: &str) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let profiles = crate::profile::ProfileStore::load();
+        let cache = std::env::temp_dir().join(format!("s7s-idx-snap-{}.bin", std::process::id()));
+        let result = scan_at(&profiles.profiles, true, &cache);
+        let _ = std::fs::remove_file(&cache);
+
+        // Result order is meaningful (mtime desc): dump in order, no sorting.
+        for s in &result.sessions {
+            println!(
+                "S7S-IDX\t{}\t{}\t{}\t{}\t{}\t{}\tQ{}\tsb{:016x}\tab{:016x}\t{}",
+                s.agent.key(),
+                s.profile_id,
+                s.id,
+                s.mtime_ms,
+                s.title(),
+                s.title_fixed,
+                s.user_turns.len(),
+                h(&s.search_blob),
+                h(&s.assistant_blob),
+                s.folder,
+            );
+        }
+        println!("S7S-IDX-TOTAL\t{}", result.sessions.len());
+    }
 }
