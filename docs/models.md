@@ -6,7 +6,7 @@ Design for querying, caching, and injecting the "selectable models list" to be d
 
 | Agent | Method | Value Format | Default Model Source |
 | :-- | :-- | :-- | :-- |
-| claude | Scraping `/model` screen via PTY (shared with `usage::drive_screen`) | alias lowercase (`fable`) | `✔` mark in the screen list |
+| claude | Scraping `/model` screen via PTY (`probe::pty::drive_screen`, shared with usage) | alias lowercase (`fable`) | `✔` mark in the screen list |
 | codex | `codex debug models` JSON (only `visibility=="list"`) | slug (`gpt-5.6-sol`) | Top-level `model` key in `<CODEX_HOME>/config.toml` |
 | agy | Line-by-line output of `agy models` | Display name exactly as is (`Gemini 3.1 Pro (Low)`) | Top-level `model` key in `settings.json` |
 

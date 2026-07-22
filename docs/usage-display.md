@@ -1,6 +1,6 @@
 # Usage Display
 
-The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query/parsing) and `src/ui/render.rs::usage_spans` (formatting).
+The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query/parsing) and `src/ui/render.rs::usage_spans` (formatting), on top of the neutral PTY/process driver in `src/probe/` (shared with the model list query — the driver itself knows nothing about usage).
 
 ## Mechanism
 

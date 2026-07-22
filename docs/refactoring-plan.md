@@ -27,8 +27,16 @@
 > background-job coordination (the usage/model receivers and the model-loading
 > guard) into a `BackgroundState` sub-struct (`src/ui/background.rs`); `App` keeps
 > thin forwarding methods and the result caches, delegating only receiver
-> operations, with no behavior or timing change (done). R11 onward remain
-> proposed.
+> operations, with no behavior or timing change (done). **R11** extracts the
+> generic PTY/process driver out of `usage.rs` into the neutral
+> `src/probe/{mod,pty,process}.rs` layer (PTY lifecycle/screen capture, process
+> discovery/termination, and the shared CLI helpers `installed` /
+> `claude_logged_in` / `CLAUDE_READY_MARKERS`), making `usage.rs` and `models.rs`
+> independent probe clients; the driver knows no usage labels or model syntax
+> (the diagnostic dump env name became a client-provided parameter — both clients
+> keep passing `ULAR_USAGE_DUMP`, so behavior is unchanged), and `usage.rs` /
+> `models.rs` stay in place per §7's "stop when ownership is clear" (done). R12
+> onward remain proposed.
 
 ## 1. Status and Purpose
 
@@ -753,7 +761,7 @@ branch.
 | R9 | Overlay and render-test redistribution (`ui/overlays/`) — done | R6-R8 | Medium |
 | R10a | App in-place effects (`AppEffect`/`apply_effect`) — done | R6-R9 | High |
 | R10b | Background job coordination (`BackgroundState`) — done | R6-R9 | High |
-| R11 | Generic PTY/process probe layer | R3, R10 | High |
+| R11 | Generic PTY/process probe layer (`src/probe/`) — done | R3, R10 | High |
 | R12 | Claude normalized events | R3 | High |
 | R13 | Codex normalized events | R3 | High |
 | R14 | Antigravity parser boundary review | R12-R13 | High |

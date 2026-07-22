@@ -155,20 +155,33 @@ Detail turn count, and CLI turn count must agree — enforced by
 > `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen (R8a), the
 > Session screen (R8b), and the overlays (R9) are the features carved into their
 > own state/input/render modules, the in-place external effects are explicit and
-> executed at the `App` boundary (`ui/effect.rs` — R10a), and the background
+> executed at the `App` boundary (`ui/effect.rs` — R10a), the background
 > usage/model probe coordination is isolated in a `BackgroundState` sub-struct
-> (`ui/background.rs` — R10b). The next proposed step is the generic PTY/process
-> probe layer (R11), described in [refactoring-plan.md](./refactoring-plan.md).
+> (`ui/background.rs` — R10b), and the generic PTY/process driver is extracted
+> into the neutral `probe` layer (R11). The next proposed step is the Claude
+> normalized event layer (R12), described in
+> [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
 
-- `usage.rs` — drives each agent CLI in a PTY to read remaining % and reset
-  countdown; parses the screen; fetched on a background channel. Cross-verify with
+- `probe/` — the neutral PTY/process layer (R11); knows no usage labels or model
+  syntax. `probe/pty.rs` owns the PTY lifecycle: spawn with env injection,
+  ready/done/logout-marker waits, character-by-character typing with an Enter
+  delay, screen stabilization, vt100 reconstruction (`drive_screen` →
+  `DriveOutcome`), the client-named diagnostic dump env, and the cleanup thread
+  (graceful Ctrl+C/Ctrl+D, then pgid+descendant SIGKILL and PPID=1 orphan
+  recovery). `probe/process.rs` owns process discovery/termination helpers and
+  the PATH `installed` check. `probe/mod.rs` holds the CLI helpers shared by
+  both probe clients (`claude_logged_in`, `CLAUDE_READY_MARKERS`).
+- `usage.rs` — a probe client: drives each agent CLI through the shared driver to
+  read remaining % and reset countdown; owns the agent-specific commands, login
+  interpretation (`agy_logged_in`/`codex_logged_in`), screen-to-domain parsing,
+  and the demo-mode guard; fetched on a background channel. Cross-verify with
   `--usage-probe`. See [usage-display.md](./usage-display.md).
-- `models.rs` — enumerates selectable models per agent (`/model` screen scrape,
-  `codex debug models`, `agy models`), caches them in `models.json`, and remembers
-  the last launched pick. Cross-verify with `--model-probe`. See
-  [models.md](./models.md).
+- `models.rs` — an independent probe client: enumerates selectable models per
+  agent (`/model` screen scrape via the shared driver, `codex debug models`,
+  `agy models`), caches them in `models.json`, and remembers the last launched
+  pick. Cross-verify with `--model-probe`. See [models.md](./models.md).
 
 ## Persistence files and ownership
 
@@ -197,6 +210,7 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | Detail screen (turn list / work panel) | `ui/detail/*` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Usage display | `usage.rs`, `ui/render.rs` | `--usage-probe` — [usage-display.md](./usage-display.md) |
 | Model list / New Session model dropdown | `models.rs`, `ui/new_session/*` | `--model-probe` — [models.md](./models.md) |
+| PTY driving / process cleanup (both probes) | `probe/*` | `--usage-probe` **and** `--model-probe`, plus a leftover-process check (`ps`) |
 | Profiles / env injection | `profile.rs`, `ui/profile/*`, `resume.rs` | [profiles.md](./profiles.md) |
 | Rewind / backtrack parsing | `parser/claude.rs`, `parser/codex.rs`, `session_context/*` | Real CLI rewind + saved-file diff |
 | TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
