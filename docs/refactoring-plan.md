@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, R9, R10a, R10b, R11, and R12 are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, R9, R10a, R10b, R11, R12, R13, and R14 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -59,8 +59,21 @@
 > and `response_item` are now accepted by both views; empty assistant-text
 > filtering). Behavior preserved: `real_data_turn_parity` 0 mismatches over 623
 > sessions, the `real_data_index_snapshot` gate showed all 324 Codex list rows
-> byte-identical before/after; `CACHE_VERSION` stays 12 (done). R14 onward
-> remain proposed.
+> byte-identical before/after; `CACHE_VERSION` stays 12 (done). **R14** reviewed
+> the Antigravity parser boundary and concluded no code should be extracted:
+> unlike Claude/Codex, its list layer (`parser::antigravity`, SQLite protobuf)
+> and context layer (`session_context::antigravity`, JSONL transcript) read
+> **different stores**, so a single shared decoder does not apply and a false
+> shared format is rejected (§11.3). The only genuine common behavior is already
+> shared in the correct direction — the list reuses the context parser's
+> `transcript_path` + `parse_turns` for `Session::assistant_blob`, and both
+> normalize turns through `parser::{clean_turn, is_noise_turn}`; the `· Q → A`
+> ask-question output is a shared format convention only (protobuf option codes
+> vs. `A<n>:` transcript lines), not shared code. R14 is documentation-only:
+> behavior preserved by construction (no parser/scan code touched;
+> `real_data_turn_parity` 0 mismatches over 624 full-context sessions with the
+> agy relaxed rule, `real_data_index_snapshot` provably identical,
+> `CACHE_VERSION` stays 12) (done). R15 remains proposed.
 
 ## 1. Status and Purpose
 
@@ -788,7 +801,7 @@ branch.
 | R11 | Generic PTY/process probe layer (`src/probe/`) — done | R3, R10 | High |
 | R12 | Claude normalized events (`src/parser/claude/events.rs`) — done | R3 | High |
 | R13 | Codex normalized events (`src/parser/codex/events.rs`) — done | R3 | High |
-| R14 | Antigravity parser boundary review | R12-R13 | High |
+| R14 | Antigravity parser boundary review — done (documentation-only; no code extracted) | R12-R13 | High |
 | R15 | Final cleanup and documentation audit | R2-R14 | Medium |
 
 R12 and R13 may proceed independently after the baseline is stable, but they
