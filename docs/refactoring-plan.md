@@ -1,15 +1,18 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R4 are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R6 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
 > matrix, the Rust toolchain is pinned (`rust-toolchain.toml`),
 > `scripts/check.sh` is the canonical check, the app is now a library crate
 > (`src/lib.rs` + `src/runtime.rs`) with `main.rs` reduced to a thin entry shim,
-> and shared UI primitives are extracted into `src/ui/components/` (input, modal,
-> scrollbar, text) — R5. R6 onward (feature-module extraction: New Session,
-> Profile, Session/Detail, overlays) remain proposed.
+> shared UI primitives are extracted into `src/ui/components/` (input, modal,
+> scrollbar, text) — R5, and the New Session feature is extracted into
+> `src/ui/new_session/` (state, input, render) as the first feature-owned module —
+> R6 (a behavior-preserving move; effect-based decoupling per §8 is deferred). R7
+> onward (feature-module extraction: Profile, Session/Detail, overlays) remain
+> proposed.
 
 ## 1. Status and Purpose
 
