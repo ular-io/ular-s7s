@@ -60,19 +60,25 @@ Detail turn count, and CLI turn count must agree — enforced by
 - `ui/mod.rs` — `App` state and the state machine (`UiMode`, key handlers,
   transitions, validation, persistence, and requested external work such as
   rename, rescan, and terminal handover).
-- `ui/render.rs` — all screens and dialogs (header, session table, preview,
-  detail panels, modals).
+- `ui/render.rs` — the remaining screens and dialogs (header, session table,
+  preview, detail panels, and the modals not yet extracted into feature modules).
 - `ui/components/` — feature-agnostic UI primitives reused across dialogs:
   `input` (Unicode-safe `TextInput`), `modal` (frame/buttons/backdrop),
   `scrollbar`, and `text` (width-aware truncation/wrapping).
+- `ui/new_session/` — the first extracted feature module (R6): `state` (dialog
+  state, focus, model/source options, pure transitions), `input` (the `App` key
+  handling and launch logic), and `render` (the dialog and dropdown overlay). The
+  public dialog types are re-exported from `ui` so `crate::ui::NewSession*` paths
+  stay stable.
 - `ui/quick.rs` — the `:` command palette / `!` terminal command window.
 - `theme.rs` — palettes, custom theme files, selection persistence.
 - Agent handover (`resume.rs`) unmounts the TUI, runs the agent/shell command
   synchronously in the session's folder, then returns to a rescan. `main.rs`
   coordinates the handover screens and input draining.
 
-> Note: `App` currently concentrates screen state, transitions, and effects in
-> one module. The staged split into feature-owned state/input/render/effect
+> Note: `App` still concentrates most screen state, transitions, and effects in
+> `ui/mod.rs`; New Session is the first feature carved into its own
+> state/input/render module. The remaining staged split into feature-owned
 > boundaries is described in [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
@@ -110,10 +116,10 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | Session list / filter / search | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | Real-data parity if turn selection changes |
 | Detailed context / `s7s session` CLI | `session_context/*`, `session_cli.rs` | `real_data_turn_parity` — [session-context.md](./session-context.md) |
 | Usage display | `usage.rs`, `ui/render.rs` | `--usage-probe` — [usage-display.md](./usage-display.md) |
-| Model list / New Session model dropdown | `models.rs`, `ui/mod.rs` | `--model-probe` — [models.md](./models.md) |
+| Model list / New Session model dropdown | `models.rs`, `ui/new_session/*` | `--model-probe` — [models.md](./models.md) |
 | Profiles / env injection | `profile.rs`, `resume.rs` | [profiles.md](./profiles.md) |
 | Rewind / backtrack parsing | `parser/claude.rs`, `parser/codex.rs`, `session_context/*` | Real CLI rewind + saved-file diff |
-| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
+| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/new_session/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
 | Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
 
