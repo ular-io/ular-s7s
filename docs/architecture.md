@@ -61,7 +61,10 @@ Detail turn count, and CLI turn count must agree — enforced by
   transitions, validation, persistence, and requested external work such as
   rename, rescan, and terminal handover).
 - `ui/render.rs` — the remaining screens and dialogs (header, session table,
-  preview, detail panels, and the modals not yet extracted into feature modules).
+  preview, and the modals not yet extracted into feature modules). Retains the
+  full-frame `draw` dispatcher and the shared preview helpers
+  (`session_meta_lines`, `preview_turn_lines`) that both the Session preview and
+  the extracted Detail screen use.
 - `ui/components/` — feature-agnostic UI primitives reused across dialogs:
   `input` (Unicode-safe `TextInput`), `modal` (frame/buttons/backdrop),
   `scrollbar`, and `text` (width-aware truncation/wrapping).
@@ -80,6 +83,16 @@ Detail turn count, and CLI turn count must agree — enforced by
   `set_single_profile` (header number-key filter), `profile_name`,
   `session_profile_root`, and the Antigravity metadata cleanup remain in
   `ui/mod.rs` as cross-feature `App` coordination.
+- `ui/detail/` — extracted feature module (R8a): `state` (`DetailFocus` /
+  `SessionDetailState` and the question-selection / right-panel-scroll
+  transitions), `input` (the `App` key handling — open/close plus in-screen
+  navigation, focus toggle, tool-log visibility, and the resume/rename/delete/
+  contextual-New-Session operations shared with the main view), and `render`
+  (the two-column Prompt list and Work & Answer panel). `DetailFocus` /
+  `SessionDetailState` are re-exported from `ui` so `crate::ui::DetailFocus`
+  paths stay stable. The full-frame Detail render tests stay with the `draw`
+  dispatcher in `ui/render.rs` (§9.6). The Session screen table/filter/preview
+  (R8b) is not yet extracted and remains in `ui/mod.rs` + `ui/render.rs`.
 - `ui/quick.rs` — the `:` command palette / `!` terminal command window.
 - `theme.rs` — palettes, custom theme files, selection persistence.
 - Agent handover (`resume.rs`) unmounts the TUI, runs the agent/shell command
@@ -87,9 +100,10 @@ Detail turn count, and CLI turn count must agree — enforced by
   coordinates the handover screens and input draining.
 
 > Note: `App` still concentrates most screen state, transitions, and effects in
-> `ui/mod.rs`; New Session (R6) and Profile (R7) are the features carved into their
-> own state/input/render modules. The remaining staged split into feature-owned
-> boundaries is described in [refactoring-plan.md](./refactoring-plan.md).
+> `ui/mod.rs`; New Session (R6), Profile (R7), and the Detail screen (R8a) are the
+> features carved into their own state/input/render modules. The remaining staged
+> split into feature-owned boundaries (Session screen R8b, overlays) is described
+> in [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
 
@@ -125,11 +139,12 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | Rename / session-title | `rename.rs`, `title.rs`, `parser/*` title paths | Manual CLI storage-diff — [session-title-compat.md](./session-title-compat.md) |
 | Session list / filter / search | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | Real-data parity if turn selection changes |
 | Detailed context / `s7s session` CLI | `session_context/*`, `session_cli.rs` | `real_data_turn_parity` — [session-context.md](./session-context.md) |
+| Detail screen (turn list / work panel) | `ui/detail/*` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Usage display | `usage.rs`, `ui/render.rs` | `--usage-probe` — [usage-display.md](./usage-display.md) |
 | Model list / New Session model dropdown | `models.rs`, `ui/new_session/*` | `--model-probe` — [models.md](./models.md) |
 | Profiles / env injection | `profile.rs`, `ui/profile/*`, `resume.rs` | [profiles.md](./profiles.md) |
 | Rewind / backtrack parsing | `parser/claude.rs`, `parser/codex.rs`, `session_context/*` | Real CLI rewind + saved-file diff |
-| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/new_session/*`, `ui/profile/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
+| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
 | Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
 
