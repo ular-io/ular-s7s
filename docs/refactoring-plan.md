@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, and R9 are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, R9, R10a, and R10b are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -23,9 +23,12 @@
 > `AppEffect` / `App::apply_effect` boundary (`src/ui/effect.rs`) — key handlers
 > enqueue `RefreshAll` / `RenameSession` / `DeleteSession` / `ProfileSaved`
 > instead of performing rename/delete/rescan/persist inline (done; the first
-> behavior-structure change, no async runtime per §8.2). **R10b** (background-job
-> coordination — isolating the usage/model receivers into a `BackgroundState`)
-> and R11 onward remain proposed.
+> behavior-structure change, no async runtime per §8.2). **R10b** isolates the
+> background-job coordination (the usage/model receivers and the model-loading
+> guard) into a `BackgroundState` sub-struct (`src/ui/background.rs`); `App` keeps
+> thin forwarding methods and the result caches, delegating only receiver
+> operations, with no behavior or timing change (done). R11 onward remain
+> proposed.
 
 ## 1. Status and Purpose
 
@@ -749,7 +752,7 @@ branch.
 | R8b | Session table/filter/preview extraction (`ui/session/`) — done | R5 | High |
 | R9 | Overlay and render-test redistribution (`ui/overlays/`) — done | R6-R8 | Medium |
 | R10a | App in-place effects (`AppEffect`/`apply_effect`) — done | R6-R9 | High |
-| R10b | Background job coordination (`BackgroundState`) | R6-R9 | High |
+| R10b | Background job coordination (`BackgroundState`) — done | R6-R9 | High |
 | R11 | Generic PTY/process probe layer | R3, R10 | High |
 | R12 | Claude normalized events | R3 | High |
 | R13 | Codex normalized events | R3 | High |

@@ -72,6 +72,23 @@ Detail turn count, and CLI turn count must agree — enforced by
   The terminal-unmounting handovers (resume / new session / login / terminal)
   keep their discrete `*_request` fields, drained by the `runtime` loop. Pure
   state recomputation (`recompute`, `rebuild_all_folders`) is not an effect.
+- `ui/background.rs` — background usage/model probe job coordination (R10b). The
+  `BackgroundState` sub-struct on `App` owns only the *coordination* state — the
+  usage/model result receivers and the model-loading dedup guard — so handlers
+  and rendering never touch receiver internals. The result caches (`usage:
+  UsageState`, `models: ModelCatalog`) stay on `App` because they are read and
+  written across features. `App` keeps thin forwarding methods
+  (`start_usage_fetch[_for]`, `poll_usage`, `start_models_fetch[_for]`,
+  `poll_models`, `usage_in_flight`, `background_in_flight`, `poll_background`)
+  that read the App-side caches/profiles and delegate only the receiver
+  operations (`spawn_usage`/`drain_usage`, `spawn_models`/`drain_models`,
+  `*_in_flight`) to `BackgroundState`; `drain_*` returns owned results so the
+  cache mutation happens after the `background` borrow is released (§15.2). The
+  `cfg!(test)` spawn guard stays in the `App` methods, so unit tests neither
+  spawn PTYs nor mutate cache state. Spawning stays thread + mpsc — no async
+  runtime (§8.2). Model-cache persistence (`models.save()`) stays inline in
+  `poll_models` because a background poll is not a key event and does not fit the
+  key-handler `AppEffect` queue.
 - `ui/render.rs` — the shared frame chrome: the full-frame `draw` dispatcher, the
   `draw_header`/`draw_body`/`draw_status_bar` sub-dispatchers, the New Session
   project-directory confirmation (`draw_project_dir_confirm`), and the shared
@@ -137,11 +154,11 @@ Detail turn count, and CLI turn count must agree — enforced by
 > Note: `App` still concentrates the cross-feature state and transitions in
 > `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen (R8a), the
 > Session screen (R8b), and the overlays (R9) are the features carved into their
-> own state/input/render modules, and the in-place external effects are now
-> explicit and executed at the `App` boundary (`ui/effect.rs` — R10a). The
-> remaining background-job coordination split (usage/model receivers into a
-> `BackgroundState` — R10b) is described in
-> [refactoring-plan.md](./refactoring-plan.md).
+> own state/input/render modules, the in-place external effects are explicit and
+> executed at the `App` boundary (`ui/effect.rs` — R10a), and the background
+> usage/model probe coordination is isolated in a `BackgroundState` sub-struct
+> (`ui/background.rs` — R10b). The next proposed step is the generic PTY/process
+> probe layer (R11), described in [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
 
