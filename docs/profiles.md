@@ -1,7 +1,7 @@
 # Profiles (Multiple Subscriptions)
 
 Profile = a bundle of **Agent type + Name + config folder (path) + OAuth token (storage only)**.
-Even for the same agent, if the config folder is different, it is a separate profile (e.g., Claude personal subscription + team subscription). Implementation is in `src/profile.rs` (model/storage) and `src/ui/mod.rs` (profile screen/form).
+Even for the same agent, if the config folder is different, it is a separate profile (e.g., Claude personal subscription + team subscription). Implementation is in `src/profile.rs` (model/storage) and `src/ui/profile/` (profile screen/form: `state`, `input`, `render`). Usage/model fetch coordination and cross-feature helpers (`set_single_profile`, `profile_name`, `session_profile_root`) remain in `src/ui/mod.rs`.
 
 ## Storage Location
 
