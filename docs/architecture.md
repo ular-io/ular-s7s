@@ -40,8 +40,8 @@ parsing is `clap` derive. Modes:
 Two parser layers deliberately stay separate (list parsing must remain
 lightweight — see [session-context.md](./session-context.md)):
 
-- **List parsers** — `src/parser/{codex,antigravity}.rs` and
-  `src/parser/claude/` (+ `mod.rs`, `turn.rs`) build the lightweight `Session`
+- **List parsers** — `src/parser/antigravity.rs` and `src/parser/claude/`,
+  `src/parser/codex/` (+ `mod.rs`, `turn.rs`) build the lightweight `Session`
   index: id, title, folder, mtime, size, Q (active user-turn count), and redacted
   search blobs. No tool-call/result reconstruction.
 - **Context parsers** — `src/session_context/{claude,codex,antigravity}.rs` build
@@ -55,16 +55,22 @@ Claude and Codex share active-path semantics between the two layers (Claude
 Detail turn count, and CLI turn count must agree — enforced by
 `cargo test real_data_turn_parity -- --ignored --nocapture`.
 
-For Claude that shared semantics is now a single decoder module,
-`src/parser/claude/events.rs` (R12): both the list indexer (`parser::claude`)
-and the context parser (`session_context::claude`) call the same `parse_lines`
-→ `chain_filter` (`parentUuid` active-branch reduction) → `decode` (record
-classification: user/assistant/title events, sidechain and task-notification
-identity, turn-acceptance gates) pipeline, so a storage-format change cannot
-silently diverge the two views. The decoder stays payload-light — it never
-materializes tool call/result JSON; the context parser extracts those from the
-raw `Value` records the decoder deliberately leaves untouched, keeping list
-indexing lightweight (§5.5). A permanent ignored gate,
+For each of Claude and Codex that shared semantics is now a single decoder
+module. Claude — `src/parser/claude/events.rs` (R12): both consumers call the
+same `parse_lines` → `chain_filter` (`parentUuid` active-branch reduction) →
+`decode` (record classification: user/assistant/title events, sidechain and
+task-notification identity, turn-acceptance gates) pipeline. Codex —
+`src/parser/codex/events.rs` (R13): both consumers run the same streaming
+`decode` (one `CodexRecord` per rollout line: session_meta, ai-title,
+`thread_rolled_back` backtrack marker, user turn in either `event_msg` or
+`response_item` form, QA, assistant text, tool call/result) with the rollback
+truncation applied by each accumulator. Codex needs no pre-pass because the
+backtrack marker truncates in file order (unlike Claude's leaf-known-at-end
+chain). In both, a storage-format change can no longer silently diverge the two
+views. The decoders stay payload-light — they never materialize tool call/result
+JSON; the context parser extracts those from the raw `Value` records the decoder
+deliberately leaves untouched, keeping list indexing lightweight (§5.5). A
+permanent ignored gate,
 `cargo test real_data_index_snapshot -- --ignored --nocapture`, dumps one line
 per session (order, identity, title, Q, blob hashes) for exact before/after
 diffing of any future list-parser change.
@@ -172,10 +178,10 @@ diffing of any future list-parser change.
 > executed at the `App` boundary (`ui/effect.rs` — R10a), the background
 > usage/model probe coordination is isolated in a `BackgroundState` sub-struct
 > (`ui/background.rs` — R10b), and the generic PTY/process driver is extracted
-> into the neutral `probe` layer (R11), and the Claude record decoding plus
-> `parentUuid` active-branch reduction are unified in one shared event layer
-> (`parser/claude/events.rs` — R12). The next proposed step is the equivalent
-> Codex normalized event layer (R13), described in
+> into the neutral `probe` layer (R11), and the Claude and Codex record decoding
+> plus their active-path reductions are unified in shared event layers
+> (`parser/claude/events.rs` — R12; `parser/codex/events.rs` — R13). The next
+> proposed step is the Antigravity parser boundary review (R14), described in
 > [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
