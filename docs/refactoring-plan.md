@@ -18,8 +18,14 @@
 > help, and theme selection) are extracted into `src/ui/overlays/`
 > (`filters`/`confirm`/`message`/`help`/`theme`, one file each) with Quick
 > Command's rendering moved into `src/ui/quick.rs` — R9 (all behavior-preserving
-> moves; effect-based decoupling per §8 is deferred). R10 onward (App effects and
-> background coordination) remains proposed.
+> moves; effect-based decoupling per §8 is deferred). R10 is split into two
+> packages: **R10a** extracts the in-place external effects into an explicit
+> `AppEffect` / `App::apply_effect` boundary (`src/ui/effect.rs`) — key handlers
+> enqueue `RefreshAll` / `RenameSession` / `DeleteSession` / `ProfileSaved`
+> instead of performing rename/delete/rescan/persist inline (done; the first
+> behavior-structure change, no async runtime per §8.2). **R10b** (background-job
+> coordination — isolating the usage/model receivers into a `BackgroundState`)
+> and R11 onward remain proposed.
 
 ## 1. Status and Purpose
 
@@ -742,7 +748,8 @@ branch.
 | R8a | Detail feature extraction (`ui/detail/`) — done | R5 | High |
 | R8b | Session table/filter/preview extraction (`ui/session/`) — done | R5 | High |
 | R9 | Overlay and render-test redistribution (`ui/overlays/`) — done | R6-R8 | Medium |
-| R10 | App effects and background coordination | R6-R9 | High |
+| R10a | App in-place effects (`AppEffect`/`apply_effect`) — done | R6-R9 | High |
+| R10b | Background job coordination (`BackgroundState`) | R6-R9 | High |
 | R11 | Generic PTY/process probe layer | R3, R10 | High |
 | R12 | Claude normalized events | R3 | High |
 | R13 | Codex normalized events | R3 | High |
