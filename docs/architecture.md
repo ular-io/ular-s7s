@@ -55,6 +55,26 @@ Claude and Codex share active-path semantics between the two layers (Claude
 Detail turn count, and CLI turn count must agree — enforced by
 `cargo test real_data_turn_parity -- --ignored --nocapture`.
 
+Antigravity is different by design (R14 boundary review): its two layers read
+**different stores** — the list indexes `conversations/<id>.db` (SQLite protobuf
+steps), the context reads the `transcript_full.jsonl` log. A single shared
+decoder like Claude's/Codex's is therefore not applicable, and forcing the
+SQLite index path and the JSONL context path into a false shared format is
+explicitly rejected (plan §11.3). The only genuinely common behavior is already
+shared, and in the correct direction: the list parser reuses the context
+parser's `transcript_path` + `parse_turns` to pull each turn's last assistant
+text for `Session::assistant_blob` (assistant text lives only in the transcript,
+so the list depends on the context parser instead of re-implementing transcript
+parsing), and both layers normalize turns through the crate-wide
+`parser::{clean_turn, is_noise_turn}` helpers. The `· Q → A` ask-question
+rendering is a shared *format convention* only (also used by claude/codex
+`turn.rs`), not shared code: the list decodes protobuf field `154.1` option
+codes while the context pairs `A<n>:` transcript lines, so the two extractors
+cannot share an implementation. Everything else (protobuf field reading,
+workspace URI, title/`pbtxt` resolution, RFC3339 parsing) is source-specific and
+stays separate. R14 is therefore a documentation-only conclusion: no code was
+extracted because no un-shared genuine common remained.
+
 For each of Claude and Codex that shared semantics is now a single decoder
 module. Claude — `src/parser/claude/events.rs` (R12): both consumers call the
 same `parse_lines` → `chain_filter` (`parentUuid` active-branch reduction) →
@@ -180,9 +200,11 @@ diffing of any future list-parser change.
 > (`ui/background.rs` — R10b), and the generic PTY/process driver is extracted
 > into the neutral `probe` layer (R11), and the Claude and Codex record decoding
 > plus their active-path reductions are unified in shared event layers
-> (`parser/claude/events.rs` — R12; `parser/codex/events.rs` — R13). The next
-> proposed step is the Antigravity parser boundary review (R14), described in
-> [refactoring-plan.md](./refactoring-plan.md).
+> (`parser/claude/events.rs` — R12; `parser/codex/events.rs` — R13), and the
+> Antigravity list (SQLite) vs. context (JSONL) boundary has been reviewed and
+> documented (R14 — no code extracted; the only genuine common behavior was
+> already shared). The next proposed step is the final cleanup and documentation
+> audit (R15), described in [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
 
