@@ -10,8 +10,11 @@
 //! by the rollback are removed from the preview. Verified against codex CLI 0.144.4 — the
 //! rollback happens in the same rollout file (no fork file is created).
 
-use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, turn};
+pub(crate) mod events;
+
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn};
 use crate::model::{Agent, Session};
+use events::{CodexRecord, UserTextKind};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -97,60 +100,51 @@ pub fn parse_file(
             Ok(v) => v,
             Err(_) => continue,
         };
-        match v.get("type").and_then(Value::as_str) {
-            Some("session_meta") => {
-                if let Some(p) = v.get("payload") {
-                    if id.is_none() {
-                        id = p.get("id").and_then(Value::as_str).map(str::to_string);
+        match events::decode(&v) {
+            CodexRecord::Meta { id: i, cwd: c } => {
+                if id.is_none() {
+                    id = i.map(str::to_string);
+                }
+                if cwd.is_none() {
+                    cwd = c.map(str::to_string);
+                }
+            }
+            CodexRecord::Title(t) => title_hint = Some(t.to_string()),
+            CodexRecord::RolledBack(n) => {
+                // Drop the last `n` user turns (each with its attached QA entries).
+                let keep = turn_starts.len().saturating_sub(n);
+                let cut = turn_starts.get(keep).copied().unwrap_or(turns.len());
+                turns.truncate(cut);
+                turn_starts.truncate(keep);
+                turn_asst.truncate(keep);
+            }
+            CodexRecord::User(u) => {
+                // A user line always records a boundary (so a rollback counts real
+                // CLI turns) but opens an indexable turn only when it survives the
+                // shared noise/clean gate.
+                turn_starts.push(turns.len());
+                match u.kind {
+                    UserTextKind::Turn { cleaned } => {
+                        turn_asst.push((true, None));
+                        turns.push(cleaned);
                     }
-                    if cwd.is_none() {
-                        cwd = p.get("cwd").and_then(Value::as_str).map(str::to_string);
+                    UserTextKind::Boundary => turn_asst.push((false, None)),
+                }
+            }
+            CodexRecord::Qa(qa) => {
+                if !is_noise_turn(&qa) {
+                    if let Some(cleaned) = clean_turn(&qa) {
+                        turns.push(cleaned);
                     }
                 }
             }
-            Some("ai-title") => {
-                if let Some(t) = v.get("aiTitle").and_then(Value::as_str) {
-                    let t = t.trim();
-                    if !t.is_empty() {
-                        title_hint = Some(t.to_string());
-                    }
+            // Record each turn's last assistant answer for the search index.
+            CodexRecord::Assistant(text) => {
+                if let Some(slot) = turn_asst.last_mut() {
+                    slot.1 = Some(text);
                 }
             }
-            Some("event_msg") | Some("response_item") => {
-                if let Some(n) = rolled_back_turns(&v) {
-                    // Drop the last `n` user turns (each with its attached QA entries).
-                    let keep = turn_starts.len().saturating_sub(n);
-                    let cut = turn_starts.get(keep).copied().unwrap_or(turns.len());
-                    turns.truncate(cut);
-                    turn_starts.truncate(keep);
-                    turn_asst.truncate(keep);
-                    continue;
-                }
-                if let Some(text) = turn::extract_user_text(&v) {
-                    turn_starts.push(turns.len());
-                    let indexable = !is_noise_turn(&text) && clean_turn(&text).is_some();
-                    turn_asst.push((indexable, None));
-                    if !is_noise_turn(&text) {
-                        if let Some(cleaned) = clean_turn(&text) {
-                            turns.push(cleaned);
-                        }
-                    }
-                }
-                if let Some(qa) = turn::extract_question_answers(&v) {
-                    if !is_noise_turn(&qa) {
-                        if let Some(cleaned) = clean_turn(&qa) {
-                            turns.push(cleaned);
-                        }
-                    }
-                }
-                // Record each turn's last assistant answer for the search index.
-                if let Some(text) = assistant_text(&v) {
-                    if let Some(slot) = turn_asst.last_mut() {
-                        slot.1 = Some(text);
-                    }
-                }
-            }
-            _ => {}
+            CodexRecord::ToolCall(_) | CodexRecord::ToolResult(_) | CodexRecord::Other => {}
         }
     }
 
@@ -190,62 +184,6 @@ pub fn parse_file(
         .collect();
     session.assistant_blob = build_assistant_blob(&assistant_per_turn);
     Some(session)
-}
-
-/// Extracts assistant answer text from an `event_msg`/`response_item` line, or None
-/// when the line is not an assistant message (user turns are handled separately).
-fn assistant_text(v: &Value) -> Option<String> {
-    let payload = v.get("payload").unwrap_or(v);
-    match payload.get("type").and_then(Value::as_str) {
-        Some("agent_message") => payload
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .filter(|s| !s.trim().is_empty()),
-        Some("message") if payload.get("role").and_then(Value::as_str) == Some("assistant") => {
-            message_text(payload)
-        }
-        _ => None,
-    }
-}
-
-/// Joins the text parts of a `response_item` assistant message content.
-fn message_text(payload: &Value) -> Option<String> {
-    match payload.get("content")? {
-        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-        Value::Array(items) => {
-            let mut parts = Vec::new();
-            for item in items {
-                if let Some(text) = item
-                    .get("text")
-                    .or_else(|| item.get("input_text"))
-                    .or_else(|| item.get("output_text"))
-                    .and_then(Value::as_str)
-                {
-                    if !text.trim().is_empty() {
-                        parts.push(text.to_string());
-                    }
-                }
-            }
-            (!parts.is_empty()).then(|| parts.join("\n\n"))
-        }
-        _ => None,
-    }
-}
-
-/// Returns `num_turns` when the line is a backtrack marker
-/// (`event_msg` with `payload.type=="thread_rolled_back"`).
-fn rolled_back_turns(v: &Value) -> Option<usize> {
-    let payload = v.get("payload")?;
-    if payload.get("type").and_then(Value::as_str) != Some("thread_rolled_back") {
-        return None;
-    }
-    Some(
-        payload
-            .get("num_turns")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize,
-    )
 }
 
 /// Extracts UUID from the filename if session_meta is missing.
