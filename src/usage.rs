@@ -117,6 +117,7 @@ pub struct ResetCountdown {
 }
 
 /// Usage states per profile (key = profile ID).
+#[derive(Default)]
 pub struct UsageState {
     entries: HashMap<String, UsageEntry>,
 }

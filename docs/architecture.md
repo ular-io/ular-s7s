@@ -6,8 +6,10 @@ rather than repeating them.
 
 ## Entry points and execution modes
 
-`src/main.rs` owns CLI startup and the terminal lifecycle. Command parsing is
-`clap` derive. Modes:
+The application is a library crate (`src/lib.rs`) with a thin binary shim
+(`src/main.rs`) that only calls `s7s::run`. CLI dispatch, the TUI event loop,
+agent handovers, and the terminal lifecycle live in `src/runtime.rs`. Command
+parsing is `clap` derive. Modes:
 
 | Invocation | Mode | Handler |
 | --- | --- | --- |
