@@ -2,7 +2,7 @@
 //!
 //! Methods of enumeration (verified in 2026-07, see docs/models.md):
 //! - claude: Lacks an enumeration command, so we scrape the `/model` screen via PTY (sharing
-//!   the same driver `usage::drive_screen` with usage). Since the list depends on plans/accounts,
+//!   the same driver `probe::pty::drive_screen` with usage). Since the list depends on plans/accounts,
 //!   we query it per profile (injecting `CLAUDE_CONFIG_DIR`) and obtain the current default model
 //!   marked with ✔.
 //! - codex: `codex debug models` prints a JSON catalog (only `visibility=="list"` is used).
@@ -21,8 +21,10 @@
 
 use crate::config::config_base_dir;
 use crate::model::Agent;
+use crate::probe::process::installed;
+use crate::probe::pty::{drive_screen, DriveOutcome};
+use crate::probe::{claude_logged_in, CLAUDE_READY_MARKERS};
 use crate::profile::Profile;
-use crate::usage;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -377,7 +379,7 @@ fn fetch(profile: &Profile, cli_version: Option<String>) -> ModelsResult {
         );
     }
     let bin = agent_bin(profile.agent);
-    if !usage::installed(bin) {
+    if !installed(bin) {
         return ModelsResult::Unavailable(format!("{bin} not installed"));
     }
     let envs: Vec<(&str, &Path)> = profile.env_var().into_iter().collect();
@@ -402,22 +404,24 @@ fn fetch(profile: &Profile, cli_version: Option<String>) -> ModelsResult {
 
 /// claude: Spawns the `/model` screen via PTY to parse the list and the current default (✔).
 fn fetch_claude(envs: &[(&str, &Path)]) -> Result<(Vec<ModelEntry>, Option<String>)> {
-    if usage::claude_logged_in(envs) == Some(false) {
+    if claude_logged_in(envs) == Some(false) {
         return Err(anyhow!("claude: not logged in"));
     }
-    match usage::drive_screen(
+    // The dump env name is shared with the usage probe (see docs/models.md).
+    match drive_screen(
         "claude",
         "/model",
-        usage::CLAUDE_READY_MARKERS,
+        CLAUDE_READY_MARKERS,
         &["Select model"],
         &[],
         Duration::from_secs(2),
         Duration::from_millis(800),
         envs,
+        Some("ULAR_USAGE_DUMP"),
     )? {
-        usage::DriveOutcome::Screen(text) => parse_claude_model_screen(&text)
+        DriveOutcome::Screen(text) => parse_claude_model_screen(&text)
             .ok_or_else(|| anyhow!("claude: failed to parse /model screen")),
-        usage::DriveOutcome::NotLoggedIn => Err(anyhow!("claude: not logged in")),
+        DriveOutcome::NotLoggedIn => Err(anyhow!("claude: not logged in")),
     }
 }
 
