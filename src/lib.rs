@@ -15,6 +15,7 @@ pub mod model;
 pub mod models;
 pub mod normalize;
 pub mod parser;
+pub mod probe;
 pub mod profile;
 pub mod rename;
 pub mod resume;
