@@ -5,9 +5,11 @@
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
 > matrix, the Rust toolchain is pinned (`rust-toolchain.toml`),
-> `scripts/check.sh` is the canonical check, and the app is now a library crate
-> (`src/lib.rs` + `src/runtime.rs`) with `main.rs` reduced to a thin entry shim.
-> R5 onward (UI primitive extraction and feature modules) remain proposed.
+> `scripts/check.sh` is the canonical check, the app is now a library crate
+> (`src/lib.rs` + `src/runtime.rs`) with `main.rs` reduced to a thin entry shim,
+> and shared UI primitives are extracted into `src/ui/components/` (input, modal,
+> scrollbar, text) — R5. R6 onward (feature-module extraction: New Session,
+> Profile, Session/Detail, overlays) remain proposed.
 
 ## 1. Status and Purpose
 

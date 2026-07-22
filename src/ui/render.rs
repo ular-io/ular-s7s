@@ -1,7 +1,15 @@
 //! TUI rendering: k9s-style header (logo + hotkeys) / session search table / preview /
 //! session details (questions list + work/answers) / status bar / modal windows.
 
-use super::{App, DetailFocus, Focus, MessageKind, Screen, SessionDetailState, TextInput, UiMode};
+use super::components::modal::{
+    backdrop_dimmed, button_styles, dim_backdrop, modal_block, render_modal, titled_block_nav,
+};
+use super::components::scrollbar::draw_vscrollbar;
+use super::components::text::{pad_w, truncate_w, truncate_w_with_ellipsis, wrap_w};
+use super::{
+    next_char_boundary, App, DetailFocus, Focus, MessageKind, Screen, SessionDetailState,
+    TextInput, UiMode,
+};
 use crate::handoff::WorkKind;
 use crate::theme::Theme;
 use ratatui::{
@@ -3208,194 +3216,7 @@ fn input_view(state: &TextInput, width: usize) -> (String, u16) {
     (visible, cursor_x)
 }
 
-fn next_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    index + s[index..].chars().next().map_or(0, char::len_utf8)
-}
-
 // ---- Helpers ----
-
-/// Unified modal container Block: centered title + 1 space padding in all directions.
-fn modal_block(title: &str, color: Color) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-        .title(Span::styled(
-            title.to_string(),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
-        .title_alignment(Alignment::Center)
-        .padding(Padding::new(1, 1, 1, 1))
-}
-
-/// Shared modal renderer: Clears the outer bounds and draws the Block inset by 1 margin cell laterally.
-/// This margin absorbs overlapping double-width characters from the background behind,
-/// preventing frame borders from getting clipped. Returns the inner content Rect.
-/// `Clear` resets cells to the terminal default, so the theme base is repainted under the modal.
-/// Dialog modes that fade the screen behind them. ThemeSelect is excluded because
-/// the backdrop IS the live theme preview; Help repaints the full frame anyway;
-/// Table/Keyword are not dialogs.
-fn backdrop_dimmed(mode: UiMode) -> bool {
-    !matches!(
-        mode,
-        UiMode::Table | UiMode::Keyword | UiMode::ThemeSelect | UiMode::Help
-    )
-}
-
-/// Percentage each backdrop cell moves toward the theme background while a dialog is open.
-const BACKDROP_FADE_PCT: u32 = 50;
-
-/// Fades every rendered cell toward the theme background so the dialog painted
-/// afterwards stands out (dialogs repaint their own area via `render_modal`).
-/// `Color::Reset` backgrounds are terminal-owned and can't be blended, so they
-/// stay untouched and only foregrounds fade, using the dark-flag assumption —
-/// same fallback as pulse fades (`Theme::bg_rgb`).
-fn dim_backdrop(f: &mut Frame, th: &Theme) {
-    let target = th.bg_rgb();
-    let reset_fg = if th.dark {
-        (235, 235, 235)
-    } else {
-        (16, 16, 16)
-    };
-    let area = f.area();
-    let buf = f.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let cell = &mut buf[(x, y)];
-            let fg = match cell.fg {
-                Color::Reset => reset_fg,
-                c => crate::theme::color_rgb(c),
-            };
-            cell.fg = fade_toward(fg, target);
-            if cell.bg != Color::Reset {
-                cell.bg = fade_toward(crate::theme::color_rgb(cell.bg), target);
-            }
-        }
-    }
-}
-
-/// Linear blend of `c` toward `target` by `BACKDROP_FADE_PCT` percent.
-fn fade_toward((r, g, b): (u8, u8, u8), (tr, tg, tb): (u8, u8, u8)) -> Color {
-    let mix = |c: u8, t: u8| -> u8 {
-        ((u32::from(c) * (100 - BACKDROP_FADE_PCT) + u32::from(t) * BACKDROP_FADE_PCT) / 100) as u8
-    };
-    Color::Rgb(mix(r, tr), mix(g, tg), mix(b, tb))
-}
-
-fn render_modal(f: &mut Frame, outer: Rect, block: Block<'static>, th: &Theme) -> Rect {
-    f.render_widget(Clear, outer);
-    f.render_widget(Block::default().style(th.base_style()), outer);
-    let block_area = Rect {
-        x: outer.x + 1,
-        y: outer.y,
-        width: outer.width.saturating_sub(2),
-        height: outer.height,
-    };
-    let inner = block.inner(block_area);
-    f.render_widget(block, block_area);
-    inner
-}
-
-/// Block capable of rendering left/right navigation arrows at the corners of the top frame.
-/// `nav_left` / `nav_right` dictate navigable directions when focused.
-/// Arrows only overlay if focused (hidden in unfocused blocks).
-fn titled_block_nav(
-    title: &str,
-    focused: bool,
-    nav_left: bool,
-    nav_right: bool,
-    focus_color: Color,
-) -> Block<'static> {
-    // Focus states: focused uses Cyan thick lines (Thick); unfocused uses default thin lines (Plain).
-    let (border_type, style) = if focused {
-        (
-            BorderType::Thick,
-            Style::default()
-                .fg(focus_color)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (BorderType::Plain, Style::default())
-    };
-    let mut block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(border_type)
-        .border_style(style)
-        .title(Span::styled(title.to_string(), style))
-        .title_alignment(Alignment::Center);
-    // Arrow indicators indicating navigation via Left/Right keys.
-    // Since arrows only show in focused (thick-bordered) boxes, a thick horizontal dash (━)
-    // is appended to the outer side to connect with the frame: e.g., `┏━ ← ━ … ━ → ━┓`.
-    if focused && nav_left {
-        block = block.title_top(Line::from("━ ← ").left_aligned().style(style));
-    }
-    if focused && nav_right {
-        block = block.title_top(Line::from(" → ━").right_aligned().style(style));
-    }
-    block
-}
-
-/// Renders scrollbar tracks over the right vertical border of focused panels.
-/// Since borders cannot load text via standard title APIs, this directly overwrites
-/// target buffer cells after the widget renders.
-///
-/// - Places `↑` directly under the top border cell, and `↓` directly above the bottom border cell.
-/// - Draws a solid block (`█`) representing the thumb position and ratio inside the track.
-///   Thumb height scales to `viewport / total`; position correlates with `offset / max_offset`.
-///   If scroll is not required (`total <= viewport`), renders arrows only without the solid block.
-fn draw_vscrollbar(
-    f: &mut Frame,
-    area: Rect,
-    focused: bool,
-    offset: usize,
-    total: usize,
-    viewport: usize,
-    th: &Theme,
-) {
-    if !focused || area.width == 0 || area.height < 4 {
-        return;
-    }
-    let style = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
-    let x = area.x + area.width - 1;
-    let top_y = area.y + 1;
-    let bottom_y = area.y + area.height - 2;
-    {
-        let buf = f.buffer_mut();
-        buf[(x, top_y)].set_symbol("↑").set_style(style);
-        buf[(x, bottom_y)].set_symbol("↓").set_style(style);
-    }
-
-    // Draws thumb inside track (between the bottom of top arrow and top of bottom arrow).
-    if area.height < 5 || total <= viewport || viewport == 0 {
-        return;
-    }
-    let track_start = top_y + 1;
-    let track_len = (bottom_y - 1 - track_start + 1) as usize; // = height - 4
-    let max_offset = total - viewport;
-    let offset = offset.min(max_offset);
-    let thumb_len = (track_len * viewport / total).max(1).min(track_len);
-    // Rounding alignment: sticks to the top of track if at maximum, bottom if at minimum.
-    let thumb_off = ((track_len - thumb_len) * offset + max_offset / 2) / max_offset;
-    let buf = f.buffer_mut();
-    for i in 0..thumb_len {
-        let y = track_start + (thumb_off + i) as u16;
-        buf[(x, y)].set_symbol("█").set_style(style);
-    }
-}
-
-/// Dialog button styles: `(focused, unfocused)`.
-fn button_styles(th: &Theme) -> (Style, Style) {
-    (
-        Style::default()
-            .fg(th.button_focus_fg)
-            .bg(th.button_focus_bg)
-            .add_modifier(Modifier::BOLD),
-        Style::default().fg(th.button_fg).bg(th.button_bg),
-    )
-}
 
 fn agent_tag(agent: crate::model::Agent, th: &Theme) -> (&'static str, Color) {
     use crate::model::Agent;
@@ -3404,112 +3225,6 @@ fn agent_tag(agent: crate::model::Agent, th: &Theme) -> (&'static str, Color) {
         Agent::Antigravity => ("AGY ", th.agent_antigravity),
         Agent::Codex => ("CDX ", th.agent_codex),
     }
-}
-
-/// Truncates string based on visual character width (accounting for double-width characters).
-fn truncate_w(s: &str, max_w: usize) -> String {
-    truncate_w_with_ellipsis(s, max_w, "…")
-}
-
-/// Right pads string with spaces based on visual width (accounting for double-width characters).
-/// Standard `format!("{:<w$}")` counts character lengths, causing alignment bugs with double-width characters.
-fn pad_w(s: &str, w: usize) -> String {
-    let cur = s.width();
-    if cur >= w {
-        s.to_string()
-    } else {
-        format!("{}{}", s, " ".repeat(w - cur))
-    }
-}
-
-fn truncate_w_with_ellipsis(s: &str, max_w: usize, ellipsis: &str) -> String {
-    if s.width() <= max_w {
-        return s.to_string();
-    }
-    if max_w == 0 {
-        return String::new();
-    }
-
-    let ellipsis_w = ellipsis.width();
-    if max_w <= ellipsis_w {
-        return ellipsis
-            .chars()
-            .scan(0usize, |w, ch| {
-                let cw = UnicodeWidthStr::width(ch.to_string().as_str());
-                if *w + cw > max_w {
-                    return None;
-                }
-                *w += cw;
-                Some(ch)
-            })
-            .collect();
-    }
-
-    let mut out = String::new();
-    let mut w = 0usize;
-    for ch in s.chars() {
-        let cw = UnicodeWidthStr::width(ch.to_string().as_str());
-        if w + cw + ellipsis_w > max_w {
-            out.push_str(ellipsis);
-            break;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out
-}
-
-/// Wraps text based on visual width constraints (accounts for double-width characters, no ellipsis).
-fn wrap_w(s: &str, max_w: usize) -> Vec<String> {
-    // Tab stops (space expansion width). unicode-width counts `\t` as 0 width, but terminals expand it.
-    // This discrepancy causes text to overflow past frames. Expands tabs to spaces before calculation to match widths.
-    const TAB_STOP: usize = 4;
-    if max_w == 0 {
-        return Vec::new();
-    }
-
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut current_w = 0usize;
-
-    for ch in s.chars() {
-        // Tab: fills with space up to next tab stop (wraps if exceeding max width).
-        if ch == '\t' {
-            for _ in 0..(TAB_STOP - (current_w % TAB_STOP)) {
-                if current_w + 1 > max_w {
-                    lines.push(std::mem::take(&mut current));
-                    current_w = 0;
-                }
-                current.push(' ');
-                current_w += 1;
-            }
-            continue;
-        }
-        let cw = UnicodeWidthStr::width(ch.to_string().as_str());
-        if current_w > 0 && current_w + cw > max_w {
-            lines.push(current);
-            current = String::new();
-            current_w = 0;
-        }
-        if cw > max_w {
-            // Extremely rare case where a single character width exceeds max width; handle safely on its own line.
-            if !current.is_empty() {
-                lines.push(current);
-                current = String::new();
-                current_w = 0;
-            }
-            lines.push(ch.to_string());
-            continue;
-        }
-        current.push(ch);
-        current_w += cw;
-    }
-
-    if !current.is_empty() {
-        lines.push(current);
-    }
-
-    lines
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -3652,46 +3367,6 @@ mod tests {
     }
 
     #[test]
-    fn backdrop_dim_applies_to_dialog_modes_only() {
-        use crate::ui::UiMode;
-        for mode in [
-            UiMode::Table,
-            UiMode::Keyword,
-            UiMode::ThemeSelect,
-            UiMode::Help,
-        ] {
-            assert!(!super::backdrop_dimmed(mode), "{mode:?} must not dim");
-        }
-        for mode in [
-            UiMode::AgentModal,
-            UiMode::FolderModal,
-            UiMode::DeleteConfirm,
-            UiMode::Rename,
-            UiMode::ProfileForm,
-            UiMode::ProfileDeleteConfirm,
-            UiMode::ProfileDirConfirm,
-            UiMode::NewSession,
-            UiMode::ProjectDirConfirm,
-            UiMode::QuickCommand,
-            UiMode::Message,
-        ] {
-            assert!(super::backdrop_dimmed(mode), "{mode:?} must dim");
-        }
-    }
-
-    #[test]
-    fn fade_toward_moves_halfway_to_target() {
-        assert_eq!(
-            super::fade_toward((100, 100, 100), (0, 0, 0)),
-            Color::Rgb(50, 50, 50)
-        );
-        assert_eq!(
-            super::fade_toward((0, 0, 0), (200, 100, 50)),
-            Color::Rgb(100, 50, 25)
-        );
-    }
-
-    #[test]
     fn backdrop_fades_cells_behind_open_dialog() {
         let mut app = session_app();
         app.theme = crate::theme::default_theme();
@@ -3708,11 +3383,11 @@ mod tests {
         let target = app.theme.bg_rgb();
         assert_eq!(
             after_fg,
-            super::fade_toward(crate::theme::color_rgb(before_fg), target)
+            crate::ui::components::modal::fade_toward(crate::theme::color_rgb(before_fg), target)
         );
         assert_eq!(
             after_bg,
-            super::fade_toward(crate::theme::color_rgb(before_bg), target)
+            crate::ui::components::modal::fade_toward(crate::theme::color_rgb(before_bg), target)
         );
         assert_ne!(before_fg, after_fg);
     }
