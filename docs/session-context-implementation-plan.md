@@ -1,5 +1,10 @@
 # Session Context and New Session with Context — Implementation Plan
 
+> **Status: Implemented.** This plan was delivered (session-context system and
+> New Session with Context). It is retained as historical design context; the
+> current contract lives in [session-context.md](./session-context.md), which is
+> the source of truth. Where the two differ, the domain document wins.
+
 ## 1. Purpose
 
 Implement a reusable session-context query interface and a TUI flow that starts a new
