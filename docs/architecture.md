@@ -60,8 +60,11 @@ Detail turn count, and CLI turn count must agree — enforced by
 - `ui/mod.rs` — `App` state and the state machine (`UiMode`, key handlers,
   transitions, validation, persistence, and requested external work such as
   rename, rescan, and terminal handover).
-- `ui/render.rs` — all screens, dialogs, and components (header, session table,
-  preview, detail panels, modals).
+- `ui/render.rs` — all screens and dialogs (header, session table, preview,
+  detail panels, modals).
+- `ui/components/` — feature-agnostic UI primitives reused across dialogs:
+  `input` (Unicode-safe `TextInput`), `modal` (frame/buttons/backdrop),
+  `scrollbar`, and `text` (width-aware truncation/wrapping).
 - `ui/quick.rs` — the `:` command palette / `!` terminal command window.
 - `theme.rs` — palettes, custom theme files, selection persistence.
 - Agent handover (`resume.rs`) unmounts the TUI, runs the agent/shell command

@@ -1,7 +1,10 @@
 //! TUI application state and state machine.
 
+pub mod components;
 pub mod quick;
 pub mod render;
+
+pub(crate) use components::input::{next_char_boundary, prev_char_boundary, TextInput};
 
 use crate::config::Config;
 use crate::filter::{self, Filter};
@@ -163,58 +166,6 @@ pub struct ModalState {
     /// the window and the offset only shifts when the cursor would fall outside
     /// it, so moving the selection upward within the window does not scroll.
     pub scroll: std::cell::Cell<usize>,
-}
-
-/// State managing single-line text inputs supporting cursor movement and multi-byte character editing.
-/// Shared between the session rename modal and the profile creation/edit form.
-pub struct TextInput {
-    pub value: String,
-    pub cursor: usize,
-}
-
-impl TextInput {
-    fn new(value: String) -> Self {
-        let cursor = value.len();
-        TextInput { value, cursor }
-    }
-
-    fn insert_char(&mut self, c: char) {
-        self.value.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let prev = prev_char_boundary(&self.value, self.cursor);
-        self.value.drain(prev..self.cursor);
-        self.cursor = prev;
-    }
-
-    fn delete(&mut self) {
-        if self.cursor >= self.value.len() {
-            return;
-        }
-        let next = next_char_boundary(&self.value, self.cursor);
-        self.value.drain(self.cursor..next);
-    }
-
-    fn move_left(&mut self) {
-        self.cursor = prev_char_boundary(&self.value, self.cursor);
-    }
-
-    fn move_right(&mut self) {
-        self.cursor = next_char_boundary(&self.value, self.cursor);
-    }
-
-    fn home(&mut self) {
-        self.cursor = 0;
-    }
-
-    fn end(&mut self) {
-        self.cursor = self.value.len();
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3307,28 +3258,6 @@ fn resolve_input_path(raw: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     }
-}
-
-fn prev_char_boundary(s: &str, cursor: usize) -> usize {
-    if cursor == 0 {
-        return 0;
-    }
-    let mut idx = cursor.saturating_sub(1);
-    while !s.is_char_boundary(idx) {
-        idx = idx.saturating_sub(1);
-    }
-    idx
-}
-
-fn next_char_boundary(s: &str, cursor: usize) -> usize {
-    if cursor >= s.len() {
-        return s.len();
-    }
-    let mut idx = cursor.saturating_add(1);
-    while idx < s.len() && !s.is_char_boundary(idx) {
-        idx += 1;
-    }
-    idx.min(s.len())
 }
 
 #[cfg(test)]
