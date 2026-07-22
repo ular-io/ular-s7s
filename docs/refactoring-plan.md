@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, R9, R10a, R10b, R11, R12, R13, and R14 are implemented:
+> **Status: Implemented.** All work packages R0–R7, R8a, R8b, R9, R10a, R10b, R11, R12, R13, R14, and R15 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -73,7 +73,20 @@
 > behavior preserved by construction (no parser/scan code touched;
 > `real_data_turn_parity` 0 mismatches over 624 full-context sessions with the
 > agy relaxed rule, `real_data_index_snapshot` provably identical,
-> `CACHE_VERSION` stays 12) (done). R15 remains proposed.
+> `CACHE_VERSION` stays 12) (done). **R15** is the final cleanup and
+> documentation audit: it removed the one genuinely dead symbol (`Screen::label`,
+> the only `#[allow(dead_code)]` without a documented reserved-API reason — the
+> remaining `MessageKind::{Info, Warn}` and `ContextEntryKind::SessionReference`
+> stay as documented reserved API) and aligned the documentation to the final
+> module structure (the routing table's rewind/backtrack row now points at
+> `parser/claude/` and `parser/codex/`). The `ui/mod.rs` re-exports were reviewed
+> and deliberately kept: nothing outside `ui` references them, but they are a
+> documented, harmless path-stability façade whose removal would be low-value
+> churn against the byte-identity discipline (§15.6). No visibility could be
+> tightened — every `pub(crate)` widening from R6–R11 is still justified by a
+> live cross-module call. Behavior preserved: `scripts/check.sh` green, the
+> worktree carries no generated or personal artifacts, and the parser gates are
+> unchanged (done). The staged refactoring is complete.
 
 ## 1. Status and Purpose
 
@@ -802,7 +815,7 @@ branch.
 | R12 | Claude normalized events (`src/parser/claude/events.rs`) — done | R3 | High |
 | R13 | Codex normalized events (`src/parser/codex/events.rs`) — done | R3 | High |
 | R14 | Antigravity parser boundary review — done (documentation-only; no code extracted) | R12-R13 | High |
-| R15 | Final cleanup and documentation audit | R2-R14 | Medium |
+| R15 | Final cleanup and documentation audit — done | R2-R14 | Medium |
 
 R12 and R13 may proceed independently after the baseline is stable, but they
 should not be combined into one review.
