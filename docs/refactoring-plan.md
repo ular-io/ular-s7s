@@ -1,12 +1,13 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R3 are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R4 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
-> matrix, the Rust toolchain is pinned (`rust-toolchain.toml`), and
-> `scripts/check.sh` is the canonical check. R4 onward (code restructuring) remain
-> proposed.
+> matrix, the Rust toolchain is pinned (`rust-toolchain.toml`),
+> `scripts/check.sh` is the canonical check, and the app is now a library crate
+> (`src/lib.rs` + `src/runtime.rs`) with `main.rs` reduced to a thin entry shim.
+> R5 onward (UI primitive extraction and feature modules) remain proposed.
 
 ## 1. Status and Purpose
 
