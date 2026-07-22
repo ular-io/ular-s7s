@@ -22,7 +22,7 @@ Covers the shared model (`src/session_context/`) for querying previous session c
 src/session_context/
 ├── mod.rs          load(session) → SessionContext · shared turn builder helpers
 ├── model.rs        SessionContext · ContextTurn · ContextEntry · ContextCompleteness
-├── claude.rs       Detailed parser (parentUuid active path filter — shared with list parser)
+├── claude.rs       Detailed parser (record decoding + parentUuid active path via parser::claude::events, shared with list parser)
 ├── codex.rs        Detailed parser (thread_rolled_back rollback processing — parity with list parser)
 ├── antigravity.rs  Detailed parser (transcript JSONL) + transcript path resolution
 ├── excerpt.rs      Unicode-safe excerpt (chars() based, byte slicing forbidden)
@@ -44,7 +44,7 @@ exactly once. Earlier mid-turn repetitions of the same text are kept.
 
 List Q count == Detail screen turn number == CLI turn number.
 
-- **Claude**: Excludes `/rewind` dead branches using the same `parentUuid` active path set (`parser::claude::active_uuid_set`) as the list parser. Turn adoption criteria are identical (`extract_user_text` + `is_noise_turn` + `clean_turn` — is-human field check is not used because older records lack `promptSource`/`origin`).
+- **Claude**: Both parsers call the same decoder module, `parser::claude::events` (R12): `chain_filter` builds the `parentUuid` active-path set that excludes `/rewind` dead branches, and `decode` applies the shared turn-adoption gates (`extract_user_text` + `is_noise_turn` + `clean_turn`) plus sidechain and task-notification identity — so acceptance can no longer drift between the two views. The is-human field check is not used because older records lack `promptSource`/`origin`. The detailed tool call/result payloads are the only Claude-specific extraction left in `session_context::claude`; the decoder never materializes them (list stays lightweight, §5.5).
 - **Codex**: Truncates recent N user turns with the `thread_rolled_back {num_turns}` marker (noise-filtered user_message is also counted as a boundary — identical to the list parser). **Image-only inputs are recorded as empty `user_message`**, so turns are not created through the `clean_turn` gate (identical to the list).
 - **Antigravity**: The list is an SQLite DB, while details are from the transcript log; **the sources differ**.
   - If the transcript has rotated and has fewer turns than the list, it falls back to `UserTurnsOnly` so that turn numbers do not appear misaligned (Observed: A session where `transcript_full.jsonl` starts from step_index 125 exists).

@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, R9, R10a, and R10b are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, R9, R10a, R10b, R11, and R12 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -35,8 +35,22 @@
 > independent probe clients; the driver knows no usage labels or model syntax
 > (the diagnostic dump env name became a client-provided parameter — both clients
 > keep passing `ULAR_USAGE_DUMP`, so behavior is unchanged), and `usage.rs` /
-> `models.rs` stay in place per §7's "stop when ownership is clear" (done). R12
-> onward remain proposed.
+> `models.rs` stay in place per §7's "stop when ownership is clear" (done).
+> **R12** unifies Claude record decoding and the `parentUuid` active-branch
+> reduction into one shared module (`src/parser/claude/events.rs`): the list
+> indexer (`parser::claude`) and the context parser (`session_context::claude`)
+> both drive the same `parse_lines` → `chain_filter` → `decode` pipeline, so
+> turn-acceptance gates, sidechain/task-notification identity, and `/rewind`
+> filtering can no longer drift between the two views. The decoder is
+> payload-light (never materializes tool JSON — the context parser extracts
+> those from the raw records, keeping list indexing lightweight per §5.5); two
+> pre-R12 micro-divergences were unified (task-notification identity now keys on
+> `origin.kind` with the legacy text prefix as fallback; title events are
+> excluded from the chain by rule). Behavior preserved: `real_data_turn_parity`
+> 0 mismatches over 623 sessions, and a new permanent gate
+> `real_data_index_snapshot` confirmed the list index byte-identical across 626
+> sessions before/after; `CACHE_VERSION` stays 12 (no serialization change)
+> (done). R13 onward remain proposed.
 
 ## 1. Status and Purpose
 
@@ -762,7 +776,7 @@ branch.
 | R10a | App in-place effects (`AppEffect`/`apply_effect`) — done | R6-R9 | High |
 | R10b | Background job coordination (`BackgroundState`) — done | R6-R9 | High |
 | R11 | Generic PTY/process probe layer (`src/probe/`) — done | R3, R10 | High |
-| R12 | Claude normalized events | R3 | High |
+| R12 | Claude normalized events (`src/parser/claude/events.rs`) — done | R3 | High |
 | R13 | Codex normalized events | R3 | High |
 | R14 | Antigravity parser boundary review | R12-R13 | High |
 | R15 | Final cleanup and documentation audit | R2-R14 | Medium |

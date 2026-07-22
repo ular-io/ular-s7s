@@ -176,7 +176,7 @@ in `title::resolve`.
 ## Related Code
 
 - [src/rename.rs](../src/rename.rs)
-- [src/parser/claude.rs](../src/parser/claude.rs)
+- [src/parser/claude/mod.rs](../src/parser/claude/mod.rs) (title-event decoding shared via [src/parser/claude/events.rs](../src/parser/claude/events.rs))
 - [src/parser/codex.rs](../src/parser/codex.rs)
 - [src/parser/antigravity.rs](../src/parser/antigravity.rs)
 - [src/scan.rs](../src/scan.rs)
