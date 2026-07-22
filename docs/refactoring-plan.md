@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R7 and R8a are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R7, R8a, and R8b are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -10,11 +10,12 @@
 > shared UI primitives are extracted into `src/ui/components/` (input, modal,
 > scrollbar, text) — R5, the New Session feature is extracted into
 > `src/ui/new_session/` (state, input, render) — R6, and the Profile feature is
-> extracted into `src/ui/profile/` (state, input, render) — R7, and the Detail screen is
-> extracted into `src/ui/detail/` (state, input, render) — R8a (all
-> behavior-preserving moves; effect-based decoupling per §8 is deferred). The
-> Session screen half of R8 (R8b) and R9 onward (remaining overlays) remain
-> proposed.
+> extracted into `src/ui/profile/` (state, input, render) — R7, the Detail screen is
+> extracted into `src/ui/detail/` (state, input, render) — R8a, and the Session
+> screen (table/filter/preview + `/` keyword prompt) is extracted into
+> `src/ui/session/` (state, input, render) — R8b (all behavior-preserving moves;
+> effect-based decoupling per §8 is deferred). R9 onward (remaining overlays)
+> remains proposed.
 
 ## 1. Status and Purpose
 
@@ -735,7 +736,7 @@ branch.
 | R6 | New Session feature extraction | R5 | High |
 | R7 | Profile feature extraction | R5 | Medium |
 | R8a | Detail feature extraction (`ui/detail/`) — done | R5 | High |
-| R8b | Session table/filter/preview extraction (`ui/session/`) | R5 | High |
+| R8b | Session table/filter/preview extraction (`ui/session/`) — done | R5 | High |
 | R9 | Overlay and render-test redistribution | R6-R8 | Medium |
 | R10 | App effects and background coordination | R6-R9 | High |
 | R11 | Generic PTY/process probe layer | R3, R10 | High |
