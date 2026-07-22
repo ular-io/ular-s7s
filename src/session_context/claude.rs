@@ -3,104 +3,106 @@
 //! Same source file as the list parser (`~/.claude/projects/<dir>/<id>.jsonl`),
 //! but extracts full turns (user text, tool calls/results, assistant text).
 //!
-//! `/rewind` parity: entries are filtered to the active `parentUuid` chain via
-//! the same helper the list parser uses (`parser::claude::active_uuid_set`), so
-//! abandoned turns never appear in detailed context either.
+//! Record decoding and the active `parentUuid` chain are shared with the list
+//! parser (`parser::claude::events` — R12): turn acceptance gates, sidechain and
+//! task-notification identity, and `/rewind` filtering can no longer drift
+//! between the two views. Only the detailed payloads (tool calls/results) are
+//! extracted here, from the raw records the shared decoder deliberately does
+//! not materialize.
 
-use super::model::{ContextEntry, ContextEntryKind, ContextTurn};
+use super::model::{ContextEntryKind, ContextTurn};
 use super::{cleanup_user_text, compact_json, promote_qa_turn, push_entry, set_last_assistant};
-use crate::parser::claude::active_uuid_set;
-use crate::parser::{clean_turn, is_noise_turn, turn};
+use crate::parser::claude::events::{self, AssistantItem, RecordKind, UserTextKind};
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::Path;
 
 pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
     let content = std::fs::read_to_string(path)?;
-    let lines: Vec<Value> = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .filter(|v: &Value| v.get("isSidechain").and_then(Value::as_bool) != Some(true))
-        .collect();
+    let values = events::parse_lines(&content);
 
-    // Build the active-path uuid set exactly like the list parser (rewind parity).
-    let mut parents: HashMap<String, Option<String>> = HashMap::new();
-    let mut leaf: Option<String> = None;
-    for v in &lines {
-        if let Some(u) = v.get("uuid").and_then(Value::as_str) {
-            let parent = v
-                .get("parentUuid")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            parents.insert(u.to_string(), parent);
-            leaf = Some(u.to_string());
-        }
-    }
-    // None = chain broken or absent: keep everything (same fallback as the list parser).
-    let active = active_uuid_set(&parents, leaf.as_deref());
+    // Active-path membership from the shared reducer (rewind parity with the list).
+    let filter = events::chain_filter(&values);
 
     let mut turns: Vec<ContextTurn> = Vec::new();
     let mut current: Option<ContextTurn> = None;
 
-    for v in &lines {
-        if let (Some(active), Some(u)) = (&active, v.get("uuid").and_then(Value::as_str)) {
-            if !active.contains(u) {
-                continue; // Abandoned by /rewind.
-            }
+    for v in &values {
+        let Some(record) = events::decode(v) else {
+            continue; // Sidechain (subagent) records.
+        };
+        if !filter.is_active(record.uuid) {
+            continue; // Abandoned by /rewind.
         }
 
-        // AskUserQuestion response is promoted to a virtual user turn, matching the list view
-        // (not recorded redundantly as a ToolResult).
-        if let Some(qa) = turn::extract_question_answers(v) {
-            promote_qa_turn(&mut turns, &mut current, &qa);
-            continue;
-        }
-
-        match v.get("type").and_then(Value::as_str) {
-            // Background task notifications are injected as user-role entries but are
-            // not human questions: keep the current turn open so the follow-up
-            // assistant answer attaches to the original question, and record the
-            // notification body as a tool result.
-            Some("user") if is_task_notification(v) => {
-                if let Some(text) = turn::extract_user_text(v) {
-                    push_entry(&mut current, ContextEntryKind::ToolResult, text);
+        match record.kind {
+            RecordKind::User(u) => {
+                // AskUserQuestion response is promoted to a virtual user turn, matching
+                // the list view (not recorded redundantly as a ToolResult).
+                if let Some(qa) = u.qa {
+                    promote_qa_turn(&mut turns, &mut current, &qa);
+                    continue;
                 }
-            }
-            // Turn acceptance mirrors the list parser exactly: any user entry whose
-            // extractable text survives the noise filter and `clean_turn` is a turn.
-            // Old CLI records lack `promptSource`/`origin`, so an is-human field
-            // check here would drop turns the list counts and break turn-number
-            // parity between the list, Detail screen, and CLI.
-            Some("user") if has_countable_user_text(v) => {
-                if let Some(done) = current.take() {
-                    turns.push(done);
+                // Background task notifications are injected as user-role entries but
+                // are not human questions: keep the current turn open so the follow-up
+                // assistant answer attaches to the original question, and record the
+                // notification body as a tool result.
+                if u.is_task_notification {
+                    if let Some(text) = u.text {
+                        push_entry(&mut current, ContextEntryKind::ToolResult, text);
+                    }
+                    continue;
                 }
-                if let Some(text) = turn::extract_user_text(v) {
-                    if !is_noise_turn(&text) && clean_turn(&text).is_some() {
+                match u.text_kind {
+                    // Turn acceptance mirrors the list parser exactly (shared gates in
+                    // the decoder). The context view keeps the raw text (IDE-block
+                    // compression + redaction), not the list's NFC-trimmed payload.
+                    UserTextKind::Turn { .. } => {
+                        if let Some(done) = current.take() {
+                            turns.push(done);
+                        }
                         current = Some(ContextTurn {
-                            user: cleanup_user_text(&text),
+                            user: cleanup_user_text(&u.text.unwrap_or_default()),
                             last_assistant_text: None,
                             entries: Vec::new(),
                         });
                     }
-                }
-            }
-            Some("user") => {
-                if let Some(entry) = claude_tool_result(v) {
-                    push_entry(&mut current, ContextEntryKind::ToolResult, entry);
-                }
-            }
-            Some("assistant") => {
-                for entry in claude_assistant_entries(v) {
-                    if matches!(entry.kind, ContextEntryKind::AssistantText) {
-                        set_last_assistant(&mut current, &entry.text);
+                    // Any extractable user text closes the current turn, even when it
+                    // opens none (noise input, blank text).
+                    UserTextKind::Boundary | UserTextKind::Blank => {
+                        if let Some(done) = current.take() {
+                            turns.push(done);
+                        }
                     }
-                    push_entry(&mut current, entry.kind, entry.text);
+                    UserTextKind::NoText => {
+                        if let Some(entry) = claude_tool_result(v) {
+                            push_entry(&mut current, ContextEntryKind::ToolResult, entry);
+                        }
+                    }
                 }
             }
-            _ => {}
+            RecordKind::Assistant(items) => {
+                for item in items {
+                    match item {
+                        AssistantItem::Text(text) => {
+                            set_last_assistant(&mut current, text);
+                            push_entry(
+                                &mut current,
+                                ContextEntryKind::AssistantText,
+                                text.to_string(),
+                            );
+                        }
+                        AssistantItem::ToolUse(item) => {
+                            push_entry(
+                                &mut current,
+                                ContextEntryKind::ToolCall,
+                                compact_json(item),
+                            );
+                        }
+                    }
+                }
+            }
+            RecordKind::Title(_) | RecordKind::Other => {}
         }
     }
 
@@ -108,28 +110,6 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
         turns.push(done);
     }
     Ok(turns)
-}
-
-/// Detects background task completion notices (`origin.kind == "task-notification"`,
-/// `promptSource: "system"`). The text prefix is a fallback for older CLI records.
-fn is_task_notification(v: &Value) -> bool {
-    if v.get("origin")
-        .and_then(|o| o.get("kind"))
-        .and_then(Value::as_str)
-        == Some("task-notification")
-    {
-        return true;
-    }
-    turn::extract_user_text(v)
-        .map(|t| t.trim_start().starts_with("<task-notification>"))
-        .unwrap_or(false)
-}
-
-/// Whether the user entry carries text the list parser would extract. Noise text
-/// still matches (a noise user input ends the previous turn without opening a new
-/// one); entries with no extractable text (pure tool results) do not.
-fn has_countable_user_text(v: &Value) -> bool {
-    turn::extract_user_text(v).is_some()
 }
 
 fn claude_tool_result(v: &Value) -> Option<String> {
@@ -153,35 +133,6 @@ fn claude_tool_result(v: &Value) -> Option<String> {
         }
         _ => None,
     }
-}
-
-fn claude_assistant_entries(v: &Value) -> Vec<ContextEntry> {
-    let mut out = Vec::new();
-    let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
-        return out;
-    };
-    let Value::Array(items) = content else {
-        return out;
-    };
-
-    for item in items {
-        match item.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
-                    out.push(ContextEntry {
-                        kind: ContextEntryKind::AssistantText,
-                        text: text.to_string(),
-                    });
-                }
-            }
-            Some("tool_use") => out.push(ContextEntry {
-                kind: ContextEntryKind::ToolCall,
-                text: compact_json(item),
-            }),
-            _ => {}
-        }
-    }
-    out
 }
 
 #[cfg(test)]
