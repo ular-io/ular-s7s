@@ -155,16 +155,31 @@ fn synth_question(topic: &str, step: usize) -> String {
     match step {
         0 => format!("Implement the features for {}.", topic),
         1 => format!("Let's debug the current issue in {} configuration.", topic),
-        2 => format!("Can you write a comprehensive unit test to verify {}?", topic),
+        2 => format!(
+            "Can you write a comprehensive unit test to verify {}?",
+            topic
+        ),
         3 => format!(
             "Is there any security risk or memory leak within {} implementation?",
             topic
         ),
         4 => format!("Refactor this module to optimize performance of {}.", topic),
-        5 => format!("How should we handle potential boundary exceptions for {}?", topic),
-        6 => format!("Write a shell script to automate deployment validation of {}.", topic),
-        7 => format!("Analyze the heap dump to track down memory usage for {}.", topic),
-        8 => format!("Is there a better software pattern for this {} layout?", topic),
+        5 => format!(
+            "How should we handle potential boundary exceptions for {}?",
+            topic
+        ),
+        6 => format!(
+            "Write a shell script to automate deployment validation of {}.",
+            topic
+        ),
+        7 => format!(
+            "Analyze the heap dump to track down memory usage for {}.",
+            topic
+        ),
+        8 => format!(
+            "Is there a better software pattern for this {} layout?",
+            topic
+        ),
         9 => format!("Configure production environment variables for {}.", topic),
         _ => format!("Verify step {} of the {} task list.", step + 1, topic),
     }
@@ -193,7 +208,10 @@ fn synth_answer(topic: &str, step: usize) -> String {
             "We can refactor by lazy loading components to speed up {} rendering.",
             topic
         ),
-        5 => format!("I've added retry logic and default fallbacks to stabilize {} errors.", topic),
+        5 => format!(
+            "I've added retry logic and default fallbacks to stabilize {} errors.",
+            topic
+        ),
         6 => format!(
             "Here is the bash script testing all endpoint responses for {} configurations.",
             topic
@@ -210,7 +228,11 @@ fn synth_answer(topic: &str, step: usize) -> String {
             "Setting standard memory limits and connection sizes suitable for {} scaling.",
             topic
         ),
-        _ => format!("Successfully finished step {} of {} development.", step + 1, topic),
+        _ => format!(
+            "Successfully finished step {} of {} development.",
+            step + 1,
+            topic
+        ),
     }
 }
 
@@ -238,7 +260,10 @@ pub fn ensure_demo_sandbox(base: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(base.join("sessions/antigravity/cache"))?;
 
     // 2. Write example config files (always overwritten: generator-owned).
-    std::fs::write(base.join("config/config.toml"), crate::config::CONFIG_TEMPLATE)?;
+    std::fs::write(
+        base.join("config/config.toml"),
+        crate::config::CONFIG_TEMPLATE,
+    )?;
     write_profiles_json(base)?;
 
     // 3. Detailed Claude session 0 (10 turns, first table row).
@@ -459,7 +484,10 @@ fn write_codex_session(
         ));
     }
 
-    let path = base.join(format!("sessions/codex/sessions/rollout-{}.jsonl", session_id));
+    let path = base.join(format!(
+        "sessions/codex/sessions/rollout-{}.jsonl",
+        session_id
+    ));
     std::fs::write(&path, jsonl)?;
     set_file_mtime(&path, mtime)?;
 
@@ -482,7 +510,10 @@ fn write_antigravity_session(
     let session_id = format!("demo-session-{}", idx);
     let cwd = session_cwd(folder);
 
-    let db_path = base.join(format!("sessions/antigravity/conversations/{}.db", session_id));
+    let db_path = base.join(format!(
+        "sessions/antigravity/conversations/{}.db",
+        session_id
+    ));
     let conn = rusqlite::Connection::open(&db_path)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS steps (
@@ -549,7 +580,8 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     fn temp_base(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("s7s-demo-test-{}-{}", std::process::id(), tag));
+        let dir =
+            std::env::temp_dir().join(format!("s7s-demo-test-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -580,7 +612,8 @@ mod tests {
     }
 
     fn session_idx(id: &str) -> Option<usize> {
-        id.strip_prefix("demo-session-").and_then(|s| s.parse().ok())
+        id.strip_prefix("demo-session-")
+            .and_then(|s| s.parse().ok())
     }
 
     #[test]
@@ -592,7 +625,12 @@ mod tests {
         // 33 sessions total, sorted newest-first == by idx ascending.
         assert_eq!(sessions.len(), 1 + LOOP_SESSIONS);
         for (pos, s) in sessions.iter().enumerate() {
-            assert_eq!(session_idx(&s.id), Some(pos), "sort order broken at {}", s.id);
+            assert_eq!(
+                session_idx(&s.id),
+                Some(pos),
+                "sort order broken at {}",
+                s.id
+            );
         }
 
         // Detailed first row: Claude, 10 questions, fixed title.

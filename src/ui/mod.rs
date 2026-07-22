@@ -3339,8 +3339,8 @@ mod tests {
         TerminalKind, UiMode,
     };
     use crate::config::Config;
-    use crate::models::LastSelection;
     use crate::model::{Agent, Session};
+    use crate::models::LastSelection;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
 

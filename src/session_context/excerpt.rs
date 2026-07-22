@@ -75,7 +75,7 @@ mod tests {
         let text: String = unit.chars().cycle().take(2400).collect();
         let out = compact_user(&text);
         assert!(out.contains("characters omitted"));
-        assert_eq!(String::from_utf8(out.into_bytes()).is_ok(), true);
+        assert!(String::from_utf8(out.into_bytes()).is_ok());
     }
 
     #[test]

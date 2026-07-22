@@ -176,6 +176,27 @@ fn civil_from_epoch(secs: i64) -> (i64, u32, u32, u32, u32) {
     (year, m, d, h, mi)
 }
 
+/// System local UTC offset in seconds. Cached after querying `date +%z` once.
+fn local_utc_offset_secs(_secs: i64) -> i64 {
+    use std::sync::OnceLock;
+    static OFFSET: OnceLock<i64> = OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        // E.g. "+0900" format
+        if let Ok(out) = std::process::Command::new("date").arg("+%z").output() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                let s = s.trim();
+                if s.len() == 5 {
+                    let sign = if s.starts_with('-') { -1 } else { 1 };
+                    if let (Ok(hh), Ok(mm)) = (s[1..3].parse::<i64>(), s[3..5].parse::<i64>()) {
+                        return sign * (hh * 3600 + mm * 60);
+                    }
+                }
+            }
+        }
+        0
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,25 +236,4 @@ mod tests {
             assert!(human_size_kb_mb(b).len() <= 5, "too wide for {b}");
         }
     }
-}
-
-/// System local UTC offset in seconds. Cached after querying `date +%z` once.
-fn local_utc_offset_secs(_secs: i64) -> i64 {
-    use std::sync::OnceLock;
-    static OFFSET: OnceLock<i64> = OnceLock::new();
-    *OFFSET.get_or_init(|| {
-        // E.g. "+0900" format
-        if let Ok(out) = std::process::Command::new("date").arg("+%z").output() {
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                let s = s.trim();
-                if s.len() == 5 {
-                    let sign = if s.starts_with('-') { -1 } else { 1 };
-                    if let (Ok(hh), Ok(mm)) = (s[1..3].parse::<i64>(), s[3..5].parse::<i64>()) {
-                        return sign * (hh * 3600 + mm * 60);
-                    }
-                }
-            }
-        }
-        0
-    })
 }

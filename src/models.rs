@@ -224,7 +224,11 @@ fn demo_models(agent: Agent) -> ProfileModels {
         Agent::Codex => (
             vec![
                 entry("gpt-5.3-codex", "gpt-5.3-codex", "default"),
-                entry("gpt-5.3-codex-mini", "gpt-5.3-codex-mini", "faster, lighter"),
+                entry(
+                    "gpt-5.3-codex-mini",
+                    "gpt-5.3-codex-mini",
+                    "faster, lighter",
+                ),
             ],
             Some("gpt-5.3-codex"),
         ),
@@ -758,8 +762,7 @@ uu
 
     #[test]
     fn last_selected_survives_save_load_roundtrip() {
-        let dir =
-            std::env::temp_dir().join(format!("ular-models-last-sel-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ular-models-last-sel-{}", std::process::id()));
         let path = dir.join("models.json");
         let mut catalog = ModelCatalog::default();
         catalog.insert(
