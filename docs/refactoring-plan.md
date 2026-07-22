@@ -1,6 +1,6 @@
 # Repository-wide Refactoring Plan
 
-> **Status: Proposed (in progress).** Work packages R0–R7, R8a, and R8b are implemented:
+> **Status: Proposed (in progress).** Work packages R0–R7, R8a, R8b, and R9 are implemented:
 > the `Changes` log is archived in [development-history.md](./development-history.md),
 > `AGENTS.md` is slimmed to routing/rules/verification, [architecture.md](./architecture.md)
 > is the current-state map, [testing.md](./testing.md) holds the verification
@@ -13,9 +13,13 @@
 > extracted into `src/ui/profile/` (state, input, render) — R7, the Detail screen is
 > extracted into `src/ui/detail/` (state, input, render) — R8a, and the Session
 > screen (table/filter/preview + `/` keyword prompt) is extracted into
-> `src/ui/session/` (state, input, render) — R8b (all behavior-preserving moves;
-> effect-based decoupling per §8 is deferred). R9 onward (remaining overlays)
-> remains proposed.
+> `src/ui/session/` (state, input, render) — R8b, and the remaining overlays
+> (agent/folder filters, rename/delete confirmations, the reusable message alert,
+> help, and theme selection) are extracted into `src/ui/overlays/`
+> (`filters`/`confirm`/`message`/`help`/`theme`, one file each) with Quick
+> Command's rendering moved into `src/ui/quick.rs` — R9 (all behavior-preserving
+> moves; effect-based decoupling per §8 is deferred). R10 onward (App effects and
+> background coordination) remains proposed.
 
 ## 1. Status and Purpose
 
@@ -737,7 +741,7 @@ branch.
 | R7 | Profile feature extraction | R5 | Medium |
 | R8a | Detail feature extraction (`ui/detail/`) — done | R5 | High |
 | R8b | Session table/filter/preview extraction (`ui/session/`) — done | R5 | High |
-| R9 | Overlay and render-test redistribution | R6-R8 | Medium |
+| R9 | Overlay and render-test redistribution (`ui/overlays/`) — done | R6-R8 | Medium |
 | R10 | App effects and background coordination | R6-R9 | High |
 | R11 | Generic PTY/process probe layer | R3, R10 | High |
 | R12 | Claude normalized events | R3 | High |

@@ -57,15 +57,18 @@ Detail turn count, and CLI turn count must agree — enforced by
 
 ## TUI state / event / render flow
 
-- `ui/mod.rs` — `App` state and the state machine (`UiMode`, key handlers,
-  transitions, validation, persistence, and requested external work such as
-  rename, rescan, and terminal handover).
-- `ui/render.rs` — the remaining screens and dialogs (header, status bar, and the
-  modals not yet extracted into feature modules). Retains the full-frame `draw`
-  dispatcher plus the `draw_header`/`draw_body` sub-dispatchers, and the shared
-  helpers (`session_meta_lines`, `preview_turn_lines`, `agent_tag`) that both the
-  Session preview and the extracted Detail screen use. The full-frame Session,
-  Detail, and modal render tests stay here with the `draw` dispatcher (§9.6).
+- `ui/mod.rs` — `App` state and the cross-feature state machine (`UiMode`,
+  `Screen`, `App` fields, session rescan/refresh, filter clearing, screen
+  switching, resume/terminal requests, and the session-deletion filesystem work
+  invoked by the delete dialog). The per-feature key handlers and the overlay
+  handlers now live in their feature/overlay modules.
+- `ui/render.rs` — the shared frame chrome: the full-frame `draw` dispatcher, the
+  `draw_header`/`draw_body`/`draw_status_bar` sub-dispatchers, the New Session
+  project-directory confirmation (`draw_project_dir_confirm`), and the shared
+  helpers (`session_meta_lines`, `preview_turn_lines`, `agent_tag`, `input_view`,
+  `centered_fixed_rect`, usage/pulse formatting) reused across features. The
+  full-frame Session, Detail, and representative-modal (backdrop dimming) render
+  tests stay here with the `draw` dispatcher (§9.6).
 - `ui/components/` — feature-agnostic UI primitives reused across dialogs:
   `input` (Unicode-safe `TextInput`), `modal` (frame/buttons/backdrop),
   `scrollbar`, and `text` (width-aware truncation/wrapping).
@@ -103,17 +106,30 @@ Detail turn count, and CLI turn count must agree — enforced by
   `set_single_profile`, `recompute`, `switch_screen`) and the filter/rename/delete
   overlays remain in `ui/mod.rs`; the `draw`/`draw_body` dispatchers and the shared
   preview helpers remain in `ui/render.rs`.
-- `ui/quick.rs` — the `:` command palette / `!` terminal command window.
+- `ui/overlays/` — extracted overlay modules (R9), each a single file combining
+  state, `App` key handling, and rendering (ownership is clear per overlay, so no
+  four-file split — §7): `filters` (agent/folder multi-select modals +
+  `ModalState`), `confirm` (session rename/delete dialogs + `RenameFocus` /
+  `RenameModalState`), `message` (the reusable `show_message` alert +
+  `MessageKind` / `MessageDialog`), `help` (the `?` shortcuts screen), and
+  `theme` (the theme selection dialog + `ThemeSelectState`). The overlay state
+  types are re-exported from `ui` so `crate::ui::{ModalState, RenameFocus,
+  RenameModalState, MessageKind, MessageDialog, ThemeSelectState}` stay stable.
+  The session-deletion filesystem work stays in `ui/mod.rs`.
+- `ui/quick.rs` — the `:` command palette / `!` terminal command window; owns its
+  state, key handling, and rendering (`draw_quick_command` moved here in R9 to
+  complete its state/input/render boundary — §9.5).
 - `theme.rs` — palettes, custom theme files, selection persistence.
 - Agent handover (`resume.rs`) unmounts the TUI, runs the agent/shell command
   synchronously in the session's folder, then returns to a rescan. `main.rs`
   coordinates the handover screens and input draining.
 
-> Note: `App` still concentrates most screen state, transitions, and effects in
-> `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen (R8a), and the
-> Session screen (R8b) are the features carved into their own state/input/render
-> modules. The remaining staged split into feature-owned boundaries (overlays —
-> R9) is described in [refactoring-plan.md](./refactoring-plan.md).
+> Note: `App` still concentrates the cross-feature state, transitions, and
+> effects in `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen
+> (R8a), the Session screen (R8b), and the overlays (R9) are the features carved
+> into their own state/input/render modules. The remaining staged split into
+> effect-based boundaries (App effects and background coordination — R10) is
+> described in [refactoring-plan.md](./refactoring-plan.md).
 
 ## Usage and model probe flow
 
@@ -154,7 +170,7 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | Model list / New Session model dropdown | `models.rs`, `ui/new_session/*` | `--model-probe` — [models.md](./models.md) |
 | Profiles / env injection | `profile.rs`, `ui/profile/*`, `resume.rs` | [profiles.md](./profiles.md) |
 | Rewind / backtrack parsing | `parser/claude.rs`, `parser/codex.rs`, `session_context/*` | Real CLI rewind + saved-file diff |
-| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
+| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
 | Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
 
