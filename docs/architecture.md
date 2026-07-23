@@ -183,9 +183,11 @@ diffing of any future list-parser change.
   types are re-exported from `ui` so `crate::ui::{ModalState, RenameFocus,
   RenameModalState, MessageKind, MessageDialog, ThemeSelectState}` stay stable.
   The session-deletion filesystem work stays in `ui/mod.rs`.
-- `ui/quick.rs` — the `:` command palette / `!` terminal command window; owns its
-  state, key handling, and rendering (`draw_quick_command` moved here in R9 to
-  complete its state/input/render boundary — §9.5).
+- `ui/quick/` — the `:` command palette / `!` terminal command window, split
+  into `registry` (the `COMMANDS` specification table + search/rank), `state`
+  (window/query state + history I/O), `input` (`App` key handling and command
+  execution), and `render` (`draw_quick_command`), following the same
+  state/input/render feature layout as `session`/`new_session`/`profile`/`detail`.
 - `theme.rs` — palettes, custom theme files, selection persistence.
 - Agent handover (`resume.rs`) unmounts the TUI, runs the agent/shell command
   synchronously in the session's folder, then returns to a rescan. `main.rs`
@@ -259,7 +261,7 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | PTY driving / process cleanup (both probes) | `probe/*` | `--usage-probe` **and** `--model-probe`, plus a leftover-process check (`ps`) |
 | Profiles / env injection | `profile.rs`, `ui/profile/*`, `resume.rs` | [profiles.md](./profiles.md) |
 | Rewind / backtrack parsing | `parser/claude/`, `parser/codex/`, `session_context/*` | Real CLI rewind + saved-file diff |
-| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick.rs` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
+| TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick/*` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
 | Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
 
