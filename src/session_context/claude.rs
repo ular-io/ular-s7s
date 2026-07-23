@@ -69,10 +69,17 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                         });
                     }
                     // Any extractable user text closes the current turn, even when it
-                    // opens none (noise input, blank text).
+                    // opens none (noise input, blank text) — except CLI-injected meta
+                    // records (isMeta: a skill's SKILL.md body loaded mid-turn). Those
+                    // are not user boundaries: closing here would orphan the rest of the
+                    // turn (subsequent tool work and the final answer) as the current
+                    // turn goes empty. Turn count is unaffected (a boundary never opens
+                    // a turn), so list/detail parity is preserved.
                     UserTextKind::Boundary | UserTextKind::Blank => {
-                        if let Some(done) = current.take() {
-                            turns.push(done);
+                        if !u.is_meta {
+                            if let Some(done) = current.take() {
+                                turns.push(done);
+                            }
                         }
                     }
                     UserTextKind::NoText => {
@@ -205,6 +212,49 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].user, "진짜 첫 질문");
         assert_eq!(turns[0].last_assistant_text.as_deref(), Some("답변"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn ismeta_skill_injection_does_not_truncate_the_turn() {
+        // Regression: a skill's SKILL.md body is injected mid-turn as an
+        // `isMeta: true` user record. `is_noise_turn` classifies it as a
+        // boundary, which used to close the in-progress turn and orphan every
+        // later entry — including the final answer. It must be transparent.
+        let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"origin":{"kind":"human"},"message":{"role":"user","content":"문서 정리 후 commit push"}}
+{"type":"assistant","uuid":"b","parentUuid":"a","message":{"content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"tde"}}]}}
+{"type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"user","uuid":"d","parentUuid":"c","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /home/x/skills/tde\n\n# TDE\n스킬 문서 본문"}]}}
+{"type":"assistant","uuid":"e","parentUuid":"d","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"git commit"}}]}}
+{"type":"user","uuid":"f","parentUuid":"e","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"[main c1cc872] done"}]}}
+{"type":"assistant","uuid":"g","parentUuid":"f","message":{"content":[{"type":"text","text":"완료했습니다. 커밋·푸시까지 끝냈습니다."}]}}
+"#;
+        let path = write_temp("ismeta-skill", content);
+        let turns = parse_turns(&path).expect("parse");
+
+        // One turn only: the meta injection must not open or close a turn.
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].user, "문서 정리 후 commit push");
+        // The final answer after the injection is recovered, not orphaned.
+        assert_eq!(
+            turns[0].last_assistant_text.as_deref(),
+            Some("완료했습니다. 커밋·푸시까지 끝냈습니다.")
+        );
+        // The post-injection git work stays attached to the same turn.
+        assert!(turns[0]
+            .entries
+            .iter()
+            .any(|e| e.kind == ContextEntryKind::ToolCall && e.text.contains("git commit")));
+        assert!(turns[0]
+            .entries
+            .iter()
+            .any(|e| e.kind == ContextEntryKind::ToolResult && e.text.contains("c1cc872")));
+        // The skill-doc body itself is not surfaced as work.
+        assert!(turns[0]
+            .entries
+            .iter()
+            .all(|e| !e.text.contains("Base directory for this skill")));
         let _ = std::fs::remove_file(path);
     }
 

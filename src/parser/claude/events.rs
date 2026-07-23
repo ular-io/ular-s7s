@@ -77,6 +77,11 @@ pub(crate) struct UserRecord {
     pub text: Option<String>,
     /// Classification of `text` through the shared turn gates.
     pub text_kind: UserTextKind,
+    /// `isMeta == true`: CLI-injected bookkeeping, not conversational input
+    /// (e.g. a skill's `SKILL.md` body loaded mid-turn). Such records must not
+    /// terminate an in-progress turn in the detailed view, or every entry after
+    /// the injection (including the final answer) would be orphaned.
+    pub is_meta: bool,
     /// Top-level RFC 3339 record timestamp converted to Unix epoch milliseconds.
     pub submitted_at_ms: Option<i64>,
 }
@@ -266,6 +271,7 @@ fn decode_user(v: &Value) -> UserRecord {
         is_task_notification,
         text,
         text_kind,
+        is_meta: v.get("isMeta").and_then(Value::as_bool).unwrap_or(false),
         submitted_at_ms: record_timestamp_ms(v),
     }
 }
