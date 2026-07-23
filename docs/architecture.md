@@ -123,6 +123,20 @@ diffing of any future list-parser change.
   The terminal-unmounting handovers (resume / new session / login / terminal)
   keep their discrete `*_request` fields, drained by the `runtime` loop. Pure
   state recomputation (`recompute`, `rebuild_all_folders`) is not an effect.
+
+  `RefreshAll` (Ctrl+U / palette "Refresh All", identical on the Session,
+  Profile, and Detail screens) is two-phase, tracked by `RefreshAllPhase` on
+  `App`: the effect only *prepares* — it starts the background usage/model
+  probes (through the existing `start_*_fetch` methods, so a `Loading` phase
+  flips only together with an actually spawned probe) and sets an in-progress
+  status — and schedules the synchronous session scan. The `runtime` loop runs
+  the scheduled scan right after the next `terminal.draw()` (no input wait), so
+  the loading state renders before the 1–2s scan blocks the loop, then drains
+  queued input and ends the cycle before the completion frame renders. Repeat
+  refresh requests anywhere in an active cycle — including Ctrl+U presses
+  queued while the scan runs — merge into it without scheduling a second scan;
+  other queued keys apply normally. Direct `refresh_sessions()` callers
+  (handover returns) are unaffected.
 - `ui/background.rs` — background usage/model probe job coordination (R10b). The
   `BackgroundState` sub-struct on `App` owns only the *coordination* state — the
   usage/model result receivers and the model-loading dedup guard — so handlers

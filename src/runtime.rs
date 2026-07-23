@@ -206,41 +206,49 @@ pub fn run() -> Result<()> {
 /// Coalesces input events: waits blocks for the first event, but drains any pending
 /// remaining events to update the state, then redraws **exactly once**.
 /// Rapidly pressing or holding navigation keys won't redraw on every frame, ensuring immediate cursor movement.
+///
+/// Two-phase global refresh (Ctrl+U): the effect only prepares (background
+/// probes + status), so the draw above shows the loading state first; the
+/// scheduled synchronous session scan then runs here right after that draw,
+/// without waiting for another input event. Input queued while the scan ran is
+/// drained before the cycle ends, so repeat Ctrl+U presses merge into one scan.
 fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
     loop {
         terminal.draw(|f| ui::render::draw(f, app))?;
 
-        // 1) Wait for the first event. If usage or model queries are in progress, poll with a short
-        //    timeout so that background updates trigger a redraw.
-        loop {
-            // 100ms: Keep at half the pulse step duration (render.rs PULSE_STEP_MS 200ms)
-            //        to prevent step skipping between redraws.
-            let timeout = if app.background_in_flight() {
-                Duration::from_millis(100)
-            } else {
-                Duration::from_secs(3600)
-            };
-            if event::poll(timeout)? {
-                dispatch_event(app, event::read()?);
-                app.apply_effect();
-                break;
+        if app.refresh_scan_scheduled() {
+            // The preparing frame is on screen: run the scheduled scan now.
+            app.run_scheduled_refresh_scan();
+            // Keys queued during the scan apply normally, but a queued Ctrl+U
+            // merges into this still-active cycle instead of rescanning.
+            drain_queued_events(app)?;
+            app.finish_refresh_cycle();
+            // Fall through to the request handling below; the next iteration's
+            // draw renders the scan result without waiting for input.
+        } else {
+            // 1) Wait for the first event. If usage or model queries are in progress, poll with a short
+            //    timeout so that background updates trigger a redraw.
+            loop {
+                // 100ms: Keep at half the pulse step duration (render.rs PULSE_STEP_MS 200ms)
+                //        to prevent step skipping between redraws.
+                let timeout = if app.background_in_flight() {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(3600)
+                };
+                if event::poll(timeout)? {
+                    dispatch_event(app, event::read()?);
+                    app.apply_effect();
+                    break;
+                }
+                let updated = app.poll_background();
+                if updated || app.background_in_flight() {
+                    break; // Background update or loading animation frame -> redraw
+                }
             }
-            let updated = app.poll_background();
-            if updated || app.background_in_flight() {
-                break; // Background update or loading animation frame -> redraw
-            }
-        }
 
-        // 2) Drain remaining queued events immediately (reflecting state without redrawing).
-        while !app.should_quit
-            && app.resume_request.is_none()
-            && app.new_session_request.is_none()
-            && app.login_request.is_none()
-            && app.terminal_request.is_none()
-            && event::poll(std::time::Duration::from_millis(0))?
-        {
-            dispatch_event(app, event::read()?);
-            app.apply_effect();
+            // 2) Drain remaining queued events immediately (reflecting state without redrawing).
+            drain_queued_events(app)?;
         }
 
         // Process resume request: exit TUI -> execute agent -> return to TUI.
@@ -261,6 +269,23 @@ fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
         if app.should_quit {
             break;
         }
+    }
+    Ok(())
+}
+
+/// Drains queued input events without redrawing, applying each event and its
+/// effect. Stops at quit or any handover request so the caller processes those
+/// on the current pass instead of blocking on further input.
+fn drain_queued_events(app: &mut App) -> Result<()> {
+    while !app.should_quit
+        && app.resume_request.is_none()
+        && app.new_session_request.is_none()
+        && app.login_request.is_none()
+        && app.terminal_request.is_none()
+        && event::poll(Duration::from_millis(0))?
+    {
+        dispatch_event(app, event::read()?);
+        app.apply_effect();
     }
     Ok(())
 }

@@ -203,6 +203,11 @@ pub struct App {
     /// the TUI stays mounted. Unlike the handover `*_request` fields above, these
     /// do not unmount the terminal.
     pub(crate) pending_effect: Option<effect::AppEffect>,
+    /// Two-phase global-refresh (Ctrl+U) cycle state: the prepare step runs at
+    /// the effect boundary, the session scan runs right after the next draw,
+    /// and repeat requests merge until the completion frame renders
+    /// (`effect::RefreshAllPhase`).
+    pub(crate) refresh_all: effect::RefreshAllPhase,
 
     /// Usage (remaining %) display status per profile.
     pub usage: UsageState,
@@ -278,6 +283,7 @@ impl App {
             login_request: None,
             terminal_request: None,
             pending_effect: None,
+            refresh_all: effect::RefreshAllPhase::default(),
             usage: UsageState::new(),
             // Unit tests do not load the actual models.json to prevent non-deterministic failures
             // in dropdown initial selections driven by system state.

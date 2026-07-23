@@ -110,6 +110,30 @@ fn terminal_history_recall_fills_input_and_restores_typed_text() {
 }
 
 #[test]
+fn palette_refresh_all_uses_the_shared_refresh_effect() {
+    // "Refresh Usage & Sessions" enqueues the same AppEffect::RefreshAll as
+    // Ctrl+U on the Session/Profile/Detail screens (one shared two-phase path).
+    let mut app = empty_app();
+    app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE));
+    for c in "refresh".chars() {
+        app.on_key_quick(key(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.on_key_quick(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(
+        app.pending_effect,
+        Some(crate::ui::effect::AppEffect::RefreshAll)
+    );
+    app.apply_effect();
+    assert!(app.refresh_scan_scheduled());
+    assert_eq!(
+        app.status_msg.as_deref(),
+        Some("updating sessions and usage…")
+    );
+}
+
+#[test]
 fn colon_opens_quick_command() {
     let mut app = app_with_profiles();
 

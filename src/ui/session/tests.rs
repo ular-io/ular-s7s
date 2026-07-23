@@ -45,8 +45,17 @@ fn ctrl_u_updates_sessions_without_entering_rename_mode() {
     assert_eq!(app.mode, UiMode::Table);
     assert_eq!(app.pending_effect, Some(AppEffect::RefreshAll));
 
+    // The effect prepares (in-progress status + scheduled scan); the scan runs
+    // after the event loop renders the preparing frame.
     app.apply_effect();
     assert!(app.pending_effect.is_none());
+    assert_eq!(
+        app.status_msg.as_deref(),
+        Some("updating sessions and usage…")
+    );
+    assert!(app.refresh_scan_scheduled());
+
+    app.run_scheduled_refresh_scan();
     assert!(matches!(
         app.status_msg.as_deref(),
         Some(msg) if msg.starts_with("session update complete · ")
