@@ -82,6 +82,7 @@ pub fn parse_file(
     let mut id: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut turns: Vec<String> = Vec::new();
+    let mut turn_timestamps: Vec<Option<i64>> = Vec::new();
     // Index into `turns` where each user turn starts; boundaries are recorded even for
     // noise-filtered user messages so `thread_rolled_back.num_turns` counts real turns.
     let mut turn_starts: Vec<usize> = Vec::new();
@@ -115,6 +116,7 @@ pub fn parse_file(
                 let keep = turn_starts.len().saturating_sub(n);
                 let cut = turn_starts.get(keep).copied().unwrap_or(turns.len());
                 turns.truncate(cut);
+                turn_timestamps.truncate(cut);
                 turn_starts.truncate(keep);
                 turn_asst.truncate(keep);
             }
@@ -127,14 +129,19 @@ pub fn parse_file(
                     UserTextKind::Turn { cleaned } => {
                         turn_asst.push((true, None));
                         turns.push(cleaned);
+                        turn_timestamps.push(u.submitted_at_ms);
                     }
                     UserTextKind::Boundary => turn_asst.push((false, None)),
                 }
             }
-            CodexRecord::Qa(qa) => {
+            CodexRecord::Qa {
+                text: qa,
+                submitted_at_ms,
+            } => {
                 if !is_noise_turn(&qa) {
                     if let Some(cleaned) = clean_turn(&qa) {
                         turns.push(cleaned);
+                        turn_timestamps.push(submitted_at_ms);
                     }
                 }
             }
@@ -171,6 +178,7 @@ pub fn parse_file(
         ctime_ms: 0,
         size_bytes: 0,
         user_turns: turns,
+        user_turn_timestamps_ms: turn_timestamps,
         search_blob: String::new(),
         assistant_blob: String::new(),
         title_hint: meta.and_then(|m| m.title.clone()).or(title_hint),
@@ -254,14 +262,18 @@ mod tests {
     fn thread_rollback_drops_recent_turns() {
         let content = r#"
 {"type":"session_meta","payload":{"id":"x1","cwd":"/tmp/demo"}}
-{"type":"event_msg","payload":{"type":"user_message","message":"첫 질문"}}
-{"type":"event_msg","payload":{"type":"user_message","message":"버려질 질문"}}
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"event_msg","payload":{"type":"user_message","message":"첫 질문"}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"event_msg","payload":{"type":"user_message","message":"버려질 질문"}}
 {"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}
-{"type":"event_msg","payload":{"type":"user_message","message":"수정된 질문"}}
+{"timestamp":"2026-07-23T03:04:05.678Z","type":"event_msg","payload":{"type":"user_message","message":"수정된 질문"}}
 "#;
         let (root, path) = write_rollout("rollback-one", content);
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.user_turns, vec!["첫 질문", "수정된 질문"]);
+        assert_eq!(
+            session.user_turn_timestamps_ms,
+            vec![Some(1_784_768_523_456), Some(1_784_775_845_678)]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -293,6 +305,23 @@ mod tests {
         let (root, path) = write_rollout("rollback-qa", content);
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.user_turns, vec!["수정된 질문"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn list_session_keeps_user_and_promoted_qa_submit_times() {
+        let content = r#"
+{"type":"session_meta","payload":{"id":"times","cwd":"/tmp/demo"}}
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"event_msg","payload":{"type":"user_message","message":"first question"}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"response_item","payload":{"toolUseResult":{"questions":[{"question":"Continue?"}],"answers":{"Continue?":"Yes"}}}}
+"#;
+        let (root, path) = write_rollout("turn-times", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert_eq!(session.user_turns.len(), 2);
+        assert_eq!(
+            session.user_turn_timestamps_ms,
+            vec![Some(1_784_768_523_456), Some(1_784_772_184_567)]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

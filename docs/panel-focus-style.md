@@ -21,6 +21,9 @@ This document outlines the focus style rules for the `session` panel and the `pr
 - The `prompt` panel border/title is a thick emphasis line
 - The `session` panel border is a thin default line, and the header/normal rows/agent tag are `soft_dim_style`
 - The selected row maintains the pale color scheme and applies only a weak inversion (`REVERSED`)
+- Each Session and Detail Prompt `Qn` heading shows an available local submit
+  timestamp in `YYYY-MM-DD HH:MM:SS` format; the timestamp always uses
+  `soft_dim_style`, including while its Detail row is selected.
 
 ### When `session` is focused
 

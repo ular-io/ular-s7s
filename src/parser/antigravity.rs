@@ -130,6 +130,7 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
     let m = meta.get(&id);
 
     let mut turns: Vec<String> = Vec::new();
+    let mut turn_timestamps: Vec<Option<i64>> = Vec::new();
     let mut cwd: Option<String> = None;
     let mut max_ts_ms: i64 = 0;
 
@@ -152,6 +153,8 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
                         if let Some(qa) = extract_ask_answers(&payload) {
                             if let Some(cleaned) = clean_turn(&qa) {
                                 turns.push(cleaned);
+                                turn_timestamps
+                                    .push(step_timestamp_ms(&payload).filter(|value| *value > 0));
                             }
                         }
                         continue;
@@ -170,6 +173,7 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
                         if !is_noise_turn(&msg) {
                             if let Some(cleaned) = clean_turn(&msg) {
                                 turns.push(cleaned);
+                                turn_timestamps.push((ts > 0).then_some(ts));
                             }
                         }
                     }
@@ -196,6 +200,7 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
         if let Some(preview) = m.and_then(|m| m.preview.clone()) {
             if let Some(cleaned) = clean_turn(&preview) {
                 turns.push(cleaned);
+                turn_timestamps.push(None);
             }
         }
     }
@@ -235,6 +240,7 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
         ctime_ms: 0,
         size_bytes: 0,
         user_turns: turns,
+        user_turn_timestamps_ms: turn_timestamps,
         search_blob: String::new(),
         assistant_blob: String::new(),
         title_hint: m
@@ -259,17 +265,20 @@ fn extract_user_step(payload: &[u8]) -> Option<(String, Option<String>, i64)> {
         .and_then(|f19_12| pb_get_bytes(f19_12, 12))
         .map(|b| strip_file_uri(&String::from_utf8_lossy(b)));
 
-    // Timestamp: 5.1.1 (seconds) + 5.1.2 (nanos) -> ms
-    let ts_ms = pb_get_bytes(payload, 5)
+    let ts_ms = step_timestamp_ms(payload).unwrap_or(0);
+
+    Some((msg, workspace, ts_ms))
+}
+
+/// Timestamp: 5.1.1 (seconds) + 5.1.2 (nanos) -> ms.
+fn step_timestamp_ms(payload: &[u8]) -> Option<i64> {
+    pb_get_bytes(payload, 5)
         .and_then(|f5| pb_get_bytes(f5, 1))
         .map(|f5_1| {
             let secs = pb_get_varint(f5_1, 1).unwrap_or(0) as i64;
             let nanos = pb_get_varint(f5_1, 2).unwrap_or(0) as i64;
             secs * 1000 + nanos / 1_000_000
         })
-        .unwrap_or(0);
-
-    Some((msg, workspace, ts_ms))
 }
 
 /// Extracts answered `· question → answer` list from step_type=138 (ask_question) payload.
@@ -541,6 +550,39 @@ mod tests {
         out
     }
 
+    fn pb_varint_field(field: u64, value: u64) -> Vec<u8> {
+        fn varint(mut value: u64, out: &mut Vec<u8>) {
+            loop {
+                let byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value == 0 {
+                    out.push(byte);
+                    break;
+                }
+                out.push(byte | 0x80);
+            }
+        }
+        let mut out = Vec::new();
+        varint(field << 3, &mut out);
+        varint(value, &mut out);
+        out
+    }
+
+    fn timestamp_payload(timestamp_ms: i64) -> Vec<u8> {
+        let mut timestamp = pb_varint_field(1, (timestamp_ms / 1000) as u64);
+        timestamp.extend(pb_varint_field(
+            2,
+            ((timestamp_ms % 1000) * 1_000_000) as u64,
+        ));
+        pb_len_field(5, &pb_len_field(1, &timestamp))
+    }
+
+    fn user_payload(message: &str, timestamp_ms: i64) -> Vec<u8> {
+        let mut payload = pb_len_field(19, &pb_len_field(2, message.as_bytes()));
+        payload.extend(timestamp_payload(timestamp_ms));
+        payload
+    }
+
     /// Encodes a 154.1 question block: question + 2 options + (optional) selected code.
     fn ask_payload(question: &str, options: [&str; 2], selected: Option<&str>) -> Vec<u8> {
         let mut block = pb_len_field(1, question.as_bytes());
@@ -578,6 +620,47 @@ mod tests {
         );
 
         assert_eq!(extract_ask_answers(&payload), None);
+    }
+
+    #[test]
+    fn parse_db_keeps_indexable_turn_timestamps() {
+        let path = std::env::temp_dir().join(format!(
+            "s7s-antigravity-turn-times-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&path).expect("open temp DB");
+        conn.execute(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+            [],
+        )
+        .expect("create steps");
+        conn.execute(
+            "INSERT INTO steps VALUES (0, 14, ?1)",
+            [user_payload("first question", 1_784_768_523_456)],
+        )
+        .expect("insert user");
+        conn.execute(
+            "INSERT INTO steps VALUES (1, 14, ?1)",
+            [user_payload("/usage", 1_784_769_000_000)],
+        )
+        .expect("insert noise");
+        let mut qa = ask_payload("Continue?", ["Yes", "No"], Some("1"));
+        qa.extend(timestamp_payload(1_784_772_184_567));
+        conn.execute("INSERT INTO steps VALUES (2, 138, ?1)", [qa])
+            .expect("insert QA");
+        drop(conn);
+
+        let session = parse_db(&path, 0, &HashMap::new()).expect("parse session");
+        assert_eq!(session.user_turns.len(), 2);
+        assert_eq!(
+            session.user_turn_timestamps_ms,
+            vec![Some(1_784_768_523_456), Some(1_784_772_184_567)]
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

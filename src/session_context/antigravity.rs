@@ -65,6 +65,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                 if !user.trim().is_empty() && !is_noise_turn(&user) {
                     current = Some(ContextTurn {
                         user: cleanup_user_text(&user),
+                        submitted_at_ms: None,
                         last_assistant_text: None,
                         entries: Vec::new(),
                     });
@@ -104,7 +105,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
             }
             ("MODEL", "ASK_QUESTION") => {
                 match antigravity_ask_answers(text, &pending_questions) {
-                    Some(qa) => promote_qa_turn(&mut turns, &mut current, &qa),
+                    Some(qa) => promote_qa_turn(&mut turns, &mut current, &qa, None),
                     // No valid answer (e.g. skipped) -> keep as work record only.
                     None if !text.trim().is_empty() => {
                         push_entry(

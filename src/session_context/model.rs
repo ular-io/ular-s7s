@@ -32,6 +32,9 @@ pub struct SessionContextSource {
 #[derive(Debug, Clone, Default)]
 pub struct ContextTurn {
     pub user: String,
+    /// User-submit time as Unix epoch milliseconds. Missing when the external
+    /// CLI record or a fallback-only turn does not carry a usable timestamp.
+    pub submitted_at_ms: Option<i64>,
     pub last_assistant_text: Option<String>,
     pub entries: Vec<ContextEntry>,
 }

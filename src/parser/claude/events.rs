@@ -13,7 +13,7 @@
 //! extracts them from the raw `Value` it already holds, so list indexing stays
 //! lightweight.
 
-use crate::parser::{clean_turn, is_noise_turn, turn};
+use crate::parser::{clean_turn, is_noise_turn, record_timestamp_ms, turn};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -69,6 +69,8 @@ pub(crate) struct UserRecord {
     pub text: Option<String>,
     /// Classification of `text` through the shared turn gates.
     pub text_kind: UserTextKind,
+    /// Top-level RFC 3339 record timestamp converted to Unix epoch milliseconds.
+    pub submitted_at_ms: Option<i64>,
 }
 
 pub(crate) enum UserTextKind {
@@ -248,6 +250,7 @@ fn decode_user(v: &Value) -> UserRecord {
         is_task_notification,
         text,
         text_kind,
+        submitted_at_ms: record_timestamp_ms(v),
     }
 }
 

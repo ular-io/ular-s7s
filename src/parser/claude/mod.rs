@@ -25,7 +25,7 @@ use std::path::Path;
 /// so no per-event uuid is needed.
 enum Event {
     /// A real user turn: opens a new turn and contributes to `user_turns`.
-    User(String),
+    User(String, Option<i64>),
     /// A countable-but-noise user line (slash command, bootstrap prompt): closes the
     /// current turn without opening one, so a following answer is not indexed under it.
     Boundary,
@@ -139,7 +139,9 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
             RecordKind::User(u) => {
                 if !u.is_task_notification {
                     match u.text_kind {
-                        UserTextKind::Turn { cleaned } => events.push(Event::User(cleaned)),
+                        UserTextKind::Turn { cleaned } => {
+                            events.push(Event::User(cleaned, u.submitted_at_ms))
+                        }
                         // Slash commands, the bootstrap prompt, etc. close the current
                         // turn but do not open one.
                         UserTextKind::Boundary => events.push(Event::Boundary),
@@ -151,7 +153,7 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
                 if let Some(qa) = u.qa {
                     if !is_noise_turn(&qa) {
                         if let Some(cleaned) = clean_turn(&qa) {
-                            events.push(Event::User(cleaned));
+                            events.push(Event::User(cleaned, u.submitted_at_ms));
                         }
                     }
                 }
@@ -172,7 +174,14 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
     let turns: Vec<String> = events
         .iter()
         .filter_map(|ev| match ev {
-            Event::User(text) => Some(text.clone()),
+            Event::User(text, _) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    let turn_timestamps: Vec<Option<i64>> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::User(_, timestamp) => Some(*timestamp),
             _ => None,
         })
         .collect();
@@ -200,6 +209,7 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
         ctime_ms: 0,
         size_bytes: 0,
         user_turns: turns,
+        user_turn_timestamps_ms: turn_timestamps,
         search_blob: String::new(),
         assistant_blob: String::new(),
         title_hint,
@@ -221,7 +231,7 @@ fn last_assistant_per_turn(events: &[Event]) -> Vec<String> {
     let mut in_turn = false;
     for ev in events {
         match ev {
-            Event::User(_) => {
+            Event::User(_, _) => {
                 if in_turn {
                     if let Some(a) = current.take() {
                         per_turn.push(a);
@@ -381,16 +391,20 @@ mod tests {
     fn rewind_hides_turns_on_abandoned_branch() {
         // Q2 was abandoned by /rewind: Q3 branches from the same parent (b) as Q2.
         let content = r#"
-{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
 {"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"답1"}]}}
-{"type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"질문2 버려진 분기"}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"질문2 버려진 분기"}}
 {"type":"assistant","uuid":"d","parentUuid":"c","message":{"role":"assistant","content":[{"type":"text","text":"답2"}]}}
-{"type":"user","uuid":"e","parentUuid":"b","message":{"role":"user","content":"질문3 리와인드 후"}}
+{"timestamp":"2026-07-23T03:04:05.678Z","type":"user","uuid":"e","parentUuid":"b","message":{"role":"user","content":"질문3 리와인드 후"}}
 {"type":"assistant","uuid":"f","parentUuid":"e","message":{"role":"assistant","content":[{"type":"text","text":"답3"}]}}
 "#;
         let path = write_temp("rewind-branch", content);
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.user_turns, vec!["질문1", "질문3 리와인드 후"]);
+        assert_eq!(
+            session.user_turn_timestamps_ms,
+            vec![Some(1_784_768_523_456), Some(1_784_775_845_678)]
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -404,6 +418,22 @@ mod tests {
         let path = write_temp("linear", content);
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.user_turns, vec!["질문1", "질문2"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn list_session_keeps_user_and_promoted_qa_submit_times() {
+        let content = r#"
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"user","message":{"role":"user","content":"first question"}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"user","toolUseResult":{"questions":[{"question":"Continue?"}],"answers":{"Continue?":"Yes"}}}
+"#;
+        let path = write_temp("turn-times", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert_eq!(session.user_turns.len(), 2);
+        assert_eq!(
+            session.user_turn_timestamps_ms,
+            vec![Some(1_784_768_523_456), Some(1_784_772_184_567)]
+        );
         let _ = std::fs::remove_file(path);
     }
 

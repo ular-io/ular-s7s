@@ -17,7 +17,7 @@
 //! hands back the raw `Value` and the context parser serializes it itself, so
 //! list indexing stays lightweight (§5.5, §15.3).
 
-use crate::parser::{clean_turn, is_noise_turn, turn};
+use crate::parser::{clean_turn, is_noise_turn, record_timestamp_ms, turn};
 use serde_json::Value;
 
 /// One decoded rollout line. Classification is mutually exclusive by line
@@ -38,7 +38,10 @@ pub(crate) enum CodexRecord<'a> {
     User(UserRecord),
     /// An `AskUserQuestion`/`ask_question` response, formatted `· question →
     /// answer`. Each consumer applies its own turn gate / promotion.
-    Qa(String),
+    Qa {
+        text: String,
+        submitted_at_ms: Option<i64>,
+    },
     /// One assistant answer's text (already empty-filtered).
     Assistant(String),
     /// `response_item` tool call; carries the raw payload so only the context
@@ -56,6 +59,7 @@ pub(crate) enum CodexRecord<'a> {
 pub(crate) struct UserRecord {
     pub text: String,
     pub kind: UserTextKind,
+    pub submitted_at_ms: Option<i64>,
 }
 
 pub(crate) enum UserTextKind {
@@ -109,10 +113,17 @@ pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
             Some(cleaned) => UserTextKind::Turn { cleaned },
             None => UserTextKind::Boundary,
         };
-        return CodexRecord::User(UserRecord { text, kind });
+        return CodexRecord::User(UserRecord {
+            text,
+            kind,
+            submitted_at_ms: record_timestamp_ms(v),
+        });
     }
     if let Some(qa) = turn::extract_question_answers(v) {
-        return CodexRecord::Qa(qa);
+        return CodexRecord::Qa {
+            text: qa,
+            submitted_at_ms: record_timestamp_ms(v),
+        };
     }
     if let Some(text) = assistant_text(v) {
         return CodexRecord::Assistant(text);

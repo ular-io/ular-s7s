@@ -30,6 +30,7 @@ pub struct HandoffReport {
 #[derive(Debug, Clone, Default)]
 pub struct HandoffTurn {
     pub user: String,
+    pub submitted_at_ms: Option<i64>,
     pub final_answer: Option<String>,
     pub work_entries: Vec<WorkEntry>,
 }
@@ -61,6 +62,7 @@ impl From<ContextTurn> for HandoffTurn {
     fn from(turn: ContextTurn) -> Self {
         HandoffTurn {
             user: turn.user,
+            submitted_at_ms: turn.submitted_at_ms,
             final_answer: turn.last_assistant_text,
             work_entries: turn
                 .entries
@@ -430,6 +432,7 @@ mod tests {
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: turns.into_iter().map(str::to_string).collect(),
+            user_turn_timestamps_ms: Vec::new(),
             search_blob: String::new(),
             assistant_blob: String::new(),
             title_hint: Some("Demo Handoff".to_string()),
@@ -442,6 +445,7 @@ mod tests {
         let s = session(vec!["처음 목표는 `src/main.rs`를 수정하는 거야."]);
         let turns = vec![HandoffTurn {
             user: s.user_turns[0].clone(),
+            submitted_at_ms: None,
             final_answer: Some("수정했습니다.".to_string()),
             work_entries: Vec::new(),
         }];
@@ -459,6 +463,7 @@ mod tests {
         let s = session(vec!["빌드해줘"]);
         let turn = HandoffTurn {
             user: "빌드해줘".to_string(),
+            submitted_at_ms: None,
             final_answer: Some("빌드 성공".to_string()),
             work_entries: vec![WorkEntry {
                 kind: WorkKind::ToolCall,

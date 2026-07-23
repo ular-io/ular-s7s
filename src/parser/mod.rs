@@ -12,10 +12,23 @@ pub mod turn;
 
 use crate::model::Session;
 use crate::normalize;
+use serde_json::Value;
+
+/// Converts a top-level RFC 3339 record timestamp to Unix epoch milliseconds.
+pub(crate) fn record_timestamp_ms(record: &Value) -> Option<i64> {
+    record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|timestamp| timestamp.timestamp_millis())
+}
 
 /// Computes and populates a search blob (NFC-normalized, lowercase concatenated string)
 /// from user turns and the folder name.
 pub fn finalize(session: &mut Session) {
+    session
+        .user_turn_timestamps_ms
+        .resize(session.user_turns.len(), None);
     let mut joined = session.user_turns.join("\n");
     append_folder(&mut joined, &session.folder);
     session.search_blob = normalize::nfc_lower(&joined);
@@ -116,6 +129,7 @@ mod tests {
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: turns.iter().map(|t| t.to_string()).collect(),
+            user_turn_timestamps_ms: Vec::new(),
             search_blob: String::new(),
             assistant_blob: String::new(),
             title_hint: None,

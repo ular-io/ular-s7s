@@ -46,7 +46,10 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                 turn_starts.truncate(keep);
             }
             // AskUserQuestion response is promoted to a virtual user turn, matching the list view.
-            CodexRecord::Qa(qa) => promote_qa_turn(&mut turns, &mut current, &qa),
+            CodexRecord::Qa {
+                text,
+                submitted_at_ms,
+            } => promote_qa_turn(&mut turns, &mut current, &text, submitted_at_ms),
             CodexRecord::User(u) => {
                 if let Some(done) = current.take() {
                     turns.push(done);
@@ -58,6 +61,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                 if let UserTextKind::Turn { .. } = u.kind {
                     current = Some(ContextTurn {
                         user: cleanup_user_text(&u.text),
+                        submitted_at_ms: u.submitted_at_ms,
                         last_assistant_text: None,
                         entries: Vec::new(),
                     });
@@ -167,6 +171,20 @@ mod tests {
             turns.iter().map(|t| t.user.clone()).collect::<Vec<_>>(),
             vec!["첫 질문", "수정된 질문"]
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn keeps_user_and_promoted_qa_submit_times() {
+        let content = r#"
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"event_msg","payload":{"type":"user_message","message":"first question"}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"response_item","payload":{"toolUseResult":{"questions":[{"question":"Continue?"}],"answers":{"Continue?":"Yes"}}}}
+"#;
+        let path = write_temp("timestamps", content);
+        let turns = parse_turns(&path).expect("parse");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].submitted_at_ms, Some(1_784_768_523_456));
+        assert_eq!(turns[1].submitted_at_ms, Some(1_784_772_184_567));
         let _ = std::fs::remove_file(path);
     }
 }

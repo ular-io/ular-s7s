@@ -29,7 +29,7 @@ parsing is `clap` derive. Modes:
 2. `scan` walks each profile's storage, using an mtime-based incremental cache to
    avoid re-parsing unchanged files.
 3. `cache` (`<OS cache>/s7s/index.bin`, `0600`) serializes the `Session` index and
-   is gated by `CACHE_VERSION` (currently 12); a mismatch discards the cache and
+   is gated by `CACHE_VERSION` (currently 13); a mismatch discards the cache and
    forces a full rebuild. Bump it only when serialized meaning changes.
 4. `filter` applies the composite query (keyword over body+title+folder+last
    assistant answer, AND agent AND folder AND profile) — the same index backs the
@@ -42,8 +42,8 @@ lightweight — see [session-context.md](./session-context.md)):
 
 - **List parsers** — `src/parser/antigravity.rs` and `src/parser/claude/`,
   `src/parser/codex/` (+ `mod.rs`, `turn.rs`) build the lightweight `Session`
-  index: id, title, folder, mtime, size, Q (active user-turn count), and redacted
-  search blobs. No tool-call/result reconstruction.
+  index: id, title, folder, mtime, size, Q (active user-turn count), per-turn
+  submit times, and redacted search blobs. No tool-call/result reconstruction.
 - **Context parsers** — `src/session_context/{claude,codex,antigravity}.rs` build
   the detailed `ContextTurn` model consumed by the Detail screen, the
   `s7s session` CLI (`render.rs`), and the handoff exporter (`handoff.rs`).

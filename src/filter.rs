@@ -126,6 +126,7 @@ mod tests {
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: Vec::new(),
+            user_turn_timestamps_ms: Vec::new(),
             search_blob: blob.to_string(),
             assistant_blob: String::new(),
             title_hint: None,

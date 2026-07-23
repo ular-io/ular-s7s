@@ -3,6 +3,7 @@
 //! panel with tool-call collapsing.
 
 use crate::handoff::WorkKind;
+use crate::model::format_local_datetime_seconds;
 use crate::theme::Theme;
 use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
@@ -16,6 +17,7 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Maximum lines allowed for a single work entry in the right panel (excess is truncated with omission placeholder).
 const WORK_ENTRY_MAX_LINES: usize = 120;
@@ -96,14 +98,28 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
             th.soft_dim()
         };
         let title = format!("● Q{}", idx + 1);
-        rows.push(Line::from(Span::styled(
-            if selected {
-                pad_w(&title, inner_w)
+        let mut title_spans = vec![Span::styled(title.clone(), title_style)];
+        if let Some(timestamp) = turn.submitted_at_ms.and_then(format_local_datetime_seconds) {
+            let timestamp_style = if selected && focused {
+                th.soft_dim().bg(sel_bg)
+            } else if selected {
+                th.soft_dim().bg(sel_bg).add_modifier(Modifier::REVERSED)
             } else {
-                title
-            },
-            title_style,
-        )));
+                th.soft_dim()
+            };
+            let timestamp = format!("  {timestamp}");
+            title_spans.push(Span::styled(
+                if selected {
+                    pad_w(&timestamp, inner_w.saturating_sub(title.width()))
+                } else {
+                    timestamp
+                },
+                timestamp_style,
+            ));
+        } else if selected {
+            title_spans[0] = Span::styled(pad_w(&title, inner_w), title_style);
+        }
+        rows.push(Line::from(title_spans));
         let body_style = if selected {
             if focused {
                 Style::default().bg(sel_bg).fg(th.selection_fg)

@@ -40,7 +40,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                 // AskUserQuestion response is promoted to a virtual user turn, matching
                 // the list view (not recorded redundantly as a ToolResult).
                 if let Some(qa) = u.qa {
-                    promote_qa_turn(&mut turns, &mut current, &qa);
+                    promote_qa_turn(&mut turns, &mut current, &qa, u.submitted_at_ms);
                     continue;
                 }
                 // Background task notifications are injected as user-role entries but
@@ -63,6 +63,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                         }
                         current = Some(ContextTurn {
                             user: cleanup_user_text(&u.text.unwrap_or_default()),
+                            submitted_at_ms: u.submitted_at_ms,
                             last_assistant_text: None,
                             entries: Vec::new(),
                         });
@@ -204,6 +205,20 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].user, "진짜 첫 질문");
         assert_eq!(turns[0].last_assistant_text.as_deref(), Some("답변"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn keeps_user_and_promoted_qa_submit_times() {
+        let content = r#"
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"first question"}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"user","toolUseResult":{"questions":[{"question":"Continue?"}],"answers":{"Continue?":"Yes"}}}
+"#;
+        let path = write_temp("timestamps", content);
+        let turns = parse_turns(&path).expect("parse");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].submitted_at_ms, Some(1_784_768_523_456));
+        assert_eq!(turns[1].submitted_at_ms, Some(1_784_772_184_567));
         let _ = std::fs::remove_file(path);
     }
 }

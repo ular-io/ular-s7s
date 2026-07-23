@@ -7,6 +7,7 @@
 //! (`session_meta_lines`, `preview_turn_lines`, `agent_tag`) stay in `ui::render`;
 //! the Session render tests are full-frame (`super::draw`) and stay there too.
 
+use crate::model::format_local_datetime_seconds;
 use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{truncate_w, wrap_w};
@@ -227,10 +228,17 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         )));
 
         for (idx, turn) in s.user_turns.iter().enumerate() {
-            lines.push(Line::from(Span::styled(
+            let mut title = vec![Span::styled(
                 format!("● Q{}", idx + 1),
                 Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-            )));
+            )];
+            if let Some(timestamp) = s
+                .user_turn_timestamp_ms(idx)
+                .and_then(format_local_datetime_seconds)
+            {
+                title.push(Span::styled(format!("  {timestamp}"), th.soft_dim()));
+            }
+            lines.push(Line::from(title));
             for display_line in preview_turn_lines(turn) {
                 let (raw_line, style) = match display_line {
                     PreviewTurnLine::Content(line) => (line.to_string(), Style::default()),

@@ -10,7 +10,7 @@ use std::path::Path;
 
 /// Cache format/parser version. Increment this value to automatically invalidate
 /// existing cache when parser logic or the Session structure changes.
-pub const CACHE_VERSION: u32 = 12;
+pub const CACHE_VERSION: u32 = 13;
 
 /// Cache entry: mtime of the source file (or logical key) and derived sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]

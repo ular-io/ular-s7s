@@ -66,6 +66,10 @@ pub fn load(session: &Session) -> SessionContext {
         }
     };
 
+    if session.agent == Agent::Antigravity {
+        attach_antigravity_timestamps(session, &mut turns);
+    }
+
     for turn in &mut turns {
         strip_final_answer_echo(turn);
     }
@@ -153,12 +157,27 @@ fn fallback_turns(session: &Session) -> Vec<ContextTurn> {
     session
         .user_turns
         .iter()
-        .map(|user| ContextTurn {
+        .enumerate()
+        .map(|(index, user)| ContextTurn {
             user: cleanup_user_text(user),
+            submitted_at_ms: session.user_turn_timestamp_ms(index),
             last_assistant_text: None,
             entries: Vec::new(),
         })
         .collect()
+}
+
+/// Antigravity detail content comes from its transcript while submit times were
+/// captured from the conversation DB by the list parser. Attach by turn order
+/// only when both stores agree on the full turn count; partial pairing would
+/// show a plausible but wrong time.
+fn attach_antigravity_timestamps(session: &Session, turns: &mut [ContextTurn]) {
+    if session.user_turn_timestamps_ms.len() != turns.len() {
+        return;
+    }
+    for (turn, timestamp) in turns.iter_mut().zip(&session.user_turn_timestamps_ms) {
+        turn.submitted_at_ms = *timestamp;
+    }
 }
 
 // ---- Shared turn-building helpers (used by all three detailed parsers) ----
@@ -170,6 +189,7 @@ pub(crate) fn promote_qa_turn(
     turns: &mut Vec<ContextTurn>,
     current: &mut Option<ContextTurn>,
     qa: &str,
+    submitted_at_ms: Option<i64>,
 ) {
     if qa.trim().is_empty() || is_noise_turn(qa) {
         return;
@@ -179,6 +199,7 @@ pub(crate) fn promote_qa_turn(
     }
     *current = Some(ContextTurn {
         user: cleanup_user_text(qa),
+        submitted_at_ms,
         last_assistant_text: None,
         entries: Vec::new(),
     });
@@ -320,6 +341,7 @@ mod tests {
     fn strip_final_answer_echo_removes_trailing_duplicate() {
         let mut turn = ContextTurn {
             user: "질문".to_string(),
+            submitted_at_ms: None,
             last_assistant_text: Some("최종 답변".to_string()),
             entries: vec![
                 entry(ContextEntryKind::AssistantText, "중간 설명"),
@@ -338,6 +360,7 @@ mod tests {
         // task-notification flow: the last assistant text is not the last entry.
         let mut turn = ContextTurn {
             user: "질문".to_string(),
+            submitted_at_ms: None,
             last_assistant_text: Some("답변".to_string()),
             entries: vec![
                 entry(ContextEntryKind::AssistantText, "답변"),
@@ -355,6 +378,7 @@ mod tests {
         // the trailing echo (the entry that produced last_assistant_text) goes.
         let mut turn = ContextTurn {
             user: "질문".to_string(),
+            submitted_at_ms: None,
             last_assistant_text: Some("같은 문장".to_string()),
             entries: vec![
                 entry(ContextEntryKind::AssistantText, "같은 문장"),
@@ -372,6 +396,7 @@ mod tests {
     fn strip_final_answer_echo_no_op_without_match() {
         let mut turn = ContextTurn {
             user: "질문".to_string(),
+            submitted_at_ms: None,
             last_assistant_text: None,
             entries: vec![entry(ContextEntryKind::AssistantText, "텍스트")],
         };
@@ -380,6 +405,7 @@ mod tests {
 
         let mut turn = ContextTurn {
             user: "질문".to_string(),
+            submitted_at_ms: None,
             last_assistant_text: Some("다른 답".to_string()),
             entries: vec![entry(ContextEntryKind::AssistantText, "텍스트")],
         };

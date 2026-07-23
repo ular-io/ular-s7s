@@ -64,6 +64,10 @@ pub struct Session {
     pub size_bytes: u64,
     /// Cleaned user turns (questions). Stored in raw NFC format.
     pub user_turns: Vec<String>,
+    /// Submit time per `user_turns` entry as Unix epoch milliseconds.
+    /// Missing source timestamps remain `None`.
+    #[serde(default)]
+    pub user_turn_timestamps_ms: Vec<Option<i64>>,
     /// Precomputed lowercase NFC text for searching (combines all user turns, title, and folder name).
     #[serde(default)]
     pub search_blob: String,
@@ -81,6 +85,15 @@ pub struct Session {
     pub title_fixed: bool,
 }
 
+/// Epoch milliseconds -> local time `YYYY-MM-DD HH:MM:SS`.
+pub fn format_local_datetime_seconds(ms: i64) -> Option<String> {
+    use chrono::{Local, TimeZone};
+    Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
 impl Session {
     /// Title for the table's "Title" column.
     pub fn title(&self) -> String {
@@ -89,6 +102,11 @@ impl Session {
             self.title_hint.as_deref(),
             self.title_fixed,
         )
+    }
+
+    /// Submit time for one user turn, if the source record supplied one.
+    pub fn user_turn_timestamp_ms(&self, index: usize) -> Option<i64> {
+        self.user_turn_timestamps_ms.get(index).copied().flatten()
     }
 
     /// Converts mtime to local date string (YYYY-MM-DD). Does not include time.

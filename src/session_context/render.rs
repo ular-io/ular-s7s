@@ -233,6 +233,7 @@ mod tests {
     fn turn(user: &str, answer: Option<&str>) -> ContextTurn {
         ContextTurn {
             user: user.to_string(),
+            submitted_at_ms: None,
             last_assistant_text: answer.map(str::to_string),
             entries: Vec::new(),
         }

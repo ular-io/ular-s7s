@@ -774,6 +774,7 @@ mod tests {
     use super::{input_view, pad_w, preview_turn_lines, truncate_w, usage_spans, PreviewTurnLine};
     use crate::ui::TextInput;
     use crate::usage::{ResetCountdown, UsageEntry, UsagePhase, UsageSnapshot, UsageWindow};
+    use chrono::TimeZone;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Modifier};
     use ratatui::{backend::TestBackend, Terminal};
@@ -834,6 +835,11 @@ mod tests {
     fn session_app() -> crate::ui::App {
         use crate::model::{Agent, Session};
         use std::path::PathBuf;
+        let timestamp = chrono::Local
+            .with_ymd_and_hms(2026, 7, 23, 14, 5, 6)
+            .single()
+            .expect("valid local time")
+            .timestamp_millis();
         crate::ui::App::new(
             crate::config::Config::load(),
             crate::profile::ProfileStore {
@@ -850,6 +856,7 @@ mod tests {
                 ctime_ms: 0,
                 size_bytes: 0,
                 user_turns: vec!["first question".to_string(), "second question".to_string()],
+                user_turn_timestamps_ms: vec![Some(timestamp), Some(timestamp)],
                 search_blob: String::new(),
                 assistant_blob: String::new(),
                 title_hint: Some("demo".to_string()),
@@ -939,18 +946,34 @@ mod tests {
         assert!(text.contains(" Q1 Work & Answer "));
         assert!(text.contains("● Q1"));
         assert!(text.contains("● Q2"));
+        assert!(text.contains("2026-07-23 14:05:06"));
         // Selected question (Q1) uses the focused selection background across the padded row;
         // unselected Q2 keeps the base background. Thick joint overlays are gone.
         let (x1, y1) = find_cell(&terminal, "● Q1");
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(x1, y1)].bg, app.theme.selection_bg);
         assert_eq!(buffer[(x1 + 10, y1)].bg, app.theme.selection_bg);
+        let timestamp_x = x1 + 6;
+        assert_eq!(buffer[(timestamp_x, y1)].fg, app.theme.muted);
         let (x2, y2) = find_cell(&terminal, "● Q2");
         assert_ne!(buffer[(x2, y2)].bg, app.theme.selection_bg);
         assert!(!text.contains("┣━"));
         // Fallback banner (empty intermediate work logs warning) and final assistant answer section.
         assert!(text.contains("No intermediate work extracted for this turn."));
         assert!(text.contains("● Final Answer"));
+    }
+
+    #[test]
+    fn session_prompt_renders_turn_timestamp_in_soft_dim() {
+        let app = session_app();
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        let text = buffer_text(&terminal);
+
+        assert!(text.contains("● Q1  2026-07-23 14:05:06"));
+        let (x, y) = find_cell(&terminal, "2026-07-23 14:05:06");
+        assert_eq!(terminal.backend().buffer()[(x, y)].fg, app.theme.muted);
     }
 
     #[test]
@@ -1251,6 +1274,7 @@ mod tests {
                 ctime_ms: 0,
                 size_bytes: 0,
                 user_turns: turns,
+                user_turn_timestamps_ms: Vec::new(),
                 search_blob: String::new(),
                 assistant_blob: String::new(),
                 title_hint: Some("demo".to_string()),
@@ -1283,6 +1307,7 @@ mod tests {
                 ctime_ms: 0,
                 size_bytes: 0,
                 user_turns: vec!["question".to_string()],
+                user_turn_timestamps_ms: Vec::new(),
                 search_blob: String::new(),
                 assistant_blob: String::new(),
                 title_hint: None,
