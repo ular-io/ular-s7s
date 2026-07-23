@@ -1,6 +1,6 @@
 [package]
 name = "s7s"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Unified k9s-style TUI to search and resume Claude Code, Antigravity CLI, and Codex sessions"
 license = "MIT"
