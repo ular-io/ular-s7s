@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_mtimes_span_past_three_months() {
+    fn sandbox_activity_times_span_past_three_months() {
         let base = temp_base("mtimes");
         ensure_demo_sandbox(&base).unwrap();
         let sessions = scan_sandbox(&base);
@@ -679,17 +679,17 @@ mod tests {
 
         // Newest session is "today"; timestamps step back by SESSION_SPACING_MS
         // and never land in the future, regardless of when demo runs.
-        assert!(sessions[0].mtime_ms <= now);
-        assert!(now - sessions[0].mtime_ms < 60_000);
+        assert!(sessions[0].updated_at_ms <= now);
+        assert!(now - sessions[0].updated_at_ms < 60_000);
         for pair in sessions.windows(2) {
-            let gap = pair[0].mtime_ms - pair[1].mtime_ms;
+            let gap = pair[0].updated_at_ms - pair[1].updated_at_ms;
             assert!(
                 (gap - SESSION_SPACING_MS).abs() < 60_000,
-                "unexpected mtime gap {}",
+                "unexpected activity-time gap {}",
                 gap
             );
         }
-        let oldest = sessions.last().unwrap().mtime_ms;
+        let oldest = sessions.last().unwrap().updated_at_ms;
         assert!(now - oldest < 95 * 24 * 3600 * 1000);
 
         let _ = std::fs::remove_dir_all(&base);

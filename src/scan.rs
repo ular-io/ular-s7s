@@ -95,8 +95,9 @@ pub(crate) fn scan_at(profiles: &[Profile], rebuild_cache: bool, cache_path: &Pa
         }
     }
 
-    // Sort by last modified time descending.
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
+    // Sort by meaningful conversation activity, not physical storage writes
+    // such as a resume-without-input `last-prompt` append.
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at_ms));
 
     let _ = new.save(cache_path);
 
@@ -259,9 +260,9 @@ fn scan_antigravity(
             None => continue,
         };
         // Assistant answers are read from the JSONL transcript, a file separate from
-        // the DB. Fold the transcript's mtime into the cache-freshness key only (not the
-        // displayed session mtime) so a new answer reparses the session even when the DB
-        // is unchanged, without letting a freshly-written transcript reorder sessions.
+        // the DB. Fold the transcript's mtime into the cache-freshness key only,
+        // so a new answer reparses the session even when the DB is unchanged.
+        // Display ordering still comes from semantic activity parsed from the records.
         let transcript_mtime = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -322,7 +323,7 @@ fn file_size_bytes(path: &Path) -> u64 {
 /// Populates the creation time for all sessions generated from a single file.
 fn set_ctime(sessions: &mut [Session], ctime: i64) {
     for s in sessions {
-        s.ctime_ms = ctime;
+        s.ctime_ms = ctime.min(s.updated_at_ms);
     }
 }
 
@@ -349,7 +350,7 @@ mod tests {
             source_path: None,
             cwd: "/tmp/demo".into(),
             folder: "demo".to_string(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
@@ -384,7 +385,7 @@ mod tests {
             source_path: None,
             cwd: "/tmp/demo".into(),
             folder: "demo".to_string(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
@@ -461,6 +462,68 @@ mod tests {
     }
 
     #[test]
+    fn scan_sorts_by_session_activity_instead_of_storage_mtime() {
+        let root = std::env::temp_dir().join(format!("s7s-scan-activity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project_dir = root.join("projects/-tmp-app");
+        std::fs::create_dir_all(&project_dir).expect("create projects");
+        let older_activity = project_dir.join("older-activity.jsonl");
+        let newer_activity = project_dir.join("newer-activity.jsonl");
+        std::fs::write(
+            &older_activity,
+            "{\"timestamp\":\"2026-07-22T01:00:00Z\",\"uuid\":\"a\",\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"older\"},\"cwd\":\"/tmp/app\"}\n",
+        )
+        .expect("write older activity");
+        std::fs::write(
+            &newer_activity,
+            "{\"timestamp\":\"2026-07-23T01:00:00Z\",\"uuid\":\"b\",\"parentUuid\":null,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"newer\"},\"cwd\":\"/tmp/app\"}\n",
+        )
+        .expect("write newer activity");
+
+        let base = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_784_800_000);
+        std::fs::File::open(&older_activity)
+            .expect("open older activity")
+            .set_modified(base + std::time::Duration::from_secs(100))
+            .expect("make older activity file physically newer");
+        std::fs::File::open(&newer_activity)
+            .expect("open newer activity")
+            .set_modified(base)
+            .expect("make newer activity file physically older");
+
+        let profiles = vec![crate::profile::Profile {
+            id: "t".to_string(),
+            agent: Agent::Claude,
+            name: "t".to_string(),
+            path: root.clone(),
+            oauth_token: None,
+            active: true,
+            shortcut: None,
+            builtin: false,
+        }];
+        let result = scan_at(&profiles, true, &root.join("index.bin"));
+        assert_eq!(result.sessions.len(), 2);
+        assert_eq!(result.sessions[0].id, "newer-activity");
+        let first_source_mtime = file_mtime_ms(
+            result.sessions[0]
+                .source_path
+                .as_deref()
+                .expect("first source path"),
+        )
+        .expect("first source mtime");
+        let second_source_mtime = file_mtime_ms(
+            result.sessions[1]
+                .source_path
+                .as_deref()
+                .expect("second source path"),
+        )
+        .expect("second source mtime");
+        assert!(first_source_mtime < second_source_mtime);
+        assert!(result.sessions[0].updated_at_ms > result.sessions[1].updated_at_ms);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn apply_antigravity_title_meta_prefers_fixed_title_over_preview() {
         let mut sessions = vec![Session {
             agent: Agent::Antigravity,
@@ -469,7 +532,7 @@ mod tests {
             source_path: None,
             cwd: "/tmp/demo".into(),
             folder: "demo".to_string(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: vec!["첫 질문".to_string()],
@@ -486,7 +549,6 @@ mod tests {
                 title: Some("26-07 컨테이너 레지스트리 이전".to_string()),
                 preview: Some("List GitLab Repository Commands".to_string()),
                 workspace: None,
-                updated_ms: None,
             },
         );
 
@@ -518,14 +580,14 @@ mod tests {
         let result = scan_at(&profiles.profiles, true, &cache);
         let _ = std::fs::remove_file(&cache);
 
-        // Result order is meaningful (mtime desc): dump in order, no sorting.
+        // Result order is meaningful (semantic activity desc): dump in order, no sorting.
         for s in &result.sessions {
             println!(
                 "S7S-IDX\t{}\t{}\t{}\t{}\t{}\t{}\tQ{}\tsb{:016x}\tab{:016x}\t{}",
                 s.agent.key(),
                 s.profile_id,
                 s.id,
-                s.mtime_ms,
+                s.updated_at_ms,
                 s.title(),
                 s.title_fixed,
                 s.user_turns.len(),

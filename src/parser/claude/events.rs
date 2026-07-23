@@ -37,7 +37,15 @@ pub(crate) struct DecodedRecord<'a> {
 pub(crate) enum RecordKind<'a> {
     Title(TitleEvent<'a>),
     User(UserRecord),
-    Assistant(Vec<AssistantItem<'a>>),
+    Assistant {
+        items: Vec<AssistantItem<'a>>,
+        emitted_at_ms: Option<i64>,
+    },
+    /// End of one Claude turn. This is the closest stored representation of
+    /// response completion and is emitted after stop hooks finish.
+    TurnCompleted {
+        completed_at_ms: Option<i64>,
+    },
     /// Any other non-sidechain record; contributes only its chain link.
     Other,
 }
@@ -116,7 +124,15 @@ pub(crate) fn decode(v: &Value) -> Option<DecodedRecord<'_>> {
     let (uuid, _parent) = record_link(v)?;
     let kind = match ty {
         Some("user") => RecordKind::User(decode_user(v)),
-        Some("assistant") => RecordKind::Assistant(assistant_items(v)),
+        Some("assistant") => RecordKind::Assistant {
+            items: assistant_items(v),
+            emitted_at_ms: record_timestamp_ms(v),
+        },
+        Some("system") if v.get("subtype").and_then(Value::as_str) == Some("turn_duration") => {
+            RecordKind::TurnCompleted {
+                completed_at_ms: record_timestamp_ms(v),
+            }
+        }
         _ => RecordKind::Other,
     };
     Some(DecodedRecord { uuid, kind })
@@ -397,7 +413,7 @@ mod tests {
         let v = val(
             r#"{"type":"assistant","uuid":"b","parentUuid":"a","message":{"content":[{"type":"text","text":"먼저"},{"type":"tool_use","name":"Bash"},{"type":"text","text":"나중"}]}}"#,
         );
-        let Some(RecordKind::Assistant(items)) = decode(&v).map(|d| d.kind) else {
+        let Some(RecordKind::Assistant { items, .. }) = decode(&v).map(|d| d.kind) else {
             panic!("expected assistant record");
         };
         let shape: Vec<&str> = items

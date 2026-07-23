@@ -17,6 +17,7 @@ the change area below and run every check listed for it.
 | Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
 | Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
+| Session activity time / Updated ordering | `cargo test real_data_index_snapshot -- --ignored --nocapture`; compare Updated against the real CLI record, then resume and exit without input and verify it is unchanged | §Session activity checks below |
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [panel-focus-style.md](./panel-focus-style.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [panel-focus-style.md](./panel-focus-style.md) |
 | Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
@@ -93,6 +94,20 @@ If session context (`src/session_context/` · `s7s session`) or New Session with
 3. Actual contextual launch (each agent): Check if the bootstrap prompt is recorded as a user turn in the transcript, if `s7s session show ... --bootstrap` succeeds, if there are no past tasks/file changes executed, and if the ready message is in the source user turn's primary language.
 4. Check that the launched session does not contaminate the s7s list's Q count/preview/title/search (sessions with only a bootstrap are hidden from the list), and remains the same even after `--rebuild-cache`.
 5. Reverify the initial prompt injection method upon CLI upgrade: claude/codex positional (`[prompt]`/`[PROMPT]`), agy `--prompt-interactive` (positional unsupported).
+
+## Session activity checks
+
+When semantic activity parsing or Updated ordering changes:
+
+1. Compare the latest active user timestamp and response-completion timestamp
+   against the displayed Updated value for all three agents.
+2. Resume each session and exit without input. Physical mtime/cache freshness may
+   change, but Updated and list order must remain unchanged.
+3. Submit a query and interrupt before completion. Updated must use the query
+   timestamp.
+4. Complete a response. Updated must advance to response completion.
+5. For Claude rewind and Codex rollback, abandoned-branch timestamps must not
+   affect Updated.
 
 ## Keyboard protocol checks
 

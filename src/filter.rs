@@ -122,7 +122,7 @@ mod tests {
             source_path: None,
             cwd: "/tmp/demo".into(),
             folder: "demo".to_string(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: Vec::new(),

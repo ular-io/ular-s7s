@@ -253,7 +253,7 @@ fn run_search(args: &SearchArgs) -> i32 {
     };
 
     // Quiet incremental scan (shares the TUI mtime cache); scan() already sorts
-    // most-recent first, and filter::apply preserves that order.
+    // by semantic activity, and filter::apply preserves that order.
     let result = crate::scan::scan(&profiles.profiles, false);
     let indices = crate::filter::apply(&result.sessions, &filter);
 

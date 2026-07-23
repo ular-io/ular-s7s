@@ -26,10 +26,13 @@ parsing is `clap` derive. Modes:
 1. `profile` enumerates profiles (Agent + name + config-folder path). Session
    storage location belongs to the profile (`Profile.path` → `sessions_dir()`),
    not to `config`.
-2. `scan` walks each profile's storage, using an mtime-based incremental cache to
-   avoid re-parsing unchanged files.
+2. `scan` walks each profile's storage, using physical mtime only as an
+   incremental-cache freshness key. Session display/order uses semantic activity
+   time instead: the later of the last active user-turn submit time and the last
+   active response-completion time. Resume/exit metadata writes therefore
+   reparse the file without moving the session.
 3. `cache` (`<OS cache>/s7s/index.bin`, `0600`) serializes the `Session` index and
-   is gated by `CACHE_VERSION` (currently 13); a mismatch discards the cache and
+   is gated by `CACHE_VERSION` (currently 14); a mismatch discards the cache and
    forces a full rebuild. Bump it only when serialized meaning changes.
 4. `filter` applies the composite query (keyword over body+title+folder+last
    assistant answer, AND agent AND folder AND profile) — the same index backs the
@@ -42,8 +45,13 @@ lightweight — see [session-context.md](./session-context.md)):
 
 - **List parsers** — `src/parser/antigravity.rs` and `src/parser/claude/`,
   `src/parser/codex/` (+ `mod.rs`, `turn.rs`) build the lightweight `Session`
-  index: id, title, folder, mtime, size, Q (active user-turn count), per-turn
-  submit times, and redacted search blobs. No tool-call/result reconstruction.
+  index: id, title, folder, semantic activity time, size, Q
+  (active user-turn count), per-turn submit times, and redacted search blobs. No
+  tool-call/result reconstruction. The parsers derive activity as follows:
+  Claude uses the active branch's `system/turn_duration` (assistant timestamp
+  fallback), Codex uses rollback-aware `event_msg/task_complete` (assistant
+  timestamp fallback), and Antigravity uses the last DONE
+  `MODEL/PLANNER_RESPONSE.created_at` attached to an active user turn.
 - **Context parsers** — `src/session_context/{claude,codex,antigravity}.rs` build
   the detailed `ContextTurn` model consumed by the Detail screen, the
   `s7s session` CLI (`render.rs`), and the handoff exporter (`handoff.rs`).

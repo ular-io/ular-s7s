@@ -25,6 +25,17 @@ and are attached to the separately parsed Detail transcript only when both
 stores have the same turn count; missing or ambiguous timestamps are omitted
 rather than inferred.
 
+The session-level **Updated** value is separate from the cache's physical mtime.
+It is the later of the last active user-turn submit time and the last active
+response-completion time. Resume/exit records without a new query or response
+can invalidate the cache but cannot reorder the session list. Claude uses
+`system/turn_duration`, Codex uses rollback-aware `event_msg/task_complete`,
+and Antigravity approximates completion with the last DONE
+`MODEL/PLANNER_RESPONSE.created_at` attached to a user turn. Missing completion
+events use the last assistant-text timestamp as the response-side fallback; the
+result is still compared with the latest user timestamp. Physical mtime is used
+only when no semantic timestamp exists.
+
 ## Architecture
 
 ```
@@ -99,7 +110,7 @@ s7s session search <QUERY...> [--folder <NAME>]... [--agent claude|codex|antigra
 
 - Purpose: let an agent quickly locate a past conversation across all sessions, then read it with `show`/`--turn`.
 - Matching reuses `filter::Filter` (the same index as the TUI `/` search): space-separated query tokens are AND-matched against `search_blob` (user body + title + folder) → `assistant_blob` (each turn's last answer) → session ID (5+ char tokens). `--folder`/`--agent`/`--profile` are AND'd with the query; **repeating an option OR's its values**. Folder matches the cwd basename exactly.
-- Results are most-recent first (mtime desc), capped by `--limit` (default 20, `0` = no cap). Each result prints `ID  agent/profile  [folder]  updated  Q<turns>` + the resolved title, followed by a `show` hint. No matches → `No sessions matched.` (exit 0).
+- Results are most-recent first (semantic activity time desc), capped by `--limit` (default 20, `0` = no cap). Each result prints `ID  agent/profile  [folder]  updated  Q<turns>` + the resolved title, followed by a `show` hint. No matches → `No sessions matched.` (exit 0).
 - An unknown `--profile` is a **non-fatal warning** (search is a discovery tool, so a typo warns rather than failing), unlike `show` where a missing requested profile is a hard error.
 - **Not supported**: keyword OR (all tokens are AND), phrase/adjacency matching (quoting a query is equivalent to the unquoted tokens), negation, regex, and substring folder matching. These mirror the TUI `/` filter semantics.
 

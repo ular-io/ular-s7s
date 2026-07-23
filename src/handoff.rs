@@ -428,7 +428,7 @@ mod tests {
             source_path: Some(PathBuf::from("/tmp/source.jsonl")),
             cwd: PathBuf::from("/tmp/demo"),
             folder: "demo".to_string(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: turns.into_iter().map(str::to_string).collect(),

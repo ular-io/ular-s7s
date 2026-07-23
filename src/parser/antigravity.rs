@@ -14,7 +14,7 @@
 //!
 //! Since one file equals one session, file-level mtime cache is applied similar to claude/codex.
 
-use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn};
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, session_updated_at_ms};
 use crate::model::{Agent, Session};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -30,7 +30,6 @@ pub struct Meta {
     pub title: Option<String>,
     pub preview: Option<String>,
     pub workspace: Option<String>,
-    pub updated_ms: Option<i64>,
 }
 
 /// Loads conversation_metadata.json (conversation ID -> Meta).
@@ -67,23 +66,12 @@ pub fn load_metadata(cli_dir: &Path) -> HashMap<String, Meta> {
             .and_then(|a| a.first())
             .and_then(Value::as_str)
             .map(strip_file_uri);
-        let updated_ms = entry
-            .get("last_modified_time")
-            .and_then(Value::as_str)
-            .and_then(rfc3339_to_ms)
-            .or_else(|| {
-                summary
-                    .and_then(|s| s.get("UpdatedAt"))
-                    .and_then(Value::as_str)
-                    .and_then(rfc3339_to_ms)
-            });
         out.insert(
             id.clone(),
             Meta {
                 title,
                 preview,
                 workspace,
-                updated_ms,
             },
         );
     }
@@ -117,7 +105,6 @@ pub fn load_metadata(cli_dir: &Path) -> HashMap<String, Meta> {
                     title,
                     preview: None,
                     workspace: None,
-                    updated_ms: None,
                 });
         }
     }
@@ -125,14 +112,17 @@ pub fn load_metadata(cli_dir: &Path) -> HashMap<String, Meta> {
 }
 
 /// Parses a single conversation `.db`. Returns None if there are no valid user turns and fallback via Preview/Title is not possible.
-pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Option<Session> {
+pub fn parse_db(
+    path: &Path,
+    source_mtime_ms: i64,
+    meta: &HashMap<String, Meta>,
+) -> Option<Session> {
     let id = path.file_stem()?.to_string_lossy().to_string();
     let m = meta.get(&id);
 
     let mut turns: Vec<String> = Vec::new();
     let mut turn_timestamps: Vec<Option<i64>> = Vec::new();
     let mut cwd: Option<String> = None;
-    let mut max_ts_ms: i64 = 0;
 
     // Open as read-only and immutable to avoid locks or mutations during execution.
     if let Ok(conn) = rusqlite::Connection::open_with_flags(
@@ -167,9 +157,6 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
                                 }
                             }
                         }
-                        if ts > max_ts_ms {
-                            max_ts_ms = ts;
-                        }
                         if !is_noise_turn(&msg) {
                             if let Some(cleaned) = clean_turn(&msg) {
                                 turns.push(cleaned);
@@ -182,19 +169,10 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
         }
     }
 
-    // Fallback to workspace/mtime from metadata.
+    // Fall back to the workspace from metadata.
     if cwd.is_none() {
         cwd = m.and_then(|m| m.workspace.clone());
     }
-    let mtime = [
-        max_ts_ms,
-        m.and_then(|m| m.updated_ms).unwrap_or(0),
-        mtime_ms,
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(mtime_ms);
-
     // Fall back to Preview if no user turns were extracted (still displays the session).
     if turns.is_empty() {
         if let Some(preview) = m.and_then(|m| m.preview.clone()) {
@@ -218,16 +196,22 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
     // transcript parser to pull each turn's last assistant text for the search index;
     // a missing/rotated transcript simply yields fewer (or no) indexed answers, and
     // search falls back to user turns for that session.
-    let assistant_per_turn: Vec<String> =
+    let (assistant_per_turn, last_response_completed_at_ms): (Vec<String>, Option<i64>) =
         crate::session_context::antigravity::transcript_path(path, &id)
-            .and_then(|tp| crate::session_context::antigravity::parse_turns(&tp).ok())
-            .map(|turns| {
-                turns
+            .and_then(|tp| crate::session_context::antigravity::parse_turns_with_activity(&tp).ok())
+            .map(|(turns, completed_at_ms)| {
+                let answers = turns
                     .into_iter()
                     .filter_map(|t| t.last_assistant_text)
-                    .collect()
+                    .collect();
+                (answers, completed_at_ms)
             })
             .unwrap_or_default();
+    let updated_at_ms = session_updated_at_ms(
+        &turn_timestamps,
+        last_response_completed_at_ms,
+        source_mtime_ms,
+    );
 
     let mut s = Session {
         agent: Agent::Antigravity,
@@ -236,7 +220,7 @@ pub fn parse_db(path: &Path, mtime_ms: i64, meta: &HashMap<String, Meta>) -> Opt
         source_path: Some(path.to_path_buf()),
         cwd: PathBuf::from(cwd),
         folder,
-        mtime_ms: mtime,
+        updated_at_ms,
         ctime_ms: 0,
         size_bytes: 0,
         user_turns: turns,
@@ -448,72 +432,10 @@ fn pb_get_varint(buf: &[u8], field: u64) -> Option<u64> {
     None
 }
 
-// ---- Time/Path Helpers ----
+// ---- Path Helpers ----
 
 fn strip_file_uri(uri: &str) -> String {
     uri.strip_prefix("file://").unwrap_or(uri).to_string()
-}
-
-/// RFC3339 -> epoch milliseconds (handles offset, Z, and fractional seconds).
-fn rfc3339_to_ms(s: &str) -> Option<i64> {
-    let bytes = s.as_bytes();
-    if s.len() < 19 {
-        return None;
-    }
-    let year: i64 = s.get(0..4)?.parse().ok()?;
-    let month: i64 = s.get(5..7)?.parse().ok()?;
-    let day: i64 = s.get(8..10)?.parse().ok()?;
-    let hour: i64 = s.get(11..13)?.parse().ok()?;
-    let min: i64 = s.get(14..16)?.parse().ok()?;
-    let sec: i64 = s.get(17..19)?.parse().ok()?;
-
-    let mut idx = 19usize;
-    let mut millis = 0i64;
-    if bytes.get(idx) == Some(&b'.') {
-        idx += 1;
-        let start = idx;
-        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
-            idx += 1;
-        }
-        let frac = &s[start..idx];
-        let ms_str: String = frac.chars().take(3).collect();
-        millis = format!("{:0<3}", ms_str).parse().unwrap_or(0);
-    }
-
-    let mut offset_secs = 0i64;
-    if idx < bytes.len() {
-        match bytes[idx] {
-            b'Z' => {}
-            b'+' | b'-' => {
-                let sign = if bytes[idx] == b'-' { -1 } else { 1 };
-                let digits: String = s[idx + 1..]
-                    .chars()
-                    .filter(|c| c.is_ascii_digit())
-                    .collect();
-                if digits.len() >= 4 {
-                    let oh: i64 = digits[0..2].parse().ok()?;
-                    let om: i64 = digits[2..4].parse().ok()?;
-                    offset_secs = sign * (oh * 3600 + om * 60);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let days = days_from_civil(year, month as u32, day as u32);
-    let epoch_secs = days * 86400 + hour * 3600 + min * 60 + sec - offset_secs;
-    Some(epoch_secs * 1000 + millis)
-}
-
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let m = m as i64;
-    let d = d as i64;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
 }
 
 fn parse_pbtxt_title(data: &str) -> Option<String> {
@@ -661,6 +583,49 @@ mod tests {
             vec![Some(1_784_768_523_456), Some(1_784_772_184_567)]
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_db_uses_transcript_response_time_instead_of_later_storage_mtime() {
+        let root = std::env::temp_dir().join(format!(
+            "s7s-antigravity-activity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let id = "activity-session";
+        let conversations = root.join("conversations");
+        let logs = root.join(format!("brain/{id}/.system_generated/logs"));
+        std::fs::create_dir_all(&conversations).expect("create conversations");
+        std::fs::create_dir_all(&logs).expect("create logs");
+        let path = conversations.join(format!("{id}.db"));
+        let conn = rusqlite::Connection::open(&path).expect("open temp DB");
+        conn.execute(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+            [],
+        )
+        .expect("create steps");
+        conn.execute(
+            "INSERT INTO steps VALUES (0, 14, ?1)",
+            [user_payload("question", 1_784_768_523_456)],
+        )
+        .expect("insert user");
+        drop(conn);
+        std::fs::write(
+            logs.join("transcript_full.jsonl"),
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-07-23T01:02:03Z","content":"<USER_REQUEST>question</USER_REQUEST>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T01:03:04Z","content":"answer"}
+"#,
+        )
+        .expect("write transcript");
+
+        let later_mtime = 1_784_899_999_999;
+        let session = parse_db(&path, later_mtime, &HashMap::new()).expect("parse session");
+        assert_eq!(session.updated_at_ms, 1_784_768_584_000);
+        assert_ne!(session.updated_at_ms, later_mtime);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

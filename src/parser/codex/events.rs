@@ -43,7 +43,12 @@ pub(crate) enum CodexRecord<'a> {
         submitted_at_ms: Option<i64>,
     },
     /// One assistant answer's text (already empty-filtered).
-    Assistant(String),
+    Assistant {
+        text: String,
+        emitted_at_ms: Option<i64>,
+    },
+    /// Exact end marker for a completed Codex task/turn.
+    TurnCompleted { completed_at_ms: Option<i64> },
     /// `response_item` tool call; carries the raw payload so only the context
     /// parser pays for JSON serialization.
     ToolCall(&'a Value),
@@ -108,6 +113,15 @@ pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
     if let Some(n) = rolled_back_turns(v) {
         return CodexRecord::RolledBack(n);
     }
+    if v.get("payload")
+        .and_then(|payload| payload.get("type"))
+        .and_then(Value::as_str)
+        == Some("task_complete")
+    {
+        return CodexRecord::TurnCompleted {
+            completed_at_ms: codex_completed_at_ms(v),
+        };
+    }
     if let Some(text) = turn::extract_user_text(v) {
         let kind = match (!is_noise_turn(&text)).then(|| clean_turn(&text)).flatten() {
             Some(cleaned) => UserTextKind::Turn { cleaned },
@@ -126,7 +140,10 @@ pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
         };
     }
     if let Some(text) = assistant_text(v) {
-        return CodexRecord::Assistant(text);
+        return CodexRecord::Assistant {
+            text,
+            emitted_at_ms: record_timestamp_ms(v),
+        };
     }
     // Detailed tool call/result records are recognized only under `response_item`
     // (the only line type that carries them), matching the context parser.
@@ -144,6 +161,17 @@ pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
         }
     }
     CodexRecord::Other
+}
+
+fn codex_completed_at_ms(v: &Value) -> Option<i64> {
+    record_timestamp_ms(v).or_else(|| {
+        let raw = v.get("payload")?.get("completed_at")?.as_i64()?;
+        Some(if raw >= 1_000_000_000_000 {
+            raw
+        } else {
+            raw.checked_mul(1000)?
+        })
+    })
 }
 
 /// Returns `num_turns` when the line is a backtrack marker
@@ -252,6 +280,29 @@ mod tests {
     }
 
     #[test]
+    fn decode_reads_task_completion_timestamp_with_numeric_fallback() {
+        let timestamped = val(
+            r#"{"timestamp":"2026-07-23T01:03:04.567Z","type":"event_msg","payload":{"type":"task_complete","completed_at":1784768584}}"#,
+        );
+        assert!(matches!(
+            decode(&timestamped),
+            CodexRecord::TurnCompleted {
+                completed_at_ms: Some(1_784_768_584_567)
+            }
+        ));
+
+        let numeric = val(
+            r#"{"type":"event_msg","payload":{"type":"task_complete","completed_at":1784768584}}"#,
+        );
+        assert!(matches!(
+            decode(&numeric),
+            CodexRecord::TurnCompleted {
+                completed_at_ms: Some(1_784_768_584_000)
+            }
+        ));
+    }
+
+    #[test]
     fn decode_classifies_assistant_forms() {
         let agent =
             val(r#"{"type":"event_msg","payload":{"type":"agent_message","message":"답변"}}"#);
@@ -259,7 +310,7 @@ mod tests {
             r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"답변"}]}}"#,
         );
         for v in [&agent, &item] {
-            let CodexRecord::Assistant(text) = decode(v) else {
+            let CodexRecord::Assistant { text, .. } = decode(v) else {
                 panic!("expected assistant");
             };
             assert_eq!(text, "답변");

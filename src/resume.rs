@@ -324,7 +324,7 @@ mod tests {
             source_path: None,
             cwd: PathBuf::from("/tmp/demo"),
             folder: "demo".into(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: Vec::new(),

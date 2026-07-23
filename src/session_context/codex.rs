@@ -67,7 +67,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                     });
                 }
             }
-            CodexRecord::Assistant(text) => {
+            CodexRecord::Assistant { text, .. } => {
                 set_last_assistant(&mut current, &text);
                 push_entry(&mut current, ContextEntryKind::AssistantText, text);
             }
@@ -85,7 +85,10 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                     compact_json(payload),
                 );
             }
-            CodexRecord::Meta { .. } | CodexRecord::Title(_) | CodexRecord::Other => {}
+            CodexRecord::Meta { .. }
+            | CodexRecord::Title(_)
+            | CodexRecord::TurnCompleted { .. }
+            | CodexRecord::Other => {}
         }
     }
 

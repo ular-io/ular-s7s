@@ -12,7 +12,7 @@
 //! nothing, so it is only detectable once the user sends a message afterwards.
 pub(crate) mod events;
 
-use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn};
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, session_updated_at_ms};
 use crate::model::{Agent, Session};
 use events::{AssistantItem, RecordKind, TitleEvent, UserTextKind};
 use serde_json::Value;
@@ -87,7 +87,7 @@ pub fn load_title_meta(cli_dir: &Path) -> HashMap<String, TitleMeta> {
 }
 
 /// Parses a single Claude JSONL file. Returns None if there are no valid user turns.
-pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Option<Session> {
+pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -> Option<Session> {
     let content = std::fs::read_to_string(path).ok()?;
     let id = path.file_stem()?.to_string_lossy().to_string();
 
@@ -113,6 +113,8 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
     let mut events: Vec<Event> = Vec::new();
     let mut explicit_title: Option<String> = None;
     let mut auto_title: Option<String> = None;
+    let mut last_response_completed_at_ms: Option<i64> = None;
+    let mut has_open_user_turn = false;
 
     for v in &values {
         let Some(record) = events::decode(v) else {
@@ -140,11 +142,15 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
                 if !u.is_task_notification {
                     match u.text_kind {
                         UserTextKind::Turn { cleaned } => {
-                            events.push(Event::User(cleaned, u.submitted_at_ms))
+                            events.push(Event::User(cleaned, u.submitted_at_ms));
+                            has_open_user_turn = true;
                         }
                         // Slash commands, the bootstrap prompt, etc. close the current
                         // turn but do not open one.
-                        UserTextKind::Boundary => events.push(Event::Boundary),
+                        UserTextKind::Boundary => {
+                            events.push(Event::Boundary);
+                            has_open_user_turn = false;
+                        }
                         UserTextKind::Blank | UserTextKind::NoText => {}
                     }
                 }
@@ -154,17 +160,32 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
                     if !is_noise_turn(&qa) {
                         if let Some(cleaned) = clean_turn(&qa) {
                             events.push(Event::User(cleaned, u.submitted_at_ms));
+                            has_open_user_turn = true;
                         }
                     }
                 }
             }
-            RecordKind::Assistant(items) => {
+            RecordKind::Assistant {
+                items,
+                emitted_at_ms,
+            } => {
                 for item in items {
                     if let AssistantItem::Text(t) = item {
                         if !t.trim().is_empty() {
                             events.push(Event::Assistant(t.to_string()));
+                            if has_open_user_turn {
+                                last_response_completed_at_ms =
+                                    last_response_completed_at_ms.max(emitted_at_ms);
+                            }
                         }
                     }
+                }
+            }
+            RecordKind::TurnCompleted { completed_at_ms } => {
+                if has_open_user_turn {
+                    last_response_completed_at_ms =
+                        last_response_completed_at_ms.max(completed_at_ms);
+                    has_open_user_turn = false;
                 }
             }
             RecordKind::Other => {}
@@ -189,6 +210,11 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
         return None;
     }
     let assistant_per_turn = last_assistant_per_turn(&events);
+    let updated_at_ms = session_updated_at_ms(
+        &turn_timestamps,
+        last_response_completed_at_ms,
+        source_mtime_ms,
+    );
 
     let cwd = cwd.unwrap_or_else(|| decode_project_dir(path));
     let folder = folder_name(&cwd);
@@ -205,7 +231,7 @@ pub fn parse_file(path: &Path, mtime_ms: i64, meta: Option<&TitleMeta>) -> Optio
         source_path: Some(path.to_path_buf()),
         cwd: cwd.into(),
         folder,
-        mtime_ms,
+        updated_at_ms,
         ctime_ms: 0,
         size_bytes: 0,
         user_turns: turns,
@@ -391,20 +417,25 @@ mod tests {
     fn rewind_hides_turns_on_abandoned_branch() {
         // Q2 was abandoned by /rewind: Q3 branches from the same parent (b) as Q2.
         let content = r#"
-{"timestamp":"2026-07-23T01:02:03.456Z","type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
-{"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"답1"}]}}
-{"timestamp":"2026-07-23T02:03:04.567Z","type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"질문2 버려진 분기"}}
-{"type":"assistant","uuid":"d","parentUuid":"c","message":{"role":"assistant","content":[{"type":"text","text":"답2"}]}}
-{"timestamp":"2026-07-23T03:04:05.678Z","type":"user","uuid":"e","parentUuid":"b","message":{"role":"user","content":"질문3 리와인드 후"}}
-{"type":"assistant","uuid":"f","parentUuid":"e","message":{"role":"assistant","content":[{"type":"text","text":"답3"}]}}
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"question 1"}}
+{"timestamp":"2026-07-23T01:03:03.456Z","type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"answer 1"}]}}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"abandoned question 2"}}
+{"timestamp":"2026-07-23T05:00:00Z","type":"assistant","uuid":"d","parentUuid":"c","message":{"role":"assistant","content":[{"type":"text","text":"abandoned answer 2"}]}}
+{"timestamp":"2026-07-23T05:01:00Z","type":"system","subtype":"turn_duration","uuid":"x","parentUuid":"d"}
+{"timestamp":"2026-07-23T03:04:05.678Z","type":"user","uuid":"e","parentUuid":"b","message":{"role":"user","content":"replacement question 3"}}
+{"timestamp":"2026-07-23T03:05:05.678Z","type":"assistant","uuid":"f","parentUuid":"e","message":{"role":"assistant","content":[{"type":"text","text":"answer 3"}]}}
 "#;
         let path = write_temp("rewind-branch", content);
         let session = parse_file(&path, 0, None).expect("expected session");
-        assert_eq!(session.user_turns, vec!["질문1", "질문3 리와인드 후"]);
+        assert_eq!(
+            session.user_turns,
+            vec!["question 1", "replacement question 3"]
+        );
         assert_eq!(
             session.user_turn_timestamps_ms,
             vec![Some(1_784_768_523_456), Some(1_784_775_845_678)]
         );
+        assert_eq!(session.updated_at_ms, 1_784_775_905_678);
         let _ = std::fs::remove_file(path);
     }
 
@@ -418,6 +449,36 @@ mod tests {
         let path = write_temp("linear", content);
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.user_turns, vec!["질문1", "질문2"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn activity_time_ignores_resume_only_last_prompt_write() {
+        let content = r#"
+{"timestamp":"2026-07-22T08:58:46.672Z","type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"question"}}
+{"timestamp":"2026-07-22T08:59:43.293Z","type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}
+{"timestamp":"2026-07-22T08:59:43.525Z","type":"system","subtype":"turn_duration","uuid":"c","parentUuid":"b","durationMs":56847}
+{"type":"last-prompt","lastPrompt":"question","leafUuid":"c","sessionId":"test"}
+"#;
+        let path = write_temp("activity-last-prompt", content);
+        let later_mtime = 1_784_769_999_999;
+        let session = parse_file(&path, later_mtime, None).expect("expected session");
+        assert_eq!(session.updated_at_ms, 1_784_710_783_525);
+        assert_ne!(session.updated_at_ms, later_mtime);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn activity_time_uses_new_query_when_response_is_not_complete() {
+        let content = r#"
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"first question"}}
+{"timestamp":"2026-07-23T01:03:03.456Z","type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}]}}
+{"timestamp":"2026-07-23T01:03:04.456Z","type":"system","subtype":"turn_duration","uuid":"c","parentUuid":"b"}
+{"timestamp":"2026-07-23T02:03:04.567Z","type":"user","uuid":"d","parentUuid":"c","message":{"role":"user","content":"second question"}}
+"#;
+        let path = write_temp("activity-open-query", content);
+        let session = parse_file(&path, 1_784_799_999_999, None).expect("expected session");
+        assert_eq!(session.updated_at_ms, 1_784_772_184_567);
         let _ = std::fs::remove_file(path);
     }
 

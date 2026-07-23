@@ -12,12 +12,18 @@
 
 pub(crate) mod events;
 
-use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn};
+use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, session_updated_at_ms};
 use crate::model::{Agent, Session};
 use events::{CodexRecord, UserTextKind};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+
+struct TurnIndex {
+    indexable: bool,
+    last_assistant: Option<String>,
+    last_response_at_ms: Option<i64>,
+}
 
 /// OpenAI Codex session title metadata.
 pub struct TitleMeta {
@@ -74,7 +80,7 @@ pub fn load_title_meta(cli_dir: &Path) -> HashMap<String, TitleMeta> {
 /// Parses a single Codex rollout JSONL file. Returns None if there are no valid user turns.
 pub fn parse_file(
     path: &Path,
-    mtime_ms: i64,
+    source_mtime_ms: i64,
     meta_map: Option<&HashMap<String, TitleMeta>>,
 ) -> Option<Session> {
     let content = std::fs::read_to_string(path).ok()?;
@@ -86,11 +92,10 @@ pub fn parse_file(
     // Index into `turns` where each user turn starts; boundaries are recorded even for
     // noise-filtered user messages so `thread_rolled_back.num_turns` counts real turns.
     let mut turn_starts: Vec<usize> = Vec::new();
-    // Parallel to `turn_starts` (one slot per user-message turn): `(indexable, last
-    // assistant answer)`. `indexable` is false for noise turns (slash commands, the
-    // bootstrap prompt) so their answers are excluded from the search index. A rollback
-    // truncates this exactly like `turn_starts`.
-    let mut turn_asst: Vec<(bool, Option<String>)> = Vec::new();
+    // Parallel to `turn_starts` (one slot per user-message turn). Noise turns
+    // remain non-indexable and cannot move the semantic activity time. A rollback
+    // truncates response activity exactly like the associated user turns.
+    let mut turn_index: Vec<TurnIndex> = Vec::new();
     let mut title_hint: Option<String> = None;
 
     for line in content.lines() {
@@ -118,7 +123,7 @@ pub fn parse_file(
                 turns.truncate(cut);
                 turn_timestamps.truncate(cut);
                 turn_starts.truncate(keep);
-                turn_asst.truncate(keep);
+                turn_index.truncate(keep);
             }
             CodexRecord::User(u) => {
                 // A user line always records a boundary (so a rollback counts real
@@ -127,11 +132,19 @@ pub fn parse_file(
                 turn_starts.push(turns.len());
                 match u.kind {
                     UserTextKind::Turn { cleaned } => {
-                        turn_asst.push((true, None));
+                        turn_index.push(TurnIndex {
+                            indexable: true,
+                            last_assistant: None,
+                            last_response_at_ms: None,
+                        });
                         turns.push(cleaned);
                         turn_timestamps.push(u.submitted_at_ms);
                     }
-                    UserTextKind::Boundary => turn_asst.push((false, None)),
+                    UserTextKind::Boundary => turn_index.push(TurnIndex {
+                        indexable: false,
+                        last_assistant: None,
+                        last_response_at_ms: None,
+                    }),
                 }
             }
             CodexRecord::Qa {
@@ -146,9 +159,22 @@ pub fn parse_file(
                 }
             }
             // Record each turn's last assistant answer for the search index.
-            CodexRecord::Assistant(text) => {
-                if let Some(slot) = turn_asst.last_mut() {
-                    slot.1 = Some(text);
+            CodexRecord::Assistant {
+                text,
+                emitted_at_ms,
+            } => {
+                if let Some(slot) = turn_index.last_mut() {
+                    slot.last_assistant = Some(text);
+                    if slot.indexable {
+                        slot.last_response_at_ms = slot.last_response_at_ms.max(emitted_at_ms);
+                    }
+                }
+            }
+            CodexRecord::TurnCompleted { completed_at_ms } => {
+                if let Some(slot) = turn_index.last_mut() {
+                    if slot.indexable {
+                        slot.last_response_at_ms = slot.last_response_at_ms.max(completed_at_ms);
+                    }
                 }
             }
             CodexRecord::ToolCall(_) | CodexRecord::ToolResult(_) | CodexRecord::Other => {}
@@ -166,6 +192,16 @@ pub fn parse_file(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.clone());
+    let last_response_completed_at_ms = turn_index
+        .iter()
+        .filter(|slot| slot.indexable)
+        .filter_map(|slot| slot.last_response_at_ms)
+        .max();
+    let updated_at_ms = session_updated_at_ms(
+        &turn_timestamps,
+        last_response_completed_at_ms,
+        source_mtime_ms,
+    );
 
     let mut session = Session {
         agent: Agent::Codex,
@@ -174,7 +210,7 @@ pub fn parse_file(
         source_path: Some(path.to_path_buf()),
         cwd: cwd.into(),
         folder,
-        mtime_ms,
+        updated_at_ms,
         ctime_ms: 0,
         size_bytes: 0,
         user_turns: turns,
@@ -185,10 +221,10 @@ pub fn parse_file(
         title_fixed: meta.and_then(|m| m.title.as_ref()).is_some(),
     };
     finalize(&mut session);
-    let assistant_per_turn: Vec<String> = turn_asst
+    let assistant_per_turn: Vec<String> = turn_index
         .into_iter()
-        .filter(|(indexable, _)| *indexable)
-        .filter_map(|(_, answer)| answer)
+        .filter(|slot| slot.indexable)
+        .filter_map(|slot| slot.last_assistant)
         .collect();
     session.assistant_blob = build_assistant_blob(&assistant_per_turn);
     Some(session)
@@ -289,6 +325,40 @@ mod tests {
         let (root, path) = write_rollout("rollback-all", content);
         let session = parse_file(&path, 0, None).expect("expected session");
         assert_eq!(session.user_turns, vec!["수정된 질문"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn activity_time_uses_task_complete_and_ignores_later_storage_mtime() {
+        let content = r#"
+{"type":"session_meta","payload":{"id":"activity","cwd":"/tmp/demo"}}
+{"timestamp":"2026-07-23T01:02:03.456Z","type":"event_msg","payload":{"type":"user_message","message":"question"}}
+{"timestamp":"2026-07-23T01:03:03.456Z","type":"event_msg","payload":{"type":"agent_message","message":"answer"}}
+{"timestamp":"2026-07-23T01:03:04.567Z","type":"event_msg","payload":{"type":"task_complete","completed_at":1784768584}}
+{"timestamp":"2026-07-24T09:00:00Z","type":"event_msg","payload":{"type":"thread_settings_applied"}}
+"#;
+        let (root, path) = write_rollout("activity-complete", content);
+        let later_mtime = 1_784_899_999_999;
+        let session = parse_file(&path, later_mtime, None).expect("expected session");
+        assert_eq!(session.updated_at_ms, 1_784_768_584_567);
+        assert_ne!(session.updated_at_ms, later_mtime);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn activity_time_excludes_rolled_back_response_completion() {
+        let content = r#"
+{"type":"session_meta","payload":{"id":"activity-rollback","cwd":"/tmp/demo"}}
+{"timestamp":"2026-07-23T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"kept question"}}
+{"timestamp":"2026-07-23T01:01:00Z","type":"event_msg","payload":{"type":"task_complete"}}
+{"timestamp":"2026-07-23T02:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"abandoned question"}}
+{"timestamp":"2026-07-23T05:00:00Z","type":"event_msg","payload":{"type":"task_complete"}}
+{"type":"event_msg","payload":{"type":"thread_rolled_back","num_turns":1}}
+{"timestamp":"2026-07-23T03:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"replacement question"}}
+"#;
+        let (root, path) = write_rollout("activity-rollback", content);
+        let session = parse_file(&path, 1_784_899_999_999, None).expect("expected session");
+        assert_eq!(session.updated_at_ms, 1_784_775_600_000);
         let _ = std::fs::remove_dir_all(&root);
     }
 

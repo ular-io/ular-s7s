@@ -347,8 +347,8 @@ fn handover(terminal: &mut Tui, app: &mut App, session: &model::Session) -> Resu
     // 3) Re-initialize TUI and force redraw.
     *terminal = init_terminal()?;
     terminal.clear()?;
-    // Reflect new conversations continued during resume: perform incremental rescan to update
-    // the target session and re-sort it to the top based on mtime (selection cursor tracks the session).
+    // Reflect new conversations continued during resume: perform an incremental
+    // rescan and sort by semantic activity (selection tracks the same session).
     app.refresh_sessions();
     drain_pending_input();
     app.begin_quit_grace();

@@ -23,6 +23,25 @@ pub(crate) fn record_timestamp_ms(record: &Value) -> Option<i64> {
         .map(|timestamp| timestamp.timestamp_millis())
 }
 
+/// Resolves the semantic session activity time from active conversation events.
+///
+/// Physical storage mtime remains the cache-freshness signal, but must not move
+/// a session when an agent merely resumes and closes it without a new query.
+pub(crate) fn session_updated_at_ms(
+    user_turn_timestamps_ms: &[Option<i64>],
+    last_response_completed_at_ms: Option<i64>,
+    source_mtime_ms: i64,
+) -> i64 {
+    user_turn_timestamps_ms
+        .iter()
+        .flatten()
+        .copied()
+        .chain(last_response_completed_at_ms)
+        .filter(|timestamp| *timestamp > 0)
+        .max()
+        .unwrap_or(source_mtime_ms)
+}
+
 /// Computes and populates a search blob (NFC-normalized, lowercase concatenated string)
 /// from user turns and the folder name.
 pub fn finalize(session: &mut Session) {
@@ -125,7 +144,7 @@ mod tests {
             source_path: None,
             cwd: format!("/tmp/{folder}").into(),
             folder: folder.to_string(),
-            mtime_ms: 0,
+            updated_at_ms: 0,
             ctime_ms: 0,
             size_bytes: 0,
             user_turns: turns.iter().map(|t| t.to_string()).collect(),
@@ -172,6 +191,14 @@ mod tests {
         assert!(out.contains("[redacted]"));
         // Empty input yields an empty blob (no work for user-only sessions).
         assert!(build_assistant_blob(&[]).is_empty());
+    }
+
+    #[test]
+    fn session_activity_uses_latest_query_or_response_and_only_falls_back_to_mtime() {
+        let turns = vec![Some(1_000), None, Some(3_000)];
+        assert_eq!(session_updated_at_ms(&turns, Some(2_000), 9_000), 3_000);
+        assert_eq!(session_updated_at_ms(&turns, Some(4_000), 9_000), 4_000);
+        assert_eq!(session_updated_at_ms(&[], None, 9_000), 9_000);
     }
 
     #[test]

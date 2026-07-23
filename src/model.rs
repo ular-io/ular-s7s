@@ -53,8 +53,11 @@ pub struct Session {
     pub cwd: PathBuf,
     /// Folder name (basename of cwd). Used for folder filtering and table columns.
     pub folder: String,
-    /// Last modified time (epoch milliseconds). Used for sorting and display.
-    pub mtime_ms: i64,
+    /// Last meaningful session activity time (epoch milliseconds).
+    /// This is the later of the last active user-turn submit time and the last
+    /// active response-completion time. Used for sorting and display.
+    #[serde(default)]
+    pub updated_at_ms: i64,
     /// Creation time (file birth time, epoch milliseconds). Used for display.
     #[serde(default)]
     pub ctime_ms: i64,
@@ -109,28 +112,28 @@ impl Session {
         self.user_turn_timestamps_ms.get(index).copied().flatten()
     }
 
-    /// Converts mtime to local date string (YYYY-MM-DD). Does not include time.
+    /// Converts the session activity time to a local date string (YYYY-MM-DD).
     pub fn date_str(&self) -> String {
-        let secs = self.mtime_ms.div_euclid(1000);
+        let secs = self.updated_at_ms.div_euclid(1000);
         let local = secs + local_utc_offset_secs(secs);
         let (y, mo, d, _, _) = civil_from_epoch(local);
         format!("{:04}-{:02}-{:02}", y, mo, d)
     }
 
     /// Converts creation time to local date/time string (YYYY-MM-DD HH:MM).
-    /// Falls back to mtime if ctime is missing (e.g. older cache versions).
+    /// Falls back to the session activity time if ctime is missing.
     pub fn created_str(&self) -> String {
         let ms = if self.ctime_ms > 0 {
             self.ctime_ms
         } else {
-            self.mtime_ms
+            self.updated_at_ms
         };
         format_epoch_ms(ms)
     }
 
-    /// Converts last modified time to local date/time string (YYYY-MM-DD HH:MM).
+    /// Converts the session activity time to local date/time (YYYY-MM-DD HH:MM).
     pub fn updated_str(&self) -> String {
-        format_epoch_ms(self.mtime_ms)
+        format_epoch_ms(self.updated_at_ms)
     }
 
     /// Human-readable source file size for the table's SIZE column (KB/MB units only).

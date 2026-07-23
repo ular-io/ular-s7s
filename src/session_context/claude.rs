@@ -82,7 +82,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                     }
                 }
             }
-            RecordKind::Assistant(items) => {
+            RecordKind::Assistant { items, .. } => {
                 for item in items {
                     match item {
                         AssistantItem::Text(text) => {
@@ -103,7 +103,7 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                     }
                 }
             }
-            RecordKind::Title(_) | RecordKind::Other => {}
+            RecordKind::Title(_) | RecordKind::TurnCompleted { .. } | RecordKind::Other => {}
         }
     }
 

@@ -41,9 +41,18 @@ pub fn transcript_path(db_path: &Path, id: &str) -> Option<PathBuf> {
 /// - MODEL/Others (RUN_COMMAND, VIEW_FILE, MCP_TOOL, etc.): tool execution results.
 /// - SYSTEM/ERROR_MESSAGE: errors are kept as work records. Other SYSTEM sources are ignored.
 pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
+    parse_turns_with_activity(path).map(|(turns, _)| turns)
+}
+
+/// Parses turns together with the latest completed assistant-response timestamp.
+/// The transcript has no dedicated turn-complete event, so the last DONE
+/// `PLANNER_RESPONSE.created_at` attached to a real user turn is the best
+/// available completion timestamp.
+pub(crate) fn parse_turns_with_activity(path: &Path) -> Result<(Vec<ContextTurn>, Option<i64>)> {
     let content = std::fs::read_to_string(path)?;
     let mut turns: Vec<ContextTurn> = Vec::new();
     let mut current: Option<ContextTurn> = None;
+    let mut last_response_completed_at_ms: Option<i64> = None;
     // Question list from the preceding ask_question tool_call (for pairing with ASK_QUESTION answers).
     let mut pending_questions: Vec<String> = Vec::new();
 
@@ -72,6 +81,14 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                 }
             }
             ("MODEL", "PLANNER_RESPONSE") => {
+                let completed = matches!(
+                    v.get("status").and_then(Value::as_str),
+                    None | Some("") | Some("DONE")
+                );
+                if current.is_some() && completed {
+                    last_response_completed_at_ms =
+                        last_response_completed_at_ms.max(created_at_ms(&v));
+                }
                 if !text.trim().is_empty() {
                     set_last_assistant(&mut current, text);
                     push_entry(
@@ -139,7 +156,14 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
     if let Some(done) = current {
         turns.push(done);
     }
-    Ok(turns)
+    Ok((turns, last_response_completed_at_ms))
+}
+
+fn created_at_ms(v: &Value) -> Option<i64> {
+    v.get("created_at")
+        .and_then(Value::as_str)
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|timestamp| timestamp.timestamp_millis())
 }
 
 /// Extracts the list of question texts from the args of an ask_question tool_call.
@@ -219,4 +243,31 @@ fn extract_user_request(content: &str) -> String {
         return rest[..end].trim().to_string();
     }
     content.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_uses_latest_done_planner_response_attached_to_a_user_turn() {
+        let content = r#"
+{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T00:00:00Z","content":"orphan"}
+{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-07-23T01:00:00Z","content":"<USER_REQUEST>question</USER_REQUEST>"}
+{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T01:01:02Z","content":"answer"}
+{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"RUNNING","created_at":"2026-07-23T01:02:00Z","content":"partial"}
+"#;
+        let path = std::env::temp_dir().join(format!(
+            "s7s-antigravity-activity-{}.jsonl",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(&path, content).expect("write transcript");
+        let (turns, completed_at_ms) = parse_turns_with_activity(&path).expect("parse transcript");
+        assert_eq!(turns.len(), 1);
+        assert_eq!(completed_at_ms, Some(1_784_768_462_000));
+        let _ = std::fs::remove_file(path);
+    }
 }
