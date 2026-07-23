@@ -27,6 +27,7 @@ impl App {
         }
         self.selected = s as usize;
         self.preview_scroll = 0;
+        self.preview_expanded = false;
     }
 
     /// Handles key inputs in the main table navigation view.
@@ -50,6 +51,20 @@ impl App {
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char(':') => self.open_quick_command(),
             KeyCode::Char('!') => self.open_quick_terminal(),
+            // Expand/collapse all omitted user-turn content in the preview panel.
+            // Only meaningful while the preview column is focused.
+            KeyCode::Char('.') if self.focus == Focus::Preview => {
+                self.preview_expanded = !self.preview_expanded;
+                self.preview_scroll = 0;
+                self.status_msg = Some(
+                    if self.preview_expanded {
+                        "preview expanded"
+                    } else {
+                        "preview collapsed"
+                    }
+                    .to_string(),
+                );
+            }
             KeyCode::Char('a') => self.open_agent_modal(),
             KeyCode::Char('f') => self.open_folder_modal(),
             KeyCode::Char('d') | KeyCode::Delete
@@ -120,6 +135,7 @@ impl App {
                 } else {
                     self.selected = 0;
                     self.preview_scroll = 0;
+                    self.preview_expanded = false;
                 }
             }
             KeyCode::End | KeyCode::Char('G') => {
@@ -128,6 +144,7 @@ impl App {
                 } else {
                     self.selected = self.filtered.len().saturating_sub(1);
                     self.preview_scroll = 0;
+                    self.preview_expanded = false;
                 }
             }
             KeyCode::PageUp => self.scroll_preview(-10),

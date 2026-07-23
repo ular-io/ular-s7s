@@ -24,8 +24,12 @@ impl App {
             session_idx: idx,
             turns,
             selected: 0,
+            expanded_prompt: None,
             focus: DetailFocus::Questions,
             left_scroll: std::cell::Cell::new(0),
+            left_scrollable: std::cell::Cell::new(false),
+            left_scroll_min: std::cell::Cell::new(0),
+            left_scroll_max: std::cell::Cell::new(0),
             right_scroll: std::cell::Cell::new(0),
             right_max_scroll: std::cell::Cell::new(0),
         });
@@ -102,17 +106,43 @@ impl App {
                     self.open_delete_confirm_at(idx);
                 }
             }
-            // Toggle displaying tool calls and results (hidden by default).
+            // Focus-aware expand toggle:
+            // - Prompt (Questions) panel: expand the selected turn's omitted prompt.
+            // - Work & Answer panel: reveal hidden tool calls/results and lift the
+            //   per-entry line caps (`detail_show_tools`).
             KeyCode::Char('.') => {
-                self.detail_show_tools = !self.detail_show_tools;
-                self.status_msg = Some(
-                    if self.detail_show_tools {
-                        "tool calls/results shown"
-                    } else {
-                        "tool calls/results hidden"
+                let on_questions = self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| d.focus == DetailFocus::Questions);
+                if on_questions {
+                    if let Some(d) = self.detail.as_mut() {
+                        let idx = d.selected;
+                        if d.expanded_prompt == Some(idx) {
+                            // Collapse the currently expanded turn.
+                            d.expanded_prompt = None;
+                            d.left_scrollable.set(false);
+                            self.status_msg = Some(format!("Q{} prompt collapsed", idx + 1));
+                        } else if crate::ui::render::preview_turn_is_truncated(&d.turns[idx].user) {
+                            // Expand this turn (implicitly collapsing any other) and reset the
+                            // manual scroll so it starts at the top of the turn.
+                            d.expanded_prompt = Some(idx);
+                            d.left_scroll.set(0);
+                            self.status_msg = Some(format!("Q{} prompt expanded", idx + 1));
+                        }
+                        // Turns short enough to render in full are not expandable: ignore `.`.
                     }
-                    .to_string(),
-                );
+                } else {
+                    self.detail_show_tools = !self.detail_show_tools;
+                    self.status_msg = Some(
+                        if self.detail_show_tools {
+                            "Work & Answer expanded (tools + full length)"
+                        } else {
+                            "Work & Answer collapsed"
+                        }
+                        .to_string(),
+                    );
+                }
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 let on_questions = self
@@ -181,6 +211,9 @@ impl App {
             return;
         };
         match d.focus {
+            // While an expanded turn overflows the panel, ↑/↓ scroll it instead of
+            // moving to the previous/next turn (bounds computed during render).
+            DetailFocus::Questions if d.left_scrollable.get() => d.scroll_prompt(delta),
             DetailFocus::Questions => d.move_selection(delta),
             DetailFocus::Work => d.scroll_work(delta),
         }

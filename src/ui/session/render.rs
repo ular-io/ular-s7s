@@ -11,7 +11,7 @@ use crate::model::format_local_datetime_seconds;
 use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{truncate_w, wrap_w};
-use crate::ui::render::{agent_tag, preview_turn_lines, session_meta_lines, PreviewTurnLine};
+use crate::ui::render::{agent_tag, preview_turn_display, session_meta_lines, PreviewTurnLine};
 use crate::ui::{App, Focus, UiMode};
 use ratatui::{
     layout::{Constraint, Rect},
@@ -239,7 +239,8 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
                 title.push(Span::styled(format!("  {timestamp}"), th.soft_dim()));
             }
             lines.push(Line::from(title));
-            for display_line in preview_turn_lines(turn) {
+            // When expanded, show every user-turn line in full; otherwise keep the omission.
+            for display_line in preview_turn_display(turn, app.preview_expanded) {
                 let (raw_line, style) = match display_line {
                     PreviewTurnLine::Content(line) => (line.to_string(), Style::default()),
                     PreviewTurnLine::Omission(count) => (

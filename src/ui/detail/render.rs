@@ -8,7 +8,7 @@ use crate::theme::Theme;
 use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{pad_w, wrap_w};
-use crate::ui::render::{preview_turn_lines, session_meta_lines, PreviewTurnLine};
+use crate::ui::render::{preview_turn_display, session_meta_lines, PreviewTurnLine};
 use crate::ui::{App, DetailFocus, SessionDetailState, UiMode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -131,7 +131,8 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
         } else {
             th.soft_dim()
         };
-        for display_line in preview_turn_lines(&turn.user) {
+        // The single expanded turn shows the full prompt; others keep the omission.
+        for display_line in preview_turn_display(&turn.user, detail.expanded_prompt == Some(idx)) {
             let (raw_line, style) = match display_line {
                 PreviewTurnLine::Content(line) => (line.to_string(), body_style),
                 PreviewTurnLine::Omission(count) => {
@@ -165,17 +166,37 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
         }
     }
 
-    // Adjusts scroll offset: shifts viewport bounds to keep the selected question block visible inside inner area.
+    // Adjusts scroll offset. When the selected turn is expanded and taller than the
+    // viewport, `left_scroll` is a manual scroll (↑/↓) clamped to the turn's block so the
+    // user can read the whole turn; otherwise the offset auto-follows the selection to keep
+    // the selected question block visible.
     let h = inner.height as usize;
     let max_off = rows.len().saturating_sub(h);
-    let mut off = (detail.left_scroll.get() as usize).min(max_off);
-    if sel_bottom >= off + h {
-        off = sel_bottom + 1 - h;
-    }
-    if sel_top < off {
-        off = sel_top;
-    }
-    let off = off.min(max_off);
+    let sel_height = sel_bottom.saturating_sub(sel_top) + 1;
+    let scrollable = detail.expanded_prompt == Some(detail.selected) && sel_height > h;
+    detail.left_scrollable.set(scrollable);
+    let off = if scrollable {
+        // Bounds keep the block in view: from its top (sel_top) down to where its bottom
+        // sits on the last visible row.
+        let min_off = sel_top.min(max_off);
+        let max_block_off = (sel_bottom + 1).saturating_sub(h).min(max_off).max(min_off);
+        detail
+            .left_scroll_min
+            .set(min_off.min(u16::MAX as usize) as u16);
+        detail
+            .left_scroll_max
+            .set(max_block_off.min(u16::MAX as usize) as u16);
+        (detail.left_scroll.get() as usize).clamp(min_off, max_block_off)
+    } else {
+        let mut off = (detail.left_scroll.get() as usize).min(max_off);
+        if sel_bottom >= off + h {
+            off = sel_bottom + 1 - h;
+        }
+        if sel_top < off {
+            off = sel_top;
+        }
+        off.min(max_off)
+    };
     detail.left_scroll.set(off.min(u16::MAX as usize) as u16);
 
     let total_rows = rows.len();
@@ -197,6 +218,19 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
         return;
     }
     let wrap_width = inner.width as usize;
+
+    // When expanded (`.`), reveal hidden tool entries and drop the per-entry line caps so the
+    // full work log and answer render; collapsed keeps the caps to bound large tool logs.
+    let work_entry_max = if app.detail_show_tools {
+        usize::MAX
+    } else {
+        WORK_ENTRY_MAX_LINES
+    };
+    let final_answer_max = if app.detail_show_tools {
+        usize::MAX
+    } else {
+        FINAL_ANSWER_MAX_LINES
+    };
 
     // Collapses contiguous runs of hidden Tool Calls / Results into a single line placeholder.
     let flush_hidden = |lines: &mut Vec<Line>, hidden_run: &mut usize| {
@@ -252,7 +286,7 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
                 &entry.text,
                 wrap_width,
                 body_style,
-                WORK_ENTRY_MAX_LINES,
+                work_entry_max,
                 th,
             );
             lines.push(Line::from(""));
@@ -269,7 +303,7 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
                     answer,
                     wrap_width,
                     Style::default(),
-                    FINAL_ANSWER_MAX_LINES,
+                    final_answer_max,
                     th,
                 );
             }

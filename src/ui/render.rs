@@ -62,7 +62,7 @@ const SHORTCUTS_SESSION: [&[(&str, &str)]; 2] = [
 
 /// Column 2 specific to the session details view. Arrow key navigations are left only in help.
 const SHORTCUTS_DETAIL: [&[(&str, &str)]; 2] = [
-    &[(".", "Toggle Tool Logs")],
+    &[(".", "Expand Prompt / Tools")],
     &[
         ("enter", "Resume Session"),
         ("ctrl+n", "New Session"),
@@ -739,10 +739,30 @@ pub(crate) enum PreviewTurnLine<'a> {
     Omission(usize),
 }
 
+/// Max user-turn lines shown in full before `preview_turn_lines` collapses the middle.
+pub(crate) const PREVIEW_TURN_MAX_LINES: usize = 8;
+
+/// Whether a user turn is long enough that `preview_turn_lines` omits part of it — i.e.
+/// whether expanding it via `.` would actually reveal more content.
+pub(crate) fn preview_turn_is_truncated(turn: &str) -> bool {
+    turn.lines().count() > PREVIEW_TURN_MAX_LINES
+}
+
+/// User-turn preview lines for both the Session preview and Detail Prompt panels:
+/// the full turn (no omission) when `expanded`, otherwise the abbreviated
+/// `preview_turn_lines` output. Shared so the two panels stay in sync.
+pub(crate) fn preview_turn_display(turn: &str, expanded: bool) -> Vec<PreviewTurnLine<'_>> {
+    if expanded {
+        turn.lines().map(PreviewTurnLine::Content).collect()
+    } else {
+        preview_turn_lines(turn)
+    }
+}
+
 /// If user query exceeds 8 lines, preserves first 4 and last 4 lines, rendering an omission placeholder for the rest.
 pub(crate) fn preview_turn_lines(turn: &str) -> Vec<PreviewTurnLine<'_>> {
     let lines: Vec<&str> = turn.lines().collect();
-    if lines.len() <= 8 {
+    if lines.len() <= PREVIEW_TURN_MAX_LINES {
         return lines.into_iter().map(PreviewTurnLine::Content).collect();
     }
 
@@ -1034,6 +1054,8 @@ mod tests {
         assert!(!text.contains("cargo build"));
         assert!(text.contains("2 tool call/result hidden"));
 
+        // `.` toggles tools only when the Work & Answer column is focused.
+        app.on_key_detail(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         // After toggle char `.`: reveals intermediate tool logs.
         app.on_key_detail(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
         terminal.draw(|f| super::draw(f, &app)).expect("draw");
@@ -1041,6 +1063,50 @@ mod tests {
         assert!(text.contains("● Tool Call"));
         assert!(text.contains("cargo build"));
         assert!(!text.contains("hidden"));
+    }
+
+    #[test]
+    fn detail_prompt_arrows_scroll_expanded_turn_instead_of_moving_selection() {
+        let mut app = detail_app();
+        // Make the first turn far taller than any prompt-pane viewport.
+        if let Some(d) = app.detail.as_mut() {
+            d.turns[0].user = (1..=60)
+                .map(|n| format!("line {n}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        // Expand it (the Prompt column is focused on entry).
+        app.on_key_detail(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, Some(0));
+
+        let backend = TestBackend::new(110, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+
+        let base = {
+            let d = app.detail.as_ref().unwrap();
+            assert!(
+                d.left_scrollable.get(),
+                "an expanded turn taller than the pane must enable prompt scrolling"
+            );
+            d.left_scroll.get()
+        };
+
+        // ↓ scrolls the pane; the turn selection must not advance to the next turn.
+        app.on_key_detail(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let d = app.detail.as_ref().unwrap();
+        assert_eq!(d.selected, 0, "selection must stay put while scrolling");
+        assert!(
+            d.left_scroll.get() > base,
+            "↓ should scroll the expanded prompt down"
+        );
+
+        // Collapsing restores selection navigation: ↓ then moves to the next turn.
+        app.on_key_detail(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        assert!(!app.detail.as_ref().unwrap().left_scrollable.get());
+        app.on_key_detail(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().selected, 1);
     }
 
     #[test]

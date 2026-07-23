@@ -129,6 +129,10 @@ pub struct App {
     /// Maximum scroll offset for the preview panel (lines). Calculated and saved during render
     /// based on actual lines and viewport height (0 if all contents fit, making it unscrollable).
     pub preview_max_scroll: std::cell::Cell<u16>,
+    /// Whether the Session preview ("Prompt") panel expands every user turn to full length,
+    /// bypassing the `preview_turn_lines` omission. Toggled via `.` while the preview is focused;
+    /// reset to false whenever the selected session changes.
+    pub preview_expanded: bool,
 
     pub agent_modal: Option<ModalState>,
     pub folder_modal: Option<ModalState>,
@@ -249,6 +253,7 @@ impl App {
             selected: 0,
             preview_scroll: 0,
             preview_max_scroll: std::cell::Cell::new(0),
+            preview_expanded: false,
             agent_modal: None,
             folder_modal: None,
             rename_modal: None,
@@ -305,6 +310,7 @@ impl App {
             self.selected = self.filtered.len().saturating_sub(1);
         }
         self.preview_scroll = 0;
+        self.preview_expanded = false;
         // Reset table viewport scroll to top when filters change (in case the result set shrinks significantly).
         *self.table_state.borrow_mut().offset_mut() = 0;
     }

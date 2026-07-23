@@ -121,6 +121,36 @@ fn arrow_keys_move_column_focus_in_session_screen() {
 }
 
 #[test]
+fn dot_toggles_preview_expansion_only_when_preview_focused() {
+    let mut app = app_with_session();
+    assert!(!app.preview_expanded);
+
+    // Ignored while the table is focused.
+    app.on_key_table(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert!(!app.preview_expanded);
+
+    // Toggles once the preview column is focused.
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_table(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert!(app.preview_expanded);
+    app.on_key_table(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert!(!app.preview_expanded);
+}
+
+#[test]
+fn changing_session_selection_resets_preview_expansion() {
+    let mut app = app_with_session();
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_table(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert!(app.preview_expanded);
+
+    // Table navigation collapses the preview again (selection may change).
+    app.focus = Focus::Table;
+    app.on_key_table(key(KeyCode::Down, KeyModifiers::NONE));
+    assert!(!app.preview_expanded);
+}
+
+#[test]
 fn right_key_on_preview_opens_detail_screen() {
     let mut app = app_with_session();
 

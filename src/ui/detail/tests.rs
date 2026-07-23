@@ -39,15 +39,78 @@ fn detail_question_selection_and_work_scroll() {
     assert_eq!(app.focus, Focus::Table);
 }
 
+/// A user turn long enough (> 8 lines) that `preview_turn_lines` omits its middle,
+/// making it expandable via `.`.
+fn long_turn() -> String {
+    (1..=20)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
-fn detail_dot_toggles_tool_visibility() {
+fn detail_dot_expands_selected_prompt_when_questions_focused() {
+    let mut app = app_with_session();
+    app.sessions[0].user_turns = vec![long_turn()];
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    // Entering detail focuses the Prompt (Questions) column.
+    assert_eq!(app.detail.as_ref().unwrap().focus, DetailFocus::Questions);
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, None);
+    assert!(!app.detail_show_tools);
+
+    // In the Prompt column, `.` toggles expansion of the selected turn only,
+    // leaving the Work-panel tool visibility untouched.
+    app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, Some(0));
+    assert!(!app.detail_show_tools);
+
+    app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, None);
+}
+
+#[test]
+fn detail_dot_ignored_for_short_prompt() {
+    // The fixture turn "hello" is a single line — nothing to expand, so `.` is a no-op.
+    let mut app = app_with_session();
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, None);
+}
+
+#[test]
+fn detail_expanding_another_prompt_collapses_the_previous() {
+    let mut app = app_with_session();
+    app.sessions[0].user_turns = vec![long_turn(), long_turn()];
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
+
+    app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, Some(0));
+
+    // Selecting and expanding another turn collapses the first (only one at a time).
+    app.on_key_detail(key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().selected, 1);
+    app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, Some(1));
+}
+
+#[test]
+fn detail_dot_toggles_tool_visibility_when_work_focused() {
     let mut app = app_with_session();
     app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
     app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
     assert!(!app.detail_show_tools); // Hidden by default.
 
+    // Move focus to the Work & Answer column, where `.` reveals tools / full length.
+    app.on_key_detail(key(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.detail.as_ref().unwrap().focus, DetailFocus::Work);
+
     app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
     assert!(app.detail_show_tools);
+    // The prompt-expansion state stays untouched from the Work column.
+    assert_eq!(app.detail.as_ref().unwrap().expanded_prompt, None);
 
     app.on_key_detail(key(KeyCode::Char('.'), KeyModifiers::NONE));
     assert!(!app.detail_show_tools);
