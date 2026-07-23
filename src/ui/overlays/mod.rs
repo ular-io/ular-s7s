@@ -27,4 +27,6 @@ pub(crate) mod confirm;
 pub(crate) mod filters;
 pub(crate) mod help;
 pub(crate) mod message;
+#[cfg(test)]
+mod tests;
 pub(crate) mod theme;

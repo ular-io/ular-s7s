@@ -101,7 +101,10 @@ diffing of any future list-parser change.
   `Screen`, `App` fields, session rescan/refresh, filter clearing, screen
   switching, resume/terminal requests, and the session-deletion filesystem work
   invoked by the delete dialog). The per-feature key handlers and the overlay
-  handlers now live in their feature/overlay modules.
+  handlers now live in their feature/overlay modules. Unit tests live with the
+  feature they exercise — each feature/overlay module has a `tests` submodule,
+  cross-feature cases sit in `ui/tests.rs`, and the shared `App`/key fixtures are
+  in `ui/test_support.rs` (`#[cfg(test)]`).
 - `ui/effect.rs` — the in-place effect boundary (R10a). Key handlers describe
   requested external work by enqueuing an `AppEffect` into `App.pending_effect`
   (rescan `RefreshAll`, `RenameSession`, `DeleteSession`, `ProfileSaved`) instead

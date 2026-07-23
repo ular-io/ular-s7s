@@ -29,6 +29,8 @@ pub(crate) mod input;
 pub(crate) mod registry;
 pub(crate) mod render;
 pub(crate) mod state;
+#[cfg(test)]
+mod tests;
 
 pub use state::{load_history, load_terminal_history, QuickMode, QuickState};
 

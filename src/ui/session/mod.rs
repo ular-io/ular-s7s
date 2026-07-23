@@ -20,3 +20,5 @@
 pub(crate) mod input;
 pub(crate) mod render;
 pub(crate) mod state;
+#[cfg(test)]
+mod tests;
