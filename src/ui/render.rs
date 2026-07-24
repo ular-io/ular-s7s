@@ -49,6 +49,7 @@ const SHORTCUTS_SESSION: [&[(&str, &str)]; 2] = [
         ("/", "Search"),
         ("a", "Agents"),
         ("f", "Folder"),
+        ("c", "Copy to Clipboard"),
         ("0", "Clear"),
     ],
     // Session operations
@@ -62,7 +63,7 @@ const SHORTCUTS_SESSION: [&[(&str, &str)]; 2] = [
 
 /// Column 2 specific to the session details view. Arrow key navigations are left only in help.
 const SHORTCUTS_DETAIL: [&[(&str, &str)]; 2] = [
-    &[(".", "Expand Prompt / Tools")],
+    &[(".", "Expand Prompt / Tools"), ("c", "Copy to Clipboard")],
     &[
         ("enter", "Resume Session"),
         ("ctrl+n", "New Session"),
