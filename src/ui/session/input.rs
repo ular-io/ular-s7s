@@ -65,6 +65,9 @@ impl App {
                     .to_string(),
                 );
             }
+            // Copy: Table focus → selected session's basic info; Preview focus →
+            // all user turns (full content, ignoring the preview omission).
+            KeyCode::Char('c') => self.copy_selection(),
             KeyCode::Char('a') => self.open_agent_modal(),
             KeyCode::Char('f') => self.open_folder_modal(),
             KeyCode::Char('d') | KeyCode::Delete

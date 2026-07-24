@@ -94,6 +94,7 @@ s7s --version               # Print version
 | `1` ~ `5` | Active profile exclusive filter (header number order) |
 | `0` | Reset all filters |
 | `f` | Folder modal (typing=filter, `space` toggle, `enter` apply) |
+| `c` | Copy to clipboard by focus (Table=session info / Preview=all user turns, full content). On the Detail view: Prompt=selected user turn / Work=work log + final answer |
 | `ctrl+u` | Update Session (reflect session list additions/changes + recheck usage) |
 | `ctrl+n` | New Session (Profile/Model/Folder dialog; typing a bare name instead of a path offers to create a new project folder under `~/.config/s7s/projects`) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |

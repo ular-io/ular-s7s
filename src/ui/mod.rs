@@ -2,6 +2,7 @@
 
 pub mod background;
 pub mod components;
+pub mod copy;
 pub mod detail;
 pub mod effect;
 pub mod new_session;

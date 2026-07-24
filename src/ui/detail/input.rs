@@ -70,6 +70,9 @@ impl App {
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char(':') => self.open_quick_command(),
             KeyCode::Char('!') => self.open_quick_terminal(),
+            // Copy: Prompt (Questions) focus → the selected user turn; Work focus →
+            // the turn's whole work log + final answer (full, including hidden tools).
+            KeyCode::Char('c') => self.copy_selection(),
             // Session operations identical to the main search view: resume, rename, and delete.
             KeyCode::Enter => {
                 if let Some(idx) = self.detail.as_ref().map(|d| d.session_idx) {

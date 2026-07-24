@@ -164,6 +164,13 @@ diffing of any future list-parser change.
 - `ui/components/` — feature-agnostic UI primitives reused across dialogs:
   `input` (Unicode-safe `TextInput`), `modal` (frame/buttons/backdrop),
   `scrollbar`, and `text` (width-aware truncation/wrapping).
+- `ui/copy.rs` — the `c`-key clipboard copy for the Session and Detail screens.
+  `App::copy_selection` routes by screen + focus (Session Table → session info,
+  Session Preview → all user turns, Detail Prompt → the selected turn, Detail
+  Work → work log + final answer); the pure text builders emit the *full* content
+  regardless of on-screen omission (collapsed previews, hidden tool entries). The
+  `arboard` system-clipboard write is skipped under `cfg!(test)`, so unit tests
+  cover only the builders/routing and never touch the real clipboard.
 - `ui/new_session/` — extracted feature module (R6): `state` (dialog state,
   focus, model/source options, pure transitions), `input` (the `App` key handling
   and launch logic), and `render` (the dialog and dropdown overlay). The public
