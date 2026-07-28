@@ -6,7 +6,7 @@ Design for querying, caching, and injecting the "selectable models list" to be d
 
 | Agent | Method | Value Format | Default Model Source |
 | :-- | :-- | :-- | :-- |
-| claude | Scraping `/model` screen via PTY (`probe::pty::drive_screen`, shared with usage) | alias lowercase (`fable`) | `✔` mark in the screen list |
+| claude | Scraping `/model` screen via PTY (`probe::pty::drive_screen`, shared with usage) | alias normalized from the row name (`fable`, `opus[1m]`) | `✔` mark in the screen list |
 | codex | `codex debug models` JSON (only `visibility=="list"`) | slug (`gpt-5.6-sol`) | Top-level `model` key in `<CODEX_HOME>/config.toml` |
 | agy | Line-by-line output of `agy models` | Display name exactly as is (`Gemini 3.1 Pro (Low)`) | Top-level `model` key in `settings.json` |
 
@@ -14,6 +14,24 @@ Design for querying, caching, and injecting the "selectable models list" to be d
 - The `Default (recommended)` row in the claude `/model` screen duplicates s7s's own Default (no injection) item in the dropdown, so it is excluded from the list. If `✔` is on this row, the default model is set to None (CLI Default).
 - codex is also queried per profile (injecting `CODEX_HOME`), but it's a fast subprocess. The catalog is confirmed to be output even in an empty CODEX_HOME (bundled catalog).
 - agy cannot inject config env (see "agy env injection verification" below), so it is queried **globally once for the default path profile**, and additional agy profiles share that result (`ModelCatalog::for_profile` fallback).
+
+### claude row name → `--model` alias (`models.rs::claude_alias`)
+
+The `/model` row name is **not** always the alias. Through 2.1.207 it was (`Opus` → `opus`), but
+2.1.220 renames the long-context row to `Opus (1M context)`, whose lowercase form is not accepted
+by any CLI — the alias is `opus[1m]` (verified in the 2.1.220 binary and in the `model` key
+`/model` writes to `settings.json`).
+
+- Strip a trailing `(1M context)` qualifier and append `[1m]`; lowercase the rest.
+- A name that does not reduce to a bare alias token (`[a-z0-9.-]+`, e.g. `Opus 4.8`,
+  `Opus (Preview)`) yields **no value and the row is dropped** — including a checked (✔) row, in
+  which case `default_model` falls back to None (CLI Default). Since no CLI validates `--model`,
+  an unrecognized future notation must cost a dropdown entry rather than silently launch on the
+  wrong model.
+- Rows collapsing to an already-seen alias are folded into the first (the screen adds a stale
+  `Custom model` row when the configured model spells the same alias differently), keeping the ✔.
+- **Re-verify on every claude upgrade**: a renamed row silently breaks this mapping, and the
+  version gate below will not re-query on its own once the bad value is cached.
 
 ## CLI Does Not Validate Model Names (Observed)
 
@@ -24,6 +42,7 @@ Design for querying, caching, and injecting the "selectable models list" to be d
 ## Cache and Update Timing
 
 - Cache: `~/.config/s7s/models.json` (profile id key, `ModelCatalog`). The CLI version at the time of query (first line of `--version`) is saved along with the items.
+- **Schema version (`MODELS_FILE_VERSION`)**: a file whose `version` differs is discarded wholesale on load. Bump it whenever cached values can be *wrong* rather than merely stale — the version gate below keys off the CLI version, so a parser fix alone would never evict a bad entry (nor the `default_model` / `last_selected` derived from it). v2 = claude values are normalized aliases.
 - **App Startup**: Initiates background querying but with a **version gate** — if the cached CLI version and current version match, re-querying is skipped (`ModelsResult::Skipped`) to eliminate the cost of booting the claude PTY. The model list only changes upon CLI upgrade/plan change.
 - **ctrl+u**: Force re-query (ignores version gate) — covers plan changes.
 - **Profile Save**: Only saved profiles are incrementally force-queried (path might have changed).
@@ -84,7 +103,7 @@ mkdir -p /tmp/dump && ULAR_USAGE_DUMP=/tmp/dump ./target/release/s7s --model-pro
 - For claude, open `/model` in actual `claude` and compare with the list and ✔ position.
 - For codex, compare with `codex debug models` output (visibility=list), and for agy, with `agy models` output.
 - Since CLIs do not filter out invalid model names, the final verification is to actually launch a session once with the value from the probe result and check the active model notation in the banner/status bar.
-- The claude screen fixture in unit tests (`src/models.rs::tests`) uses actual captures (2026-07-14, 2.1.207). If the screen format changes, update the fixture as well.
+- The claude screen fixture in unit tests (`src/models.rs::tests`) uses actual captures (2026-07-28, 2.1.220). If the screen format changes, update the fixture as well.
 
 ## New Session with Context and Model Selection
 

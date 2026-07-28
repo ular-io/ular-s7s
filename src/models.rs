@@ -99,6 +99,16 @@ struct ModelsFile {
     profiles: HashMap<String, ProfileModels>,
 }
 
+/// models.json schema/content version. Bumped whenever previously cached values can be
+/// wrong rather than merely stale — a mismatch discards the whole file so the version gate
+/// cannot keep serving bad entries (`default_model` / `last_selected` included).
+///
+/// - 1: initial.
+/// - 2: claude `--model` values are normalized aliases (see `claude_alias`); v1 caches may
+///   hold the raw display name of the 1M-context row (`opus (1m context)`), which no CLI
+///   accepts.
+const MODELS_FILE_VERSION: u32 = 2;
+
 impl ModelCatalog {
     /// Loads models.json. Returns an empty catalog if missing or corrupted.
     pub fn load() -> Self {
@@ -109,6 +119,7 @@ impl ModelCatalog {
         let entries = std::fs::read_to_string(path)
             .ok()
             .and_then(|data| serde_json::from_str::<ModelsFile>(&data).ok())
+            .filter(|f| f.version == MODELS_FILE_VERSION)
             .map(|f| f.profiles)
             .unwrap_or_default();
         ModelCatalog { entries }
@@ -129,7 +140,7 @@ impl ModelCatalog {
             std::fs::create_dir_all(dir)?;
         }
         let file = ModelsFile {
-            version: 1,
+            version: MODELS_FILE_VERSION,
             profiles: self.entries.clone(),
         };
         let data = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
@@ -430,7 +441,12 @@ fn fetch_claude(envs: &[(&str, &Path)]) -> Result<(Vec<ModelEntry>, Option<Strin
 /// - `✔` following the name denotes the current default model.
 /// - The `Default (recommended)` line is excluded from the list as it overlaps with s7s's own Default entry.
 ///   If ✔ is on this line, default_model is None (CLI Default).
-///   Value is the lowercase of the name (= `--model` alias, e.g. "Fable" -> "fable").
+/// - Value is the `--model` alias derived from the name by `claude_alias`; rows whose name does
+///   not reduce to an alias are dropped (including the ✔ row — default_model then falls back to
+///   None = CLI Default).
+/// - Rows collapsing to an already-seen alias are folded into the first one (the screen lists a
+///   stale `Custom model` row alongside the canonical row when the configured model spells the
+///   same alias differently), keeping the ✔ if it sits on the duplicate.
 fn parse_claude_model_screen(text: &str) -> Option<(Vec<ModelEntry>, Option<String>)> {
     let mut models = Vec::new();
     let mut default_model = None;
@@ -461,9 +477,14 @@ fn parse_claude_model_screen(text: &str) -> Option<(Vec<ModelEntry>, Option<Stri
         if name.to_ascii_lowercase().starts_with("default") {
             continue; // CLI's own Default line - keep default_model as None even if checked.
         }
-        let value = name.to_ascii_lowercase();
+        let Some(value) = claude_alias(&name) else {
+            continue;
+        };
         if is_default {
             default_model = Some(value.clone());
+        }
+        if models.iter().any(|m: &ModelEntry| m.value == value) {
+            continue;
         }
         models.push(ModelEntry {
             value,
@@ -472,6 +493,38 @@ fn parse_claude_model_screen(text: &str) -> Option<(Vec<ModelEntry>, Option<Stri
         });
     }
     (!models.is_empty()).then_some((models, default_model))
+}
+
+/// `/model` screen row name -> `--model` alias.
+///
+/// Through claude 2.1.207 the row name *was* the alias (`Opus` -> `opus`), so lowercasing was
+/// enough. 2.1.220 renders the long-context variant as `Opus (1M context)`, whose lowercase form
+/// is not a valid alias — the CLI spells it `opus[1m]` (verified against the 2.1.220 binary and
+/// the `model` key `/model` writes to settings.json).
+///
+/// Returns None for anything that does not reduce to a bare alias token (spaces, parentheses,
+/// other qualifiers). Dropping the row is deliberate: the CLIs do not validate `--model`, so an
+/// unrecognized future notation must cost a menu entry rather than silently launch a session on
+/// the wrong model (see docs/models.md).
+fn claude_alias(name: &str) -> Option<String> {
+    const LONG_CONTEXT: &str = "(1m context)";
+    let lower = name.to_ascii_lowercase();
+    let (base, long_context) = match lower.strip_suffix(LONG_CONTEXT) {
+        Some(head) => (head.trim_end(), true),
+        None => (lower.as_str(), false),
+    };
+    let is_alias_token = !base.is_empty()
+        && base
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-');
+    if !is_alias_token {
+        return None;
+    }
+    Some(if long_context {
+        format!("{base}[1m]")
+    } else {
+        base.to_string()
+    })
 }
 
 /// codex: Filters visibility=="list" entries from `codex debug models` JSON catalog.
@@ -581,20 +634,21 @@ fn agy_default_model(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Captured vt100 output of claude 2.1.207 `/model` screen from 2026-07-14.
+    /// Captured vt100 output of claude 2.1.220 `/model` screen from 2026-07-28.
+    /// Since 2.1.220 the long-context row is named `Opus (1M context)` instead of `Opus`.
     const CLAUDE_MODEL_SCREEN: &str = "\
 uu
- ▐▛███▜▌   Claude Code v2.1.207
+ ▐▛███▜▌   Claude Code v2.1.220
 ▝▜█████▛▘  Fable 5 · Claude Team
   ▘▘ ▝▝    ~/projects/my-app
 
    Select model
    Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.
 
-     1. Default (recommended)  Opus 4.8 with 1M context · Best for everyday, complex tasks
-     2. Opus                   Opus 4.8 with 1M context · Best for everyday, complex tasks
+     1. Default (recommended)  Sonnet 5 · Efficient for routine tasks
+     2. Sonnet                 Sonnet 5 · Efficient for routine tasks
    ❯ 3. Fable ✔                Fable 5 · Most capable for your hardest and longest-running tasks
-     4. Sonnet                 Sonnet 5 · Efficient for routine tasks
+     4. Opus (1M context)      Opus 5 with 1M context · Best for everyday, complex tasks
      5. Haiku                  Haiku 4.5 · Fastest for quick answers
 
    ● High effort (default) ←/→ to adjust
@@ -606,12 +660,86 @@ uu
     fn parse_claude_model_screen_extracts_aliases_and_default() {
         let (models, default_model) = parse_claude_model_screen(CLAUDE_MODEL_SCREEN).unwrap();
         let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
-        // Excludes "Default (recommended)" row; others are lowercase aliases.
-        assert_eq!(values, ["opus", "fable", "sonnet", "haiku"]);
+        // Excludes "Default (recommended)" row; the long-context row becomes the `[1m]` alias
+        // rather than its lowercased display name.
+        assert_eq!(values, ["sonnet", "fable", "opus[1m]", "haiku"]);
         assert_eq!(default_model.as_deref(), Some("fable"));
         let fable = models.iter().find(|m| m.value == "fable").unwrap();
         assert_eq!(fable.label, "Fable");
         assert!(fable.note.starts_with("Fable 5"));
+        // The label keeps the screen wording even though the value is normalized.
+        let opus = models.iter().find(|m| m.value == "opus[1m]").unwrap();
+        assert_eq!(opus.label, "Opus (1M context)");
+    }
+
+    #[test]
+    fn claude_alias_normalizes_long_context_and_rejects_non_aliases() {
+        assert_eq!(claude_alias("Opus").as_deref(), Some("opus"));
+        assert_eq!(
+            claude_alias("Opus (1M context)").as_deref(),
+            Some("opus[1m]")
+        );
+        assert_eq!(
+            claude_alias("claude-fable-5").as_deref(),
+            Some("claude-fable-5")
+        );
+        // Unknown qualifiers are not guessable aliases — drop instead of emitting a bad value.
+        assert_eq!(claude_alias("Opus 4.8"), None);
+        assert_eq!(claude_alias("Opus (Preview)"), None);
+        assert_eq!(claude_alias("(1M context)"), None);
+    }
+
+    #[test]
+    fn parse_claude_model_screen_drops_rows_without_a_usable_alias() {
+        // A custom model whose name is not an alias must not become a selectable entry, and
+        // must not become default_model even when ✔ sits on it.
+        let screen = "\
+   Select model
+
+     1. Default (recommended)  Sonnet 5 · Efficient for routine tasks
+     2. Sonnet                 Sonnet 5 · Efficient for routine tasks
+   ❯ 3. opus (turbo mode) ✔    Custom model
+";
+        let (models, default_model) = parse_claude_model_screen(screen).unwrap();
+        let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
+        assert_eq!(values, ["sonnet"]);
+        assert_eq!(default_model, None);
+    }
+
+    #[test]
+    fn parse_claude_model_screen_folds_duplicate_alias_rows() {
+        // Real 2.1.220 state after a stale `--model 'opus (1m context)'` launch: the CLI shows
+        // the bogus value as an extra "Custom model" row that normalizes to the same alias.
+        let screen = "\
+   Select model
+
+     1. Default (recommended)  Sonnet 5 · Efficient for routine tasks
+     2. Opus (1M context)      Opus 5 with 1M context · Best for everyday, complex tasks
+   ❯ 3. opus (1m context) ✔    Custom model
+";
+        let (models, default_model) = parse_claude_model_screen(screen).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].value, "opus[1m]");
+        assert_eq!(models[0].label, "Opus (1M context)");
+        assert_eq!(default_model.as_deref(), Some("opus[1m]"));
+    }
+
+    #[test]
+    fn load_from_discards_cache_written_by_an_older_schema() {
+        let dir = std::env::temp_dir().join(format!("ular-models-ver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        // v1 caches can hold `opus (1m context)` as a claude `--model` value; discard wholesale
+        // so the startup version gate re-queries instead of serving it.
+        std::fs::write(
+            &path,
+            r#"{"version":1,"profiles":{"builtin-claude":{"agent":"Claude","cli_version":"2.1.220","models":[{"value":"opus (1m context)","label":"Opus (1M context)","note":""}],"default_model":"opus (1m context)"}}}"#,
+        )
+        .unwrap();
+        assert!(ModelCatalog::load_from(&path)
+            .cached_version("builtin-claude")
+            .is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
