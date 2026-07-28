@@ -600,59 +600,159 @@ pub(crate) fn session_meta_lines(
     th: &Theme,
     dimmed: bool,
 ) -> Vec<Line<'static>> {
+    let (tag, _) = agent_tag(s.agent, th);
+    meta_grid(
+        MetaGrid {
+            heading: "Session",
+            folder: &s.folder,
+            full_path: &s.cwd.to_string_lossy(),
+            title: &s.title(),
+            extra_rows: &[
+                ("Created at: ", s.created_str()),
+                ("Updated at: ", s.updated_str()),
+            ],
+            id_value: Some(format!("[{}] {}", tag.trim(), s.id)),
+        },
+        inner_w,
+        th,
+        dimmed,
+    )
+}
+
+/// Renders the `● Context Source` block shown above `Q1` for a session launched
+/// via "New Session with Context". `resolved` is the source session found in the
+/// scanned set (supplies Project/Name); when `None` (source deleted or from an
+/// unscanned profile) only the Id line is shown with a `(source unavailable)`
+/// marker. Same tone as the current-session block (§ui-style-guide).
+pub(crate) fn context_source_lines(
+    src: &crate::model::ContextSource,
+    resolved: Option<&crate::model::Session>,
+    inner_w: usize,
+    th: &Theme,
+    dimmed: bool,
+) -> Vec<Line<'static>> {
+    let (tag, _) = agent_tag(src.agent, th);
+    match resolved {
+        Some(s) => meta_grid(
+            MetaGrid {
+                heading: "Context Source",
+                folder: &s.folder,
+                full_path: &s.cwd.to_string_lossy(),
+                title: &s.title(),
+                extra_rows: &[],
+                id_value: Some(format!("[{}] {} · {}", tag.trim(), src.id, src.profile)),
+            },
+            inner_w,
+            th,
+            dimmed,
+        ),
+        None => {
+            // Unresolved source (deleted or from an unscanned profile): keep only
+            // the heading and the Id row (the empty Project/Name rows are dropped).
+            let full = meta_grid(
+                MetaGrid {
+                    heading: "Context Source",
+                    folder: "",
+                    full_path: "",
+                    title: "",
+                    extra_rows: &[],
+                    id_value: Some(format!(
+                        "[{}] {} · {}  (source unavailable)",
+                        tag.trim(),
+                        src.id,
+                        src.profile
+                    )),
+                },
+                inner_w,
+                th,
+                dimmed,
+            );
+            full.first()
+                .into_iter()
+                .chain(full.last())
+                .cloned()
+                .collect()
+        }
+    }
+}
+
+/// Content of a `● <Heading>` + `- Field: value` metadata grid (see [`meta_grid`]).
+struct MetaGrid<'a> {
+    heading: &'a str,
+    folder: &'a str,
+    full_path: &'a str,
+    title: &'a str,
+    /// Soft-dim `- label + value` rows rendered between Name and Id.
+    extra_rows: &'a [(&'a str, String)],
+    /// Id row value; omitted when `None`.
+    id_value: Option<String>,
+}
+
+/// Shared `● <Heading>` + `- Field: value` metadata grid used by both the current
+/// session block and the Context Source block.
+fn meta_grid(g: MetaGrid, inner_w: usize, th: &Theme, dimmed: bool) -> Vec<Line<'static>> {
+    let MetaGrid {
+        heading,
+        folder,
+        full_path,
+        title,
+        extra_rows,
+        id_value,
+    } = g;
     let accent_style = if dimmed {
         th.soft_dim().add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
     };
     let mut lines: Vec<Line> = Vec::new();
-    let project_prefix = "● Project: ";
-    let full_path = s.cwd.to_string_lossy().into_owned();
+    lines.push(Line::from(Span::styled(
+        format!("● {heading}"),
+        accent_style,
+    )));
+
+    let project_prefix = "- Project: ";
     // Allocates residual width to brackets and full paths: total - prefix - folder - " (" - ")".
     let path_avail = inner_w
         .saturating_sub(project_prefix.width())
-        .saturating_sub(s.folder.width())
+        .saturating_sub(folder.width())
         .saturating_sub(3);
     lines.push(Line::from(vec![
         Span::styled(project_prefix, th.soft_dim()),
-        Span::styled(s.folder.clone(), accent_style),
+        Span::styled(folder.to_string(), accent_style),
         Span::styled(
             format!(
                 " ({})",
-                truncate_w_with_ellipsis(&full_path, path_avail, "...")
+                truncate_w_with_ellipsis(full_path, path_avail, "...")
             ),
             th.soft_dim(),
         ),
     ]));
-    let name_prefix = "● Name: ";
+
+    let name_prefix = "- Name: ";
     let name_w = inner_w.saturating_sub(name_prefix.width());
     lines.push(Line::from(vec![
         Span::styled(name_prefix, th.soft_dim()),
-        Span::styled(
-            truncate_w_with_ellipsis(&s.title(), name_w, "..."),
-            accent_style,
-        ),
+        Span::styled(truncate_w_with_ellipsis(title, name_w, "..."), accent_style),
     ]));
-    let created_prefix = "● Created at: ";
-    lines.push(Line::from(vec![
-        Span::styled(created_prefix, th.soft_dim()),
-        Span::styled(s.created_str(), th.soft_dim()),
-    ]));
-    let updated_prefix = "● Updated at: ";
-    lines.push(Line::from(vec![
-        Span::styled(updated_prefix, th.soft_dim()),
-        Span::styled(s.updated_str(), th.soft_dim()),
-    ]));
-    let (tag, _) = agent_tag(s.agent, th);
-    let id_prefix = "● Id: ";
-    let id_w = inner_w.saturating_sub(id_prefix.width());
-    lines.push(Line::from(vec![
-        Span::styled(id_prefix, th.soft_dim()),
-        Span::styled(
-            truncate_w_with_ellipsis(&format!("[{}] {}", tag.trim(), s.id), id_w, "..."),
-            th.soft_dim(),
-        ),
-    ]));
+
+    for (label, value) in extra_rows {
+        lines.push(Line::from(vec![
+            Span::styled(format!("- {label}"), th.soft_dim()),
+            Span::styled(value.clone(), th.soft_dim()),
+        ]));
+    }
+
+    if let Some(id_value) = id_value {
+        let id_prefix = "- Id: ";
+        let id_w = inner_w.saturating_sub(id_prefix.width());
+        lines.push(Line::from(vec![
+            Span::styled(id_prefix, th.soft_dim()),
+            Span::styled(
+                truncate_w_with_ellipsis(&id_value, id_w, "..."),
+                th.soft_dim(),
+            ),
+        ]));
+    }
     lines
 }
 
@@ -882,6 +982,7 @@ mod tests {
                 assistant_blob: String::new(),
                 title_hint: Some("demo".to_string()),
                 title_fixed: false,
+                context_source: None,
             }],
             "1 sessions".to_string(),
         )
@@ -1346,6 +1447,7 @@ mod tests {
                 assistant_blob: String::new(),
                 title_hint: Some("demo".to_string()),
                 title_fixed: false,
+                context_source: None,
             }],
             "1 sessions".to_string(),
         );
@@ -1379,6 +1481,7 @@ mod tests {
                 assistant_blob: String::new(),
                 title_hint: None,
                 title_fixed: false,
+                context_source: None,
             })
             .collect();
         let mut app = crate::ui::App::new(

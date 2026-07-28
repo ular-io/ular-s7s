@@ -8,7 +8,9 @@ use crate::theme::Theme;
 use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{pad_w, wrap_w};
-use crate::ui::render::{preview_turn_display, session_meta_lines, PreviewTurnLine};
+use crate::ui::render::{
+    context_source_lines, preview_turn_display, session_meta_lines, PreviewTurnLine,
+};
 use crate::ui::{App, DetailFocus, SessionDetailState, UiMode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -74,6 +76,14 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
     };
     let mut rows: Vec<Line> = session_meta_lines(s, inner_w, th, !focused);
     rows.push(sep_line());
+    if let Some(src) = &s.context_source {
+        let resolved = app
+            .sessions
+            .iter()
+            .find(|c| c.agent == src.agent && c.id == src.id);
+        rows.extend(context_source_lines(src, resolved, inner_w, th, !focused));
+        rows.push(sep_line());
+    }
     let mut sel_top = rows.len().saturating_sub(1);
     let mut sel_bottom = sel_top;
     for (idx, turn) in detail.turns.iter().enumerate() {

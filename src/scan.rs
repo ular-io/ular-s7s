@@ -359,6 +359,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: Some("첫 질문".to_string()),
             title_fixed: false,
+            context_source: None,
         }];
         let mut meta = HashMap::new();
         meta.insert(
@@ -394,6 +395,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: title_hint.map(str::to_string),
             title_fixed: false,
+            context_source: None,
         }
     }
 
@@ -541,6 +543,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: Some("List GitLab Repository Commands".to_string()),
             title_fixed: false,
+            context_source: None,
         }];
         let mut meta = HashMap::new();
         meta.insert(

@@ -492,6 +492,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
+            context_source: None,
         };
 
         rename_session(&test_profile(Agent::Claude, &root), &session, "새 제목").expect("rename");
@@ -575,6 +576,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
+            context_source: None,
         };
 
         rename_session(&test_profile(Agent::Claude, &root), &session, "새 제목")
@@ -637,6 +639,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
+            context_source: None,
         };
 
         rename_session(&test_profile(Agent::Codex, &root), &session, "새 제목").expect("rename");
@@ -676,6 +679,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
+            context_source: None,
         };
 
         rename_session(

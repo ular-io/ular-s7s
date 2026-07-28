@@ -50,6 +50,7 @@ pub(crate) fn app_with_session() -> App {
             assistant_blob: String::new(),
             title_hint: Some("hello".to_string()),
             title_fixed: false,
+            context_source: None,
         }],
         "1 sessions · reparsed 0/0".to_string(),
     )
@@ -84,6 +85,7 @@ pub(crate) fn app_with_two_deletable_sessions() -> (App, std::path::PathBuf) {
             assistant_blob: String::new(),
             title_hint: Some(name.to_string()),
             title_fixed: false,
+            context_source: None,
         }
     };
     let app = App::new(
@@ -115,6 +117,7 @@ pub(crate) fn app_with_cwd(cwd: &str) -> App {
             assistant_blob: String::new(),
             title_hint: Some("hi".to_string()),
             title_fixed: false,
+            context_source: None,
         }],
         "1 sessions · reparsed 0/0".to_string(),
     )
@@ -166,6 +169,7 @@ pub(crate) fn app_with_profiles() -> App {
         assistant_blob: String::new(),
         title_hint: None,
         title_fixed: false,
+        context_source: None,
     };
     App::new(
         Config::load(),

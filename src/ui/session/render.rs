@@ -11,7 +11,9 @@ use crate::model::format_local_datetime_seconds;
 use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{truncate_w, wrap_w};
-use crate::ui::render::{agent_tag, preview_turn_display, session_meta_lines, PreviewTurnLine};
+use crate::ui::render::{
+    agent_tag, context_source_lines, preview_turn_display, session_meta_lines, PreviewTurnLine,
+};
 use crate::ui::{App, Focus, UiMode};
 use ratatui::{
     layout::{Constraint, Rect},
@@ -226,6 +228,18 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
             "─".repeat(inner_w.max(1)),
             Style::default().fg(th.dim),
         )));
+
+        if let Some(src) = &s.context_source {
+            let resolved = app
+                .sessions
+                .iter()
+                .find(|c| c.agent == src.agent && c.id == src.id);
+            lines.extend(context_source_lines(src, resolved, inner_w, th, false));
+            lines.push(Line::from(Span::styled(
+                "─".repeat(inner_w.max(1)),
+                Style::default().fg(th.dim),
+            )));
+        }
 
         for (idx, turn) in s.user_turns.iter().enumerate() {
             let mut title = vec![Span::styled(

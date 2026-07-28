@@ -123,6 +123,7 @@ pub fn parse_db(
     let mut turns: Vec<String> = Vec::new();
     let mut turn_timestamps: Vec<Option<i64>> = Vec::new();
     let mut cwd: Option<String> = None;
+    let mut context_source: Option<crate::model::ContextSource> = None;
 
     // Open as read-only and immutable to avoid locks or mutations during execution.
     if let Ok(conn) = rusqlite::Connection::open_with_flags(
@@ -156,6 +157,11 @@ pub fn parse_db(
                                     cwd = Some(w);
                                 }
                             }
+                        }
+                        // Only the leading user turn is a genuine launch envelope;
+                        // a later message quoting a bootstrap must not be misread.
+                        if context_source.is_none() && turns.is_empty() {
+                            context_source = crate::parser::parse_context_bootstrap(&msg);
                         }
                         if !is_noise_turn(&msg) {
                             if let Some(cleaned) = clean_turn(&msg) {
@@ -231,6 +237,7 @@ pub fn parse_db(
             .and_then(|m| m.title.clone())
             .or_else(|| m.and_then(|m| m.preview.clone())),
         title_fixed: m.and_then(|m| m.title.as_ref()).is_some(),
+        context_source,
     };
     finalize(&mut s);
     s.assistant_blob = build_assistant_blob(&assistant_per_turn);

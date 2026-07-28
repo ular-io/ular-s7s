@@ -10,9 +10,49 @@ pub mod claude;
 pub mod codex;
 pub mod turn;
 
-use crate::model::Session;
+use crate::model::{Agent, ContextSource, Session};
 use crate::normalize;
 use serde_json::Value;
+
+/// Marker that opens the s7s "New Session with Context" bootstrap envelope.
+pub(crate) const BOOTSTRAP_MARKER: &str = "<s7s-context-bootstrap>";
+
+/// Extracts the source-session reference from a bootstrap envelope turn.
+///
+/// "New Session with Context" injects the source as the launch prompt, e.g.
+/// `... session show '<id>' --agent <agent> --profile '<profile>' --bootstrap`.
+/// The envelope is otherwise filtered as noise ([`is_noise_turn`]); this recovers
+/// the source reference so the derivation can be surfaced without re-showing the
+/// envelope. Returns `None` for any turn that is not a bootstrap envelope or is
+/// missing a field. Tolerant of an outer `<USER_REQUEST>` wrapper (Antigravity).
+pub(crate) fn parse_context_bootstrap(text: &str) -> Option<ContextSource> {
+    if !text.contains(BOOTSTRAP_MARKER) {
+        return None;
+    }
+    let id = single_quoted_after(text, "session show ")?;
+    let agent = match word_after(text, "--agent ")? {
+        "claude" => Agent::Claude,
+        "codex" => Agent::Codex,
+        "antigravity" => Agent::Antigravity,
+        _ => return None,
+    };
+    let profile = single_quoted_after(text, "--profile ")?;
+    Some(ContextSource { id, agent, profile })
+}
+
+/// Contents of the first `'...'` group following `marker` (ASCII marker).
+fn single_quoted_after(text: &str, marker: &str) -> Option<String> {
+    let rest = text[text.find(marker)? + marker.len()..].strip_prefix('\'')?;
+    let end = rest.find('\'')?;
+    Some(rest[..end].to_string())
+}
+
+/// Whitespace-delimited token following `marker` (ASCII marker).
+fn word_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = text[text.find(marker)? + marker.len()..].trim_start();
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    (end > 0).then_some(&rest[..end])
+}
 
 /// Converts a top-level RFC 3339 record timestamp to Unix epoch milliseconds.
 pub(crate) fn record_timestamp_ms(record: &Value) -> Option<i64> {
@@ -122,7 +162,7 @@ pub fn is_noise_turn(text: &str) -> bool {
         // Background task completion notices are appended as user-role entries by Claude Code.
         || t.starts_with("<task-notification>")
         // s7s-injected bootstrap prompt for "New Session with Context" launches.
-        || t.starts_with("<s7s-context-bootstrap>")
+        || t.starts_with(BOOTSTRAP_MARKER)
         // Skip cases where a skill's SKILL.md body gets recorded as user input (not a question).
         || t.starts_with("Base directory for this skill:")
         || matches!(
@@ -153,7 +193,37 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
+            context_source: None,
         }
+    }
+
+    #[test]
+    fn parse_context_bootstrap_extracts_source_ref() {
+        let text = "<s7s-context-bootstrap>\nRun `'/path/s7s' session show '019f92bb-1' \
+            --agent codex --profile 'builtin-codex' --bootstrap`.\n</s7s-context-bootstrap>";
+        let src = parse_context_bootstrap(text).expect("expected source ref");
+        assert_eq!(src.id, "019f92bb-1");
+        assert_eq!(src.agent, Agent::Codex);
+        assert_eq!(src.profile, "builtin-codex");
+    }
+
+    #[test]
+    fn parse_context_bootstrap_tolerates_user_request_wrapper() {
+        // Antigravity records the envelope wrapped in <USER_REQUEST>.
+        let text = "<USER_REQUEST>\n<s7s-context-bootstrap>\nRun `'/p/s7s' session show 'abc-2' \
+            --agent claude --profile 'builtin-claude' --bootstrap`.\n</s7s-context-bootstrap>\n</USER_REQUEST>";
+        let src = parse_context_bootstrap(text).expect("expected source ref");
+        assert_eq!(src.id, "abc-2");
+        assert_eq!(src.agent, Agent::Claude);
+        assert_eq!(src.profile, "builtin-claude");
+    }
+
+    #[test]
+    fn parse_context_bootstrap_ignores_non_bootstrap_and_unknown_agent() {
+        assert!(parse_context_bootstrap("just a normal question").is_none());
+        let bad_agent = "<s7s-context-bootstrap> session show 'x' --agent gemini \
+            --profile 'p'</s7s-context-bootstrap>";
+        assert!(parse_context_bootstrap(bad_agent).is_none());
     }
 
     #[test]

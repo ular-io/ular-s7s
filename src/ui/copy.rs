@@ -17,7 +17,7 @@
 //! never touch the system clipboard).
 
 use crate::handoff::HandoffTurn;
-use crate::model::{format_local_datetime_seconds, Agent, Session};
+use crate::model::{format_local_datetime_seconds, Agent, ContextSource, Session};
 use crate::ui::{App, DetailFocus, Focus, Screen};
 
 impl App {
@@ -48,7 +48,18 @@ impl App {
             Screen::Session => {
                 let s = self.current()?;
                 match self.focus {
-                    Focus::Table => Some(("session info".to_string(), session_info_text(s))),
+                    Focus::Table => {
+                        let mut text = session_info_text(s);
+                        if let Some(src) = &s.context_source {
+                            let resolved = self
+                                .sessions
+                                .iter()
+                                .find(|c| c.agent == src.agent && c.id == src.id);
+                            text.push('\n');
+                            text.push_str(&context_source_text(src, resolved));
+                        }
+                        Some(("session info".to_string(), text))
+                    }
                     Focus::Preview => {
                         if s.user_turns.is_empty() {
                             return None;
@@ -90,7 +101,7 @@ fn agent_label(agent: Agent) -> &'static str {
 /// full (untruncated) project path, title, and id.
 pub(crate) fn session_info_text(s: &Session) -> String {
     format!(
-        "● Project: {} ({})\n● Name: {}\n● Created at: {}\n● Updated at: {}\n● Id: [{}] {}",
+        "● Session\n- Project: {} ({})\n- Name: {}\n- Created at: {}\n- Updated at: {}\n- Id: [{}] {}",
         s.folder,
         s.cwd.to_string_lossy(),
         s.title(),
@@ -99,6 +110,27 @@ pub(crate) fn session_info_text(s: &Session) -> String {
         agent_label(s.agent),
         s.id,
     )
+}
+
+/// Plain-text mirror of the `● Context Source` block. `resolved` supplies the
+/// source's Project/Name; when `None` only the Id line + `(source unavailable)`.
+pub(crate) fn context_source_text(src: &ContextSource, resolved: Option<&Session>) -> String {
+    let tag = agent_label(src.agent);
+    match resolved {
+        Some(s) => format!(
+            "● Context Source\n- Project: {} ({})\n- Name: {}\n- Id: [{}] {} · {}",
+            s.folder,
+            s.cwd.to_string_lossy(),
+            s.title(),
+            tag,
+            src.id,
+            src.profile,
+        ),
+        None => format!(
+            "● Context Source\n- Id: [{}] {} · {}  (source unavailable)",
+            tag, src.id, src.profile,
+        ),
+    }
 }
 
 /// All user turns of a session, each preceded by its `● Q{n}  {timestamp}` header,
@@ -184,17 +216,37 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: Some("Demo title".to_string()),
             title_fixed: true,
+            context_source: None,
         }
     }
 
     #[test]
     fn session_info_has_full_path_and_all_fields() {
         let text = session_info_text(&sample_session());
-        assert!(text.contains("● Project: demo (/home/dev/projects/demo)"));
-        assert!(text.contains("● Name: Demo title"));
-        assert!(text.contains("● Id: [CLD] abc-123"));
-        assert!(text.contains("● Created at:"));
-        assert!(text.contains("● Updated at:"));
+        assert!(text.starts_with("● Session\n"));
+        assert!(text.contains("- Project: demo (/home/dev/projects/demo)"));
+        assert!(text.contains("- Name: Demo title"));
+        assert!(text.contains("- Id: [CLD] abc-123"));
+        assert!(text.contains("- Created at:"));
+        assert!(text.contains("- Updated at:"));
+    }
+
+    #[test]
+    fn context_source_text_resolved_and_fallback() {
+        let src = ContextSource {
+            id: "src-999".to_string(),
+            agent: Agent::Codex,
+            profile: "builtin-codex".to_string(),
+        };
+        let resolved = context_source_text(&src, Some(&sample_session()));
+        assert!(resolved.starts_with("● Context Source\n"));
+        assert!(resolved.contains("- Project: demo (/home/dev/projects/demo)"));
+        assert!(resolved.contains("- Name: Demo title"));
+        assert!(resolved.contains("- Id: [CDX] src-999 · builtin-codex"));
+
+        let missing = context_source_text(&src, None);
+        assert!(missing.contains("- Id: [CDX] src-999 · builtin-codex  (source unavailable)"));
+        assert!(!missing.contains("- Project:"));
     }
 
     #[test]

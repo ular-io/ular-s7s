@@ -85,6 +85,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: None,
             title_fixed: false,
+            context_source: None,
         }
     }
 

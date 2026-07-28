@@ -25,12 +25,35 @@ The top constants in `src/ui/render.rs` and the `agent_tag` helper are the only 
 
 | State | Style | Example |
 | :--- | :--- | :--- |
-| Highlighted Value | `fg(ACCENT) + BOLD` | Prompt header `Name` value, `Project` folder name, table headers |
+| Highlighted Value | `fg(ACCENT) + BOLD` | `● Session` / `● Context Source` headings, `Name` value, `Project` folder name, table headers |
 | Non-highlighted/Supplemental | `soft_dim_style()` = `fg(Gray) + DIM` | Entire Prompt header label, `Created/Updated/Id` values, full path |
 | Low Priority Text | `fg(DIM)` | Separators, status bar text, "No sessions" |
 
 - The information hierarchy is expressed as: **labels are always `soft_dim_style`**, and **only core values are highlighted**. Supplemental metadata (created/updated times, ID, path) should also have their values suppressed using `soft_dim_style`.
 - Use `BOLD` only for "the one thing the user needs to see right now." Overusing it destroys the hierarchy.
+
+### 2.1 Prompt Header Metadata Grid
+
+The Prompt pane header (and the Detail screen header — both share
+`session_meta_lines`) renders as a `● <Heading>` section title followed by
+`- Field: value` rows (built by the shared `meta_grid` helper in `render.rs`):
+
+```
+● Session
+- Project: <folder> (<full path>)
+- Name: <title>
+- Created at: <…>
+- Updated at: <…>
+- Id: [TAG] <id>
+```
+
+- For a session launched via **New Session with Context**, a second block —
+  `● Context Source` — is inserted above `Q1` (same grid, same tone; no
+  Created/Updated rows, and `- Id:` appends ` · <profile>`). An unresolvable
+  source collapses to the heading plus `- Id: … (source unavailable)`. Source of
+  truth for when it appears: [session-context.md](./session-context.md).
+- The `c` clipboard copy mirrors this grid verbatim (`ui/copy.rs`), including the
+  Context Source block; keep the two in sync when the format changes.
 
 ## 3. Border Highlight (BorderType)
 

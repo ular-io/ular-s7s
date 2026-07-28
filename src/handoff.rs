@@ -437,6 +437,7 @@ mod tests {
             assistant_blob: String::new(),
             title_hint: Some("Demo Handoff".to_string()),
             title_fixed: true,
+            context_source: None,
         }
     }
 

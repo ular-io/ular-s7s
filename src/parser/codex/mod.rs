@@ -97,6 +97,7 @@ pub fn parse_file(
     // truncates response activity exactly like the associated user turns.
     let mut turn_index: Vec<TurnIndex> = Vec::new();
     let mut title_hint: Option<String> = None;
+    let mut context_source: Option<crate::model::ContextSource> = None;
 
     for line in content.lines() {
         if line.is_empty() {
@@ -126,6 +127,12 @@ pub fn parse_file(
                 turn_index.truncate(keep);
             }
             CodexRecord::User(u) => {
+                // The genuine launch envelope is always the leading user turn;
+                // only capture before any real turn so a later message that merely
+                // quotes a bootstrap (e.g. a meta-discussion) is not misread.
+                if context_source.is_none() && turns.is_empty() {
+                    context_source = crate::parser::parse_context_bootstrap(&u.text);
+                }
                 // A user line always records a boundary (so a rollback counts real
                 // CLI turns) but opens an indexable turn only when it survives the
                 // shared noise/clean gate.
@@ -219,6 +226,7 @@ pub fn parse_file(
         assistant_blob: String::new(),
         title_hint: meta.and_then(|m| m.title.clone()).or(title_hint),
         title_fixed: meta.and_then(|m| m.title.as_ref()).is_some(),
+        context_source,
     };
     finalize(&mut session);
     let assistant_per_turn: Vec<String> = turn_index

@@ -115,6 +115,8 @@ pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -
     let mut auto_title: Option<String> = None;
     let mut last_response_completed_at_ms: Option<i64> = None;
     let mut has_open_user_turn = false;
+    let mut context_source: Option<crate::model::ContextSource> = None;
+    let mut seen_real_turn = false;
 
     for v in &values {
         let Some(record) = events::decode(v) else {
@@ -139,11 +141,24 @@ pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -
                 }
             }
             RecordKind::User(u) => {
+                // The genuine launch envelope is always the leading user turn;
+                // only capture before any real turn so a later message that merely
+                // quotes a bootstrap (e.g. a meta-discussion) is not misread.
+                if context_source.is_none() && !seen_real_turn {
+                    if let Some(src) = u
+                        .text
+                        .as_deref()
+                        .and_then(crate::parser::parse_context_bootstrap)
+                    {
+                        context_source = Some(src);
+                    }
+                }
                 if !u.is_task_notification {
                     match u.text_kind {
                         UserTextKind::Turn { cleaned } => {
                             events.push(Event::User(cleaned, u.submitted_at_ms));
                             has_open_user_turn = true;
+                            seen_real_turn = true;
                         }
                         // Slash commands, the bootstrap prompt, etc. close the current
                         // turn but do not open one.
@@ -161,6 +176,7 @@ pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -
                         if let Some(cleaned) = clean_turn(&qa) {
                             events.push(Event::User(cleaned, u.submitted_at_ms));
                             has_open_user_turn = true;
+                            seen_real_turn = true;
                         }
                     }
                 }
@@ -240,6 +256,7 @@ pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -
         assistant_blob: String::new(),
         title_hint,
         title_fixed,
+        context_source,
     };
     finalize(&mut session);
     session.assistant_blob = build_assistant_blob(&assistant_per_turn);

@@ -36,6 +36,19 @@ impl Agent {
     }
 }
 
+/// Reference to the source session a "New Session with Context" launch was
+/// derived from. Extracted from the (otherwise hidden) `<s7s-context-bootstrap>`
+/// turn so the derivation can be surfaced without re-showing the envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSource {
+    /// Source session ID (as embedded in the bootstrap `session show '<id>'`).
+    pub id: String,
+    /// Source agent.
+    pub agent: Agent,
+    /// Source profile ID (as embedded in the bootstrap `--profile '<id>'`).
+    pub profile: String,
+}
+
 /// A single conversation session. The final unit parsed and stored in the cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -86,6 +99,11 @@ pub struct Session {
     /// Indicates whether the title has been explicitly fixed.
     #[serde(default)]
     pub title_fixed: bool,
+    /// When this session was launched via "New Session with Context", the
+    /// reference to the source session parsed from the bootstrap envelope.
+    /// `None` for ordinary sessions.
+    #[serde(default)]
+    pub context_source: Option<ContextSource>,
 }
 
 /// Epoch milliseconds -> local time `YYYY-MM-DD HH:MM:SS`.

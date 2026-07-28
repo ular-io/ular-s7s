@@ -170,6 +170,27 @@ The bootstrap prompt is saved as a user turn by agent CLIs. Prevention of contam
 - Sessions containing only a bootstrap without actual questions have 0 user turns and do not appear in the list at all.
 - `ContextEntryKind::SessionReference` is reserved for future recognition of nested `s7s session` calls (prevents recursive embedding) — not generated in the first release.
 
+### Context Source surfacing
+
+While the bootstrap turn stays filtered from turn count / preview / title / search,
+the **source reference it carries** is recovered so the derivation is not lost.
+`parser::parse_context_bootstrap` extracts `(id, agent, profile)` from the
+envelope's `session show '<id>' --agent <agent> --profile '<profile>'` command
+(tolerant of Antigravity's outer `<USER_REQUEST>` wrapper) and each list parser
+stores it in `Session.context_source`.
+
+- **Leading-turn guard.** Capture only fires while no real user turn has been
+  recorded yet — the genuine launch envelope is always the first turn. A later
+  message that merely *quotes* a bootstrap (e.g. a meta-discussion about this
+  feature) is therefore not misread as a derivation. All three parsers apply this
+  guard (`turns.is_empty()` / `!seen_real_turn`).
+- **Rendering.** When `context_source` is set, the Prompt pane and Detail header
+  show a `● Context Source` block above `Q1` (`ui::render::context_source_lines`),
+  resolving the source's Project/Name from the scanned session set by `id`+`agent`;
+  an unresolved source (deleted or from an unscanned profile) shows only the Id
+  line with a `(source unavailable)` marker. See [ui-style-guide.md](./ui-style-guide.md).
+- Adding the field bumped `CACHE_VERSION` (a full one-time reparse).
+
 ## Failure Behavior
 
 | Failure | Behavior |
