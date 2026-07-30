@@ -261,6 +261,35 @@ impl App {
         }
     }
 
+    /// Inserts a bracketed paste into the Quick Command input. Palette and terminal
+    /// mode share one input field, so only the post-edit hook differs.
+    ///
+    /// Terminal mode is a safety boundary. A pasted newline must not become Enter
+    /// (which would run the command), and it must not become a space either:
+    /// splicing shell lines together changes what runs — a trailing `#` comment
+    /// would swallow the following line. Only the first line is kept.
+    pub(crate) fn paste_into_quick(&mut self, text: &str) {
+        let Some(mode) = self.quick.as_ref().map(|s| s.mode) else {
+            return;
+        };
+        let outcome = {
+            let Some(state) = self.quick.as_mut() else {
+                return;
+            };
+            match mode {
+                QuickMode::Palette => state.input.insert_paste(text),
+                QuickMode::Terminal => state.input.insert_paste_first_line(text),
+            }
+        };
+        if outcome.inserted > 0 {
+            match mode {
+                QuickMode::Palette => self.quick_recompute(),
+                QuickMode::Terminal => self.term_after_edit(),
+            }
+        }
+        self.note_paste_outcome(outcome);
+    }
+
     /// Editing detaches any history recall: the input becomes the typed filter text again.
     fn term_after_edit(&mut self) {
         if let Some(state) = self.quick.as_mut() {

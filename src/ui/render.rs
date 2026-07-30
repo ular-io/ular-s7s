@@ -5,7 +5,7 @@ use super::components::modal::{
     backdrop_dimmed, button_styles, dim_backdrop, modal_block, render_modal,
 };
 use super::components::text::{pad_w, truncate_w, truncate_w_with_ellipsis};
-use super::{next_char_boundary, App, Screen, TextInput, UiMode};
+use super::{next_grapheme_boundary, App, Screen, TextInput, UiMode};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -814,8 +814,10 @@ pub(crate) fn input_view(state: &TextInput, width: usize) -> (String, u16) {
     let mut start = 0;
     let max_cursor_x = width.saturating_sub(1);
 
+    // Scroll the viewport by whole grapheme clusters: starting mid-cluster would
+    // both mis-measure the remaining width and render a dangling combining mark.
     while UnicodeWidthStr::width(&state.value[start..cursor]) > max_cursor_x {
-        start = next_char_boundary(&state.value, start);
+        start = next_grapheme_boundary(&state.value, start);
     }
 
     let visible = truncate_w(&state.value[start..], width);

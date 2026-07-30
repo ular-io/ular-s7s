@@ -13,10 +13,10 @@ parsing is `clap` derive. Modes:
 
 | Invocation | Mode | Handler |
 | --- | --- | --- |
-| `s7s` (no command) | Interactive TUI | `ui::App` render/event loop in `main.rs` |
+| `s7s` (no command) | Interactive TUI | `runtime::run_loop` driving `ui::App`, on a RAII `TerminalSession` |
 | `s7s <dir>` | TUI with the New Session dialog open on `<dir>` (OK focused) | `runtime::resolve_startup_dir` → `App::open_new_session_for_dir` |
 | `s7s session show <id>` / `s7s session search <q>` | CLI context projection | `session_cli::run` |
-| `s7s --print` | Dump the session list, no TUI (debug) | `main.rs` |
+| `s7s --print` | Dump the session list, no TUI (debug) | `runtime::run` |
 | `s7s --rebuild-cache` | Force full cache rebuild before the TUI | `scan` |
 | `s7s --usage-probe` | Print usage for all profiles and exit (debug) | `usage` |
 | `s7s --model-probe` | Print model lists for all profiles and exit (debug) | `models` |
@@ -164,8 +164,16 @@ diffing of any future list-parser change.
   full-frame Session, Detail, and representative-modal (backdrop dimming) render
   tests stay here with the `draw` dispatcher (§9.6).
 - `ui/components/` — feature-agnostic UI primitives reused across dialogs:
-  `input` (Unicode-safe `TextInput`), `modal` (frame/buttons/backdrop),
-  `scrollbar`, and `text` (width-aware truncation/wrapping).
+  `input` (grapheme-safe `TextInput` and paste sanitization), `modal`
+  (frame/buttons/backdrop), `scrollbar`, and `text` (width-aware
+  truncation/wrapping, also grapheme-based). Both split and measure text by
+  extended grapheme cluster — see
+  [terminal-input-hardening.md](./terminal-input-hardening.md).
+- `ui/paste.rs` — bracketed-paste routing. `runtime` forwards one
+  `Event::Paste` to `App::on_paste`, which dispatches it to the field owning the
+  caret in the current `UiMode` (exhaustive match: non-input modes ignore it).
+  Each feature module owns its `paste_into_*` handler and its post-edit hook, so
+  a paste is text only — it can never submit a dialog or run a `!` command.
 - `ui/copy.rs` — the `c`-key clipboard copy for the Session and Detail screens.
   `App::copy_selection` routes by screen + focus (Session Table → session info,
   Session Preview → all user turns, Detail Prompt → the selected turn, Detail
@@ -224,8 +232,17 @@ diffing of any future list-parser change.
   state/input/render feature layout as `session`/`new_session`/`profile`/`detail`.
 - `theme.rs` — palettes, custom theme files, selection persistence.
 - Agent handover (`resume.rs`) unmounts the TUI, runs the agent/shell command
-  synchronously in the session's folder, then returns to a rescan. `main.rs`
+  synchronously in the session's folder, then returns to a rescan. `runtime.rs`
   coordinates the handover screens and input draining.
+- Terminal ownership (`runtime.rs`) is RAII. `TerminalSession` owns the ratatui
+  terminal plus a `TerminalModes` flag set (raw, alternate screen, bracketed
+  paste, keyboard enhancement); handovers `suspend()`/`resume()` the same session
+  instead of rebuilding it. Cleanup attempts every still-active step even when one
+  fails, returns the first error, and keeps failed steps flagged for `Drop` to
+  retry. A panic hook restores the terminal *before* the message is printed, and
+  `TerminalOps` abstracts the raw crossterm calls so the ordering and
+  failure-recovery policy is unit-tested with injected failures. Details and
+  limits: [terminal-input-hardening.md](./terminal-input-hardening.md).
 
 > Note: `App` still concentrates the cross-feature state and transitions in
 > `ui/mod.rs`; New Session (R6), Profile (R7), the Detail screen (R8a), the
@@ -299,7 +316,8 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | Rewind / backtrack parsing | `parser/claude/`, `parser/codex/`, `session_context/*` | Real CLI rewind + saved-file diff |
 | TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick/*` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
-| Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
+| Resume / new-session / terminal handover | `resume.rs`, `runtime.rs` (`TerminalSession::suspend`/`resume`) | Manual handover check |
+| Terminal lifecycle / bracketed paste / text editing | `runtime.rs` (`TerminalSession`, `TerminalModes`), `ui/paste.rs`, `ui/components/{input,text}.rs`, feature `paste_into_*` handlers | [terminal-input-hardening.md](./terminal-input-hardening.md) + the paste/exit/handover checks in [testing.md](./testing.md) |
 | CLI flags / subcommands / `s7s <dir>` startup | `runtime.rs` (`Cli`, `resolve_startup_dir`), `session_cli.rs` | `runtime::tests` parse cases + release-binary run — [testing.md](./testing.md) |
 
 See [testing.md](./testing.md) for the authoritative verification matrix.

@@ -10,7 +10,9 @@
 //! `ui::mod`; `App`, being declared in the ancestor `ui` module, keeps those
 //! private methods reachable from this descendant module without widening.
 
-use crate::ui::{next_char_boundary, prev_char_boundary, App, Focus, Screen, UiMode};
+use crate::ui::{
+    insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, App, Focus, Screen, UiMode,
+};
 
 impl App {
     fn move_selection(&mut self, delta: isize) {
@@ -195,7 +197,7 @@ impl App {
             }
             KeyCode::Backspace => {
                 if self.keyword_cursor > 0 {
-                    let prev = prev_char_boundary(&self.filter.keyword, self.keyword_cursor);
+                    let prev = prev_grapheme_boundary(&self.filter.keyword, self.keyword_cursor);
                     self.filter.keyword.drain(prev..self.keyword_cursor);
                     self.keyword_cursor = prev;
                     self.recompute();
@@ -203,16 +205,18 @@ impl App {
             }
             KeyCode::Delete => {
                 if self.keyword_cursor < self.filter.keyword.len() {
-                    let next = next_char_boundary(&self.filter.keyword, self.keyword_cursor);
+                    let next = next_grapheme_boundary(&self.filter.keyword, self.keyword_cursor);
                     self.filter.keyword.drain(self.keyword_cursor..next);
                     self.recompute();
                 }
             }
             KeyCode::Left => {
-                self.keyword_cursor = prev_char_boundary(&self.filter.keyword, self.keyword_cursor);
+                self.keyword_cursor =
+                    prev_grapheme_boundary(&self.filter.keyword, self.keyword_cursor);
             }
             KeyCode::Right => {
-                self.keyword_cursor = next_char_boundary(&self.filter.keyword, self.keyword_cursor);
+                self.keyword_cursor =
+                    next_grapheme_boundary(&self.filter.keyword, self.keyword_cursor);
             }
             KeyCode::Home => self.keyword_cursor = 0,
             KeyCode::End => self.keyword_cursor = self.filter.keyword.len(),
@@ -241,5 +245,19 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Inserts a bracketed paste into the keyword search box at the cursor.
+    /// The keyword string and its cursor live on `App` rather than in a
+    /// `TextInput`, so the shared insertion helper is applied to them directly —
+    /// keeping both input implementations on one sanitization contract.
+    pub(crate) fn paste_into_keyword(&mut self, text: &str) {
+        let mut cursor = self.keyword_cursor.min(self.filter.keyword.len());
+        let outcome = insert_paste_at(&mut self.filter.keyword, &mut cursor, text);
+        self.keyword_cursor = cursor;
+        if outcome.inserted > 0 {
+            self.recompute();
+        }
+        self.note_paste_outcome(outcome);
     }
 }

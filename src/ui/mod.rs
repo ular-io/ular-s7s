@@ -7,12 +7,15 @@ pub mod detail;
 pub mod effect;
 pub mod new_session;
 pub mod overlays;
+pub mod paste;
 pub mod profile;
 pub mod quick;
 pub mod render;
 pub mod session;
 
-pub(crate) use components::input::{next_char_boundary, prev_char_boundary, TextInput};
+pub(crate) use components::input::{
+    insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, PasteOutcome, TextInput,
+};
 pub use detail::state::{DetailFocus, SessionDetailState};
 pub use new_session::state::{
     ModelOption, NewSessionFocus, NewSessionRequest, NewSessionState, SessionContextRef,

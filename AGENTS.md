@@ -21,6 +21,7 @@ Read the linked document before modifying code in that area.
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context) | [session-context.md](./docs/session-context.md) |
 | TUI panel focus / visual style | [panel-focus-style.md](./docs/panel-focus-style.md), [preview-omission-style.md](./docs/preview-omission-style.md), [ui-style-guide.md](./docs/ui-style-guide.md) |
+| Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |
 
 For the reasoning behind a past change, consult
@@ -61,6 +62,7 @@ authoritative matrix; the essentials:
 - **Rewind/backtrack parsing** (claude `parentUuid`, codex `thread_rolled_back`): rewind in the real CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively and has no parser handling — expected).
 - **Context / list turn selection**: `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade.
 - **New Session dialog layout**: `cargo build --release` is mandatory, plus a PTY/TUI visual check.
+- **Terminal lifecycle / paste / text editing**: real-terminal paste, exit, and handover checks, plus the `S7S_PANIC_PROBE=1` panic-restore check — [testing.md](./docs/testing.md#terminal-lifecycle-and-paste-checks).
 
 ## Current hazards
 

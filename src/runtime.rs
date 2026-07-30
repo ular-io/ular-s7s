@@ -9,10 +9,10 @@ use crate::{
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::{
-    cursor::MoveTo,
+    cursor::{MoveTo, Show},
     event::{
-        self, Event, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
@@ -24,7 +24,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
     io::{self, Stdout, Write},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
     },
     thread,
@@ -261,10 +261,32 @@ pub fn run() -> Result<()> {
     // Also update model lists in the background (version gate - keeps cache if CLI version is unchanged).
     app.start_models_fetch(false);
 
-    let mut terminal = init_terminal()?;
-    let res = run_loop(&mut terminal, &mut app);
-    restore_terminal(&mut terminal)?;
-    res
+    // Installed before the TUI takes the screen so a panic inside the loop prints
+    // its message on the restored main screen instead of the alternate screen.
+    install_panic_hook();
+    let mut session = TerminalSession::enter()?;
+    // Debug-only fault injection for the manual restoration check in
+    // docs/testing.md: an unwind panic while the TUI owns the screen must restore
+    // the terminal AND leave its message readable on the main screen. Compiled out
+    // of release builds.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("S7S_PANIC_PROBE").is_some() {
+        panic!("panic probe: verifying terminal restoration");
+    }
+    let loop_result = run_loop(&mut session, &mut app);
+    // Explicit cleanup so its failure is reported; `Drop` still retries whatever
+    // stayed active.
+    let cleanup = session.suspend();
+    drop(session);
+    match (loop_result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(err)) => Err(anyhow::Error::new(err).context("restoring the terminal failed")),
+        // Never let cleanup noise replace the real failure; keep both.
+        (Err(err), Ok(())) => Err(err),
+        (Err(err), Err(cleanup_err)) => {
+            Err(err.context(format!("terminal cleanup also failed: {cleanup_err}")))
+        }
+    }
 }
 
 /// Resolves the positional `<DIR>` into an absolute, canonical directory.
@@ -305,9 +327,9 @@ fn resolve_startup_dir(raw: &str) -> Result<std::path::PathBuf, String> {
 /// scheduled synchronous session scan then runs here right after that draw,
 /// without waiting for another input event. Input queued while the scan ran is
 /// drained before the cycle ends, so repeat Ctrl+U presses merge into one scan.
-fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
+fn run_loop(session: &mut TerminalSession, app: &mut App) -> Result<()> {
     loop {
-        terminal.draw(|f| ui::render::draw(f, app))?;
+        session.terminal_mut().draw(|f| ui::render::draw(f, app))?;
 
         if app.refresh_scan_scheduled() {
             // The preparing frame is on screen: run the scheduled scan now.
@@ -346,17 +368,17 @@ fn run_loop(terminal: &mut Tui, app: &mut App) -> Result<()> {
 
         // Process resume request: exit TUI -> execute agent -> return to TUI.
         if let Some(idx) = app.resume_request.take() {
-            let session = app.sessions[idx].clone();
-            handover(terminal, app, &session)?;
+            let target = app.sessions[idx].clone();
+            handover(session, app, &target)?;
         }
         if let Some(req) = app.new_session_request.take() {
-            handover_new_session(terminal, app, req)?;
+            handover_new_session(session, app, req)?;
         }
         if let Some(profile_id) = app.login_request.take() {
-            handover_login(terminal, app, profile_id)?;
+            handover_login(session, app, profile_id)?;
         }
         if let Some(req) = app.terminal_request.take() {
-            handover_terminal(terminal, app, req)?;
+            handover_terminal(session, app, req)?;
         }
 
         if app.should_quit {
@@ -412,15 +434,19 @@ fn dispatch_event(app: &mut App, ev: Event) {
                 UiMode::Message => app.on_key_message(key),
             }
         }
+        // One bracketed paste stays one event: it is routed to the focused editable
+        // field as text and must never be expanded into synthetic key events (a
+        // pasted newline would otherwise submit a dialog or run a `!` command).
+        Event::Paste(text) => app.on_paste(&text),
         Event::Resize(_, _) => { /* Reflect in next redraw */ }
         _ => {}
     }
 }
 
 /// Hands over TUI control to the agent CLI, then returns. Filter state remains intact in App.
-fn handover(terminal: &mut Tui, app: &mut App, session: &model::Session) -> Result<()> {
-    // 1) Temporarily disable TUI (exit raw and alternate screens).
-    restore_terminal(terminal)?;
+fn handover(tui: &mut TerminalSession, app: &mut App, session: &model::Session) -> Result<()> {
+    // 1) Temporarily release the terminal (raw, alternate screen, paste, keyboard).
+    tui.suspend()?;
 
     // Inject environmental variables of the session's profile to run under the correct subscription/account.
     let profile = app.profiles.find(&session.profile_id).cloned();
@@ -462,9 +488,8 @@ fn handover(terminal: &mut Tui, app: &mut App, session: &model::Session) -> Resu
         }
     }
 
-    // 3) Re-initialize TUI and force redraw.
-    *terminal = init_terminal()?;
-    terminal.clear()?;
+    // 3) Re-acquire the terminal and force a full redraw.
+    tui.resume()?;
     // Reflect new conversations continued during resume: perform an incremental
     // rescan and sort by semantic activity (selection tracks the same session).
     app.refresh_sessions();
@@ -476,16 +501,15 @@ fn handover(terminal: &mut Tui, app: &mut App, session: &model::Session) -> Resu
 
 /// Hands over TUI control to the agent CLI to start a new session in the specified folder.
 fn handover_new_session(
-    terminal: &mut Tui,
+    tui: &mut TerminalSession,
     app: &mut App,
     req: ui::NewSessionRequest,
 ) -> Result<()> {
-    restore_terminal(terminal)?;
+    tui.suspend()?;
 
     let profile = app.profiles.find(&req.profile_id).cloned();
     let Some(profile) = profile else {
-        *terminal = init_terminal()?;
-        terminal.clear()?;
+        tui.resume()?;
         app.status_msg = Some("Profile no longer exists".to_string());
         return Ok(());
     };
@@ -572,8 +596,7 @@ fn handover_new_session(
         }
     }
 
-    *terminal = init_terminal()?;
-    terminal.clear()?;
+    tui.resume()?;
     app.screen = Screen::Session;
     app.refresh_sessions();
     drain_pending_input();
@@ -590,13 +613,12 @@ fn handover_new_session(
 
 /// Hands over TUI control to the agent CLI to perform login (initial setup) in a new config folder.
 /// Unlike resume/new, executes the base flag-less command from the current directory of s7s without cd.
-fn handover_login(terminal: &mut Tui, app: &mut App, profile_id: String) -> Result<()> {
-    restore_terminal(terminal)?;
+fn handover_login(tui: &mut TerminalSession, app: &mut App, profile_id: String) -> Result<()> {
+    tui.suspend()?;
 
     let profile = app.profiles.find(&profile_id).cloned();
     let Some(profile) = profile else {
-        *terminal = init_terminal()?;
-        terminal.clear()?;
+        tui.resume()?;
         app.status_msg = Some("Profile no longer exists".to_string());
         return Ok(());
     };
@@ -628,8 +650,7 @@ fn handover_login(terminal: &mut Tui, app: &mut App, profile_id: String) -> Resu
         }
     }
 
-    *terminal = init_terminal()?;
-    terminal.clear()?;
+    tui.resume()?;
     // Reflect changes immediately after login: rescan sessions + incrementally query usage for this profile.
     app.refresh_sessions();
     app.start_usage_fetch_for(&[profile_id]);
@@ -645,8 +666,12 @@ fn handover_login(terminal: &mut Tui, app: &mut App, profile_id: String) -> Resu
 /// output is not wiped by the immediate TUI redraw — unless the request opts out
 /// (`pause: false`, Edit Config: an interactive editor leaves no output to read).
 /// Failures always wait so the error message stays visible.
-fn handover_terminal(terminal: &mut Tui, app: &mut App, req: ui::TerminalRequest) -> Result<()> {
-    restore_terminal(terminal)?;
+fn handover_terminal(
+    tui: &mut TerminalSession,
+    app: &mut App,
+    req: ui::TerminalRequest,
+) -> Result<()> {
+    tui.suspend()?;
 
     let editor = app.cfg.editor.clone();
     let _ = execute!(io::stdout(), Clear(ClearType::All), MoveTo(0, 0));
@@ -674,8 +699,7 @@ fn handover_terminal(terminal: &mut Tui, app: &mut App, req: ui::TerminalRequest
         }
     }
 
-    *terminal = init_terminal()?;
-    terminal.clear()?;
+    tui.resume()?;
     // The command may have edited config.toml (Edit Config palette command) or touched
     // session files/workspace folders; reload config before the (mtime-cached) rescan.
     app.cfg = config::Config::load();
@@ -703,16 +727,15 @@ fn offer_vim_retry() {
     eprintln!(
         "\nPress y to open the config with vim instead, any other key to return to the TUI..."
     );
-    let yes = if enable_raw_mode().is_ok() {
+    let yes = if let Some(_raw) = RawModeGuard::enter() {
         drain_pending_input();
-        let yes = matches!(
+        // The guard disables raw mode on every exit path, including a panic.
+        matches!(
             event::read(),
             Ok(Event::Key(k))
                 if k.kind == KeyEventKind::Press
                     && matches!(k.code, event::KeyCode::Char('y' | 'Y'))
-        );
-        let _ = disable_raw_mode();
-        yes
+        )
     } else {
         let mut buf = String::new();
         io::stdin().read_line(&mut buf).ok();
@@ -770,19 +793,119 @@ fn drain_pending_input() {
 /// keystrokes (e.g. rapid Ctrl+C spam) do not satisfy the wait instantly.
 fn pause_before_return() {
     eprintln!("\nPress any key to return to the TUI...");
-    if enable_raw_mode().is_ok() {
+    if let Some(_raw) = RawModeGuard::enter() {
         drain_pending_input();
         let _ = event::read();
-        let _ = disable_raw_mode();
     } else {
         let mut buf = String::new();
         io::stdin().read_line(&mut buf).ok();
     }
 }
 
-/// Whether keyboard enhancement flags are currently pushed (must be popped before
-/// every terminal restoration / agent handover).
-static KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
+/// A terminal state s7s turns on while the TUI owns the screen. Each one must be
+/// turned off again before a child process or the parent shell sees the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalMode {
+    Raw,
+    AlternateScreen,
+    BracketedPaste,
+    KeyboardEnhancement,
+}
+
+impl TerminalMode {
+    fn name(self) -> &'static str {
+        match self {
+            TerminalMode::Raw => "raw mode",
+            TerminalMode::AlternateScreen => "alternate screen",
+            TerminalMode::BracketedPaste => "bracketed paste",
+            TerminalMode::KeyboardEnhancement => "keyboard enhancement flags",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        match self {
+            TerminalMode::Raw => 1,
+            TerminalMode::AlternateScreen => 1 << 1,
+            TerminalMode::BracketedPaste => 1 << 2,
+            TerminalMode::KeyboardEnhancement => 1 << 3,
+        }
+    }
+}
+
+/// Low-level terminal state operations. Abstracted so the lifecycle policy in
+/// [`TerminalModes`] — ordering, flag bookkeeping, and failure recovery — is unit
+/// testable with injected failures instead of only against a real terminal.
+trait TerminalOps {
+    fn enable(&mut self, mode: TerminalMode) -> io::Result<()>;
+    fn disable(&mut self, mode: TerminalMode) -> io::Result<()>;
+    fn show_cursor(&mut self) -> io::Result<()>;
+    /// Whether the terminal speaks the kitty keyboard enhancement protocol.
+    fn supports_keyboard_enhancement(&mut self) -> bool;
+}
+
+/// Modes currently enabled by [`CrosstermOps`], mirrored into a global so the
+/// panic hook can restore the terminal. `Drop` cannot serve that purpose alone:
+/// the runtime prints the panic message *before* unwinding runs destructors, so
+/// the message would land on the alternate screen and be erased with it.
+static ACTIVE_MODES: AtomicU8 = AtomicU8::new(0);
+
+/// Real terminal operations against `stdout`.
+struct CrosstermOps;
+
+impl TerminalOps for CrosstermOps {
+    fn enable(&mut self, mode: TerminalMode) -> io::Result<()> {
+        // [`ACTIVE_MODES`] is the single source of truth for the real terminal, so
+        // a redundant enable/disable is a no-op here. That matters after a panic:
+        // the hook already restored the terminal, and the still-unwinding
+        // `TerminalSession::drop` must not pop a second keyboard-enhancement level
+        // — which would belong to whatever process launched s7s.
+        if ACTIVE_MODES.load(Ordering::Relaxed) & mode.bit() != 0 {
+            return Ok(());
+        }
+        let mut out = io::stdout();
+        match mode {
+            TerminalMode::Raw => enable_raw_mode()?,
+            // App does not handle mouse events. Capturing mouse events intercepts default terminal
+            // text selection, so we only activate the alternate screen.
+            TerminalMode::AlternateScreen => execute!(out, EnterAlternateScreen)?,
+            TerminalMode::BracketedPaste => execute!(out, EnableBracketedPaste)?,
+            // Enhanced keyboard protocol (where supported): lets the terminal report
+            // Ctrl+Shift+N distinctly from Ctrl+N (legacy encoding sends the same control
+            // byte for both). DISAMBIGUATE_ESCAPE_CODES is sufficient and keeps plain
+            // printable-key handling unchanged. Unsupported terminals keep legacy input;
+            // the Quick Command palette is the functional fallback there.
+            TerminalMode::KeyboardEnhancement => execute!(
+                out,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?,
+        }
+        ACTIVE_MODES.fetch_or(mode.bit(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn disable(&mut self, mode: TerminalMode) -> io::Result<()> {
+        if ACTIVE_MODES.load(Ordering::Relaxed) & mode.bit() == 0 {
+            return Ok(());
+        }
+        let mut out = io::stdout();
+        match mode {
+            TerminalMode::Raw => disable_raw_mode()?,
+            TerminalMode::AlternateScreen => execute!(out, LeaveAlternateScreen)?,
+            TerminalMode::BracketedPaste => execute!(out, DisableBracketedPaste)?,
+            TerminalMode::KeyboardEnhancement => execute!(out, PopKeyboardEnhancementFlags)?,
+        }
+        ACTIVE_MODES.fetch_and(!mode.bit(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), Show)
+    }
+
+    fn supports_keyboard_enhancement(&mut self) -> bool {
+        keyboard_enhancement_supported()
+    }
+}
 
 /// Whether the terminal supports the kitty keyboard enhancement protocol.
 /// Queried once per process (the query needs raw mode and one terminal roundtrip);
@@ -798,43 +921,534 @@ fn keyboard_enhancement_supported() -> bool {
     })
 }
 
-/// Enters Raw/Alt terminal modes and constructs a Terminal handle.
-fn init_terminal() -> Result<Tui> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    // App does not handle mouse events. Capturing mouse events intercepts default terminal text selection,
-    // so we only activate the alternate screen.
-    execute!(stdout, EnterAlternateScreen)?;
-    // Enhanced keyboard protocol (where supported): lets the terminal report
-    // Ctrl+Shift+N distinctly from Ctrl+N (legacy encoding sends the same control
-    // byte for both). DISAMBIGUATE_ESCAPE_CODES is sufficient and keeps plain
-    // printable-key handling unchanged. Unsupported terminals keep legacy input;
-    // the Quick Command palette is the functional fallback there.
-    if keyboard_enhancement_supported()
-        && execute!(
-            io::stdout(),
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )
-        .is_ok()
-    {
-        KEYBOARD_ENHANCED.store(true, Ordering::Relaxed);
-    }
-    let backend = CrosstermBackend::new(io::stdout());
-    let terminal = Terminal::new(backend)?;
-    Ok(terminal)
+/// Names the terminal mode in an I/O failure, so a cleanup error reaching the
+/// user says which state could not be restored.
+fn named(mode: TerminalMode, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{}: {err}", mode.name()))
 }
 
-/// Disables Raw/Alt modes and restores the normal terminal state.
-/// Pops keyboard enhancement flags first so no enhancement leaks into agent
-/// handovers or the parent shell after exit.
-fn restore_terminal(terminal: &mut Tui) -> Result<()> {
-    if KEYBOARD_ENHANCED.swap(false, Ordering::Relaxed) {
-        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+/// Ordered setup and teardown of the terminal modes, tracking exactly which ones
+/// are currently on. Every enable records its success immediately, so a failure
+/// halfway through setup only undoes what actually took effect.
+struct TerminalModes<O: TerminalOps> {
+    ops: O,
+    raw: bool,
+    alternate: bool,
+    bracketed_paste: bool,
+    keyboard_enhanced: bool,
+}
+
+impl<O: TerminalOps> TerminalModes<O> {
+    fn new(ops: O) -> Self {
+        TerminalModes {
+            ops,
+            raw: false,
+            alternate: false,
+            bracketed_paste: false,
+            keyboard_enhanced: false,
+        }
     }
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    Ok(())
+
+    /// Rebuilds the flag set from an [`ACTIVE_MODES`] bitmask, for restoring the
+    /// terminal from a context that does not own the session (the panic hook).
+    fn from_active_mask(ops: O, mask: u8) -> Self {
+        let mut modes = TerminalModes::new(ops);
+        for mode in [
+            TerminalMode::Raw,
+            TerminalMode::AlternateScreen,
+            TerminalMode::BracketedPaste,
+            TerminalMode::KeyboardEnhancement,
+        ] {
+            *modes.flag(mode) = mask & mode.bit() != 0;
+        }
+        modes
+    }
+
+    fn flag(&mut self, mode: TerminalMode) -> &mut bool {
+        match mode {
+            TerminalMode::Raw => &mut self.raw,
+            TerminalMode::AlternateScreen => &mut self.alternate,
+            TerminalMode::BracketedPaste => &mut self.bracketed_paste,
+            TerminalMode::KeyboardEnhancement => &mut self.keyboard_enhanced,
+        }
+    }
+
+    /// Enables one mode unless it is already on, recording success before returning.
+    fn enable(&mut self, mode: TerminalMode) -> io::Result<()> {
+        if *self.flag(mode) {
+            return Ok(());
+        }
+        self.ops.enable(mode).map_err(|err| named(mode, err))?;
+        *self.flag(mode) = true;
+        Ok(())
+    }
+
+    /// Disables one mode, clearing its flag only on success (see [`Self::restore`]).
+    /// Returns the failure so the caller can keep going and report the first one.
+    fn disable(&mut self, mode: TerminalMode) -> Option<io::Error> {
+        if !*self.flag(mode) {
+            return None;
+        }
+        match self.ops.disable(mode) {
+            Ok(()) => {
+                *self.flag(mode) = false;
+                None
+            }
+            Err(err) => Some(named(mode, err)),
+        }
+    }
+
+    /// Turns on every mode the TUI needs. Raw mode goes first because the
+    /// keyboard-enhancement capability query needs it. On failure the modes
+    /// already enabled are turned back off before the error propagates, so a
+    /// half-configured terminal is never handed back to the shell.
+    ///
+    /// Idempotent, which makes it double as the resume path after a handover.
+    fn enter(&mut self) -> io::Result<()> {
+        let steps = [
+            TerminalMode::Raw,
+            TerminalMode::AlternateScreen,
+            TerminalMode::BracketedPaste,
+        ];
+        for mode in steps {
+            if let Err(err) = self.enable(mode) {
+                let _ = self.restore();
+                return Err(err);
+            }
+        }
+        // Optional feature: an unsupported or failing terminal keeps legacy input.
+        if self.ops.supports_keyboard_enhancement() {
+            let _ = self.enable(TerminalMode::KeyboardEnhancement);
+        }
+        Ok(())
+    }
+
+    /// Turns off every mode that is still on, in reverse-dependency order, and
+    /// restores cursor visibility.
+    ///
+    /// Every applicable step is attempted even when an earlier one fails, and the
+    /// first error is returned. Only successful steps clear their flag, so a later
+    /// retry (an explicit call, or `Drop`) redoes exactly what is still active.
+    fn restore(&mut self) -> io::Result<()> {
+        let mut first_err: Option<io::Error> = None;
+        // Keyboard enhancement and bracketed paste come off first: they must not
+        // leak into a child agent CLI or the parent shell.
+        for mode in [
+            TerminalMode::KeyboardEnhancement,
+            TerminalMode::BracketedPaste,
+            TerminalMode::AlternateScreen,
+        ] {
+            if let Some(err) = self.disable(mode) {
+                if first_err.is_none() {
+                    first_err = Some(err);
+                }
+            }
+        }
+        // Cursor visibility is restored after leaving the alternate screen: some
+        // terminals track it per screen buffer, so showing it first can leave the
+        // main screen with a hidden cursor. ratatui hides the cursor while drawing,
+        // so this runs unconditionally rather than behind a mode flag.
+        if let Err(err) = self.ops.show_cursor() {
+            if first_err.is_none() {
+                first_err = Some(err);
+            }
+        }
+        if let Some(err) = self.disable(TerminalMode::Raw) {
+            if first_err.is_none() {
+                first_err = Some(err);
+            }
+        }
+        match first_err {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Owns the TUI terminal handle together with the modes enabled for it, so the
+/// terminal is restored on every exit path — ordinary return, `?` propagation, or
+/// an unwind panic.
+///
+/// `Drop` cannot cover `SIGKILL`, `process::abort`, `panic = "abort"`, power loss,
+/// or an unhandled terminating signal (`SIGTERM`/`SIGHUP`); `reset` remains the
+/// documented manual recovery.
+struct TerminalSession {
+    terminal: Tui,
+    modes: TerminalModes<CrosstermOps>,
+}
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        let mut modes = TerminalModes::new(CrosstermOps);
+        modes.enter()?;
+        let terminal = match Terminal::new(CrosstermBackend::new(io::stdout())) {
+            Ok(terminal) => terminal,
+            Err(err) => {
+                // The modes are on but nothing owns them yet: undo them here.
+                let _ = modes.restore();
+                return Err(err.into());
+            }
+        };
+        Ok(TerminalSession { terminal, modes })
+    }
+
+    fn terminal_mut(&mut self) -> &mut Tui {
+        &mut self.terminal
+    }
+
+    /// Releases the terminal for a child process (or for good).
+    fn suspend(&mut self) -> io::Result<()> {
+        self.modes.restore()
+    }
+
+    /// Re-acquires the terminal after a child process exited and forces a full
+    /// redraw. The clear runs only once every required mode is back on.
+    fn resume(&mut self) -> Result<()> {
+        self.modes.enter()?;
+        self.terminal.clear()?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = self.modes.restore();
+    }
+}
+
+/// Restores the terminal from the panic hook, before the panic message is printed.
+///
+/// The panicking thread does not own the [`TerminalSession`], so the modes are
+/// reconstructed from [`ACTIVE_MODES`]. Doing this in the hook rather than relying
+/// on `Drop` is what keeps the message readable: unwinding prints it first and
+/// only then runs destructors, so a `Drop`-only restore would erase the message
+/// together with the alternate screen.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let mask = ACTIVE_MODES.load(Ordering::Relaxed);
+        if mask != 0 {
+            let _ = TerminalModes::from_active_mask(CrosstermOps, mask).restore();
+        }
+        previous(info);
+    }));
+}
+
+/// RAII raw-mode guard for the temporary prompts shown while the main
+/// [`TerminalSession`] is suspended. Without it, an early return or a panic inside
+/// a prompt would leave raw mode enabled on the parent shell.
+///
+/// Only valid while no session holds raw mode: the guard's `Drop` disables raw
+/// mode unconditionally, so nesting it inside a live TUI session would break that
+/// session's input.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enter() -> Option<Self> {
+        CrosstermOps
+            .enable(TerminalMode::Raw)
+            .ok()
+            .map(|()| RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = CrosstermOps.disable(TerminalMode::Raw);
+    }
+}
+
+#[cfg(test)]
+mod terminal_lifecycle_tests {
+    use super::*;
+
+    /// Recorded terminal operation, used to assert ordering and balance.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Call {
+        Enable(TerminalMode),
+        Disable(TerminalMode),
+        ShowCursor,
+    }
+
+    /// In-memory [`TerminalOps`] with per-mode failure injection. Touches no real
+    /// terminal, so these tests are safe under the default threaded test runner.
+    struct MockOps {
+        calls: Vec<Call>,
+        fail_enable: Vec<TerminalMode>,
+        fail_disable: Vec<TerminalMode>,
+        fail_show_cursor: bool,
+        supports_enhancement: bool,
+    }
+
+    impl MockOps {
+        fn new() -> Self {
+            MockOps {
+                calls: Vec::new(),
+                fail_enable: Vec::new(),
+                fail_disable: Vec::new(),
+                fail_show_cursor: false,
+                supports_enhancement: true,
+            }
+        }
+    }
+
+    fn failure(mode: TerminalMode) -> io::Error {
+        io::Error::other(format!("injected failure: {}", mode.name()))
+    }
+
+    impl TerminalOps for MockOps {
+        fn enable(&mut self, mode: TerminalMode) -> io::Result<()> {
+            self.calls.push(Call::Enable(mode));
+            if self.fail_enable.contains(&mode) {
+                return Err(failure(mode));
+            }
+            Ok(())
+        }
+
+        fn disable(&mut self, mode: TerminalMode) -> io::Result<()> {
+            self.calls.push(Call::Disable(mode));
+            if self.fail_disable.contains(&mode) {
+                return Err(failure(mode));
+            }
+            Ok(())
+        }
+
+        fn show_cursor(&mut self) -> io::Result<()> {
+            self.calls.push(Call::ShowCursor);
+            if self.fail_show_cursor {
+                return Err(io::Error::other("injected failure: show cursor"));
+            }
+            Ok(())
+        }
+
+        fn supports_keyboard_enhancement(&mut self) -> bool {
+            self.supports_enhancement
+        }
+    }
+
+    fn enabled(modes: &TerminalModes<MockOps>) -> Vec<TerminalMode> {
+        [
+            (TerminalMode::Raw, modes.raw),
+            (TerminalMode::AlternateScreen, modes.alternate),
+            (TerminalMode::BracketedPaste, modes.bracketed_paste),
+            (TerminalMode::KeyboardEnhancement, modes.keyboard_enhanced),
+        ]
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(mode, _)| mode)
+        .collect()
+    }
+
+    #[test]
+    fn enter_turns_on_raw_first_then_screen_paste_and_keyboard() {
+        let mut modes = TerminalModes::new(MockOps::new());
+        modes.enter().expect("enter");
+        assert_eq!(
+            modes.ops.calls,
+            vec![
+                // Raw mode must precede the keyboard-enhancement query.
+                Call::Enable(TerminalMode::Raw),
+                Call::Enable(TerminalMode::AlternateScreen),
+                Call::Enable(TerminalMode::BracketedPaste),
+                Call::Enable(TerminalMode::KeyboardEnhancement),
+            ]
+        );
+        assert_eq!(
+            enabled(&modes),
+            vec![
+                TerminalMode::Raw,
+                TerminalMode::AlternateScreen,
+                TerminalMode::BracketedPaste,
+                TerminalMode::KeyboardEnhancement,
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_keyboard_enhancement_is_skipped_not_failed() {
+        let mut ops = MockOps::new();
+        ops.supports_enhancement = false;
+        let mut modes = TerminalModes::new(ops);
+        modes.enter().expect("enter");
+        assert!(!modes.keyboard_enhanced);
+        assert!(!modes
+            .ops
+            .calls
+            .contains(&Call::Enable(TerminalMode::KeyboardEnhancement)));
+    }
+
+    #[test]
+    fn failed_keyboard_enhancement_leaves_the_session_usable() {
+        let mut ops = MockOps::new();
+        ops.fail_enable = vec![TerminalMode::KeyboardEnhancement];
+        let mut modes = TerminalModes::new(ops);
+        modes
+            .enter()
+            .expect("enter must succeed without enhancement");
+        assert!(!modes.keyboard_enhanced);
+        assert!(modes.raw && modes.alternate && modes.bracketed_paste);
+    }
+
+    #[test]
+    fn partial_setup_restores_every_mode_already_enabled() {
+        let mut ops = MockOps::new();
+        ops.fail_enable = vec![TerminalMode::BracketedPaste];
+        let mut modes = TerminalModes::new(ops);
+        let err = modes.enter().expect_err("setup must fail");
+        assert!(err.to_string().contains("bracketed paste"));
+        assert!(enabled(&modes).is_empty(), "no mode may stay on");
+        assert_eq!(
+            modes.ops.calls,
+            vec![
+                Call::Enable(TerminalMode::Raw),
+                Call::Enable(TerminalMode::AlternateScreen),
+                Call::Enable(TerminalMode::BracketedPaste),
+                // Cleanup of what actually took effect:
+                Call::Disable(TerminalMode::AlternateScreen),
+                Call::ShowCursor,
+                Call::Disable(TerminalMode::Raw),
+            ]
+        );
+    }
+
+    #[test]
+    fn cleanup_order_pops_keyboard_and_paste_before_leaving_the_screen() {
+        let mut modes = TerminalModes::new(MockOps::new());
+        modes.enter().expect("enter");
+        modes.ops.calls.clear();
+        modes.restore().expect("restore");
+        assert_eq!(
+            modes.ops.calls,
+            vec![
+                Call::Disable(TerminalMode::KeyboardEnhancement),
+                Call::Disable(TerminalMode::BracketedPaste),
+                Call::Disable(TerminalMode::AlternateScreen),
+                // Cursor is shown after leaving the alternate screen.
+                Call::ShowCursor,
+                Call::Disable(TerminalMode::Raw),
+            ]
+        );
+        assert!(enabled(&modes).is_empty());
+    }
+
+    #[test]
+    fn one_cleanup_failure_does_not_skip_later_steps() {
+        let mut ops = MockOps::new();
+        ops.fail_disable = vec![TerminalMode::AlternateScreen];
+        let mut modes = TerminalModes::new(ops);
+        modes.enter().expect("enter");
+        modes.ops.calls.clear();
+
+        let err = modes.restore().expect_err("cleanup must report failure");
+        assert!(err.to_string().contains("alternate screen"));
+        // Raw mode and the cursor are still handled after the failing step.
+        assert_eq!(
+            modes.ops.calls,
+            vec![
+                Call::Disable(TerminalMode::KeyboardEnhancement),
+                Call::Disable(TerminalMode::BracketedPaste),
+                Call::Disable(TerminalMode::AlternateScreen),
+                Call::ShowCursor,
+                Call::Disable(TerminalMode::Raw),
+            ]
+        );
+        // Only the failed step keeps its flag, so a retry redoes just that one.
+        assert_eq!(enabled(&modes), vec![TerminalMode::AlternateScreen]);
+    }
+
+    #[test]
+    fn cleanup_returns_the_first_error_in_cleanup_order() {
+        let mut ops = MockOps::new();
+        ops.fail_disable = vec![TerminalMode::BracketedPaste, TerminalMode::Raw];
+        ops.fail_show_cursor = true;
+        let mut modes = TerminalModes::new(ops);
+        modes.enter().expect("enter");
+
+        let err = modes.restore().expect_err("cleanup must report failure");
+        assert!(
+            err.to_string().contains("bracketed paste"),
+            "expected the first failure, got: {err}"
+        );
+        assert_eq!(
+            enabled(&modes),
+            vec![TerminalMode::Raw, TerminalMode::BracketedPaste]
+        );
+    }
+
+    #[test]
+    fn a_retry_redoes_only_what_stayed_active() {
+        let mut ops = MockOps::new();
+        ops.fail_disable = vec![TerminalMode::AlternateScreen];
+        let mut modes = TerminalModes::new(ops);
+        modes.enter().expect("enter");
+        modes.restore().expect_err("first cleanup fails");
+
+        // The retry that `Drop` performs, with the terminal now cooperating.
+        modes.ops.fail_disable.clear();
+        modes.ops.calls.clear();
+        modes.restore().expect("retry succeeds");
+        assert_eq!(
+            modes.ops.calls,
+            vec![
+                Call::Disable(TerminalMode::AlternateScreen),
+                Call::ShowCursor
+            ]
+        );
+        assert!(enabled(&modes).is_empty());
+    }
+
+    #[test]
+    fn panic_restore_undoes_exactly_the_modes_recorded_as_active() {
+        // What the panic hook does: rebuild the flags from the global mask (the
+        // panicking thread does not own the session) and clean up in order.
+        let mask = TerminalMode::Raw.bit() | TerminalMode::AlternateScreen.bit();
+        let mut modes = TerminalModes::from_active_mask(MockOps::new(), mask);
+        assert_eq!(
+            enabled(&modes),
+            vec![TerminalMode::Raw, TerminalMode::AlternateScreen]
+        );
+        modes.restore().expect("restore");
+        assert_eq!(
+            modes.ops.calls,
+            vec![
+                Call::Disable(TerminalMode::AlternateScreen),
+                Call::ShowCursor,
+                Call::Disable(TerminalMode::Raw),
+            ],
+            "modes that were never enabled must not be touched"
+        );
+        assert!(enabled(&modes).is_empty());
+    }
+
+    #[test]
+    fn suspend_and_resume_are_balanced_and_idempotent() {
+        let mut modes = TerminalModes::new(MockOps::new());
+        modes.enter().expect("enter");
+        modes.restore().expect("suspend");
+        modes.enter().expect("resume");
+        modes.restore().expect("final cleanup");
+
+        let enables = modes
+            .ops
+            .calls
+            .iter()
+            .filter(|c| matches!(c, Call::Enable(_)))
+            .count();
+        let disables = modes
+            .ops
+            .calls
+            .iter()
+            .filter(|c| matches!(c, Call::Disable(_)))
+            .count();
+        assert_eq!(enables, 8, "4 modes enabled twice");
+        assert_eq!(disables, enables, "every enable has a matching disable");
+
+        // Re-entering an already-entered session issues no duplicate enables.
+        modes.enter().expect("enter");
+        modes.ops.calls.clear();
+        modes.enter().expect("re-enter");
+        assert!(modes.ops.calls.is_empty());
+    }
 }
 
 #[cfg(test)]

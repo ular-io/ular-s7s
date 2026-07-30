@@ -407,6 +407,26 @@ impl App {
         }
     }
 
+    /// Inserts a bracketed paste into the New Session folder input, but only while
+    /// that row is focused: the profile/model rows are dropdowns, and the button
+    /// row must never turn a paste into a launch.
+    pub(crate) fn paste_into_new_session(&mut self, text: &str) {
+        let outcome = {
+            let Some(state) = self.new_session.as_mut() else {
+                return;
+            };
+            if state.focus != NewSessionFocus::Folder {
+                return;
+            }
+            let outcome = state.input.insert_paste(text);
+            if outcome.inserted > 0 {
+                state.on_input_edited();
+            }
+            outcome
+        };
+        self.note_paste_outcome(outcome);
+    }
+
     /// Handles key inputs in the new session creation dialog (profile, model, and folder dropdown controls).
     ///
     /// - Tab/Shift+Tab: Cycles focus through Profile → Model → Folder → OK → Cancel.

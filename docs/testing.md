@@ -22,6 +22,7 @@ the change area below and run every check listed for it.
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [panel-focus-style.md](./panel-focus-style.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [panel-focus-style.md](./panel-focus-style.md) |
 | Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
+| Terminal lifecycle / bracketed paste / grapheme editing | Fault-injection lifecycle tests + paste-routing tests, plus the real-terminal checks below | §Terminal lifecycle and paste checks · [terminal-input-hardening.md](./terminal-input-hardening.md) |
 | Storage structure change | Update code and the owning document together; consider whether `CACHE_VERSION` must bump | [session-title-compat.md](./session-title-compat.md) |
 | CLI flags / subcommands / `s7s <dir>` startup | `runtime::tests` parse cases, plus a run of the release binary: `s7s <dir>` opens the dialog on that folder, and a wrong path / a subcommand combination exits 2 before the scan | [architecture.md](./architecture.md) |
 
@@ -117,6 +118,34 @@ When semantic activity parsing or Updated ordering changes:
 - Verify the fallback to the `:` palette in legacy terminals · tmux.
 - Verify that keyboard enhancement does not remain active after exit · agent handover (check if key inputs in the handed-over CLI are normal).
 
+## Terminal lifecycle and paste checks
+
+Contract and rationale: [terminal-input-hardening.md](./terminal-input-hardening.md).
+Automated coverage (`scripts/check.sh`) is the grapheme, paste-routing, and
+fault-injection lifecycle tests. The following need a real terminal — run them in
+the primary terminal plus one legacy/tmux terminal and one kitty-protocol
+terminal:
+
+1. Paste multi-line text into every editable field (keyword `/`, rename `ctrl+r`,
+   profile form, New Session folder, `:` palette, `!` terminal, `f` folder filter).
+   Each must insert once and submit nothing.
+2. In `!` terminal mode, a multi-line paste must keep only the first line, report
+   it in the status line, and run nothing until a separate Enter keypress.
+3. Verify grapheme editing: `←/→`, Backspace, and Delete must treat `é`
+   (`e` + U+0301) and a ZWJ family emoji as one character.
+4. Exit normally and confirm the parent shell has normal echo, cursor visibility,
+   keyboard mode, and paste behavior. Repeat after each handover type (resume, new
+   session, login, `!` terminal, Edit Config).
+5. Force an unwind panic with the debug-only probe and confirm the terminal is
+   restored **and** the panic message is readable on the main screen:
+   `S7S_PANIC_PROBE=1 cargo run -- demo` (compiled out of release builds).
+6. Confirm neither keyboard enhancement nor bracketed paste leaks into the child
+   agent or the parent shell (`printf` a bracketed-paste sequence in the shell
+   afterwards, or paste into the handed-over CLI).
+
+A PTY harness can automate 1, 2, 4 and 5 by driving the release binary with
+`\e[200~…\e[201~` sequences and comparing the pre/post `termios` of the slave fd.
+
 ## When to update tests and docs
 
 Update tests and documentation together if any of the following changes:
@@ -133,3 +162,4 @@ Update tests and documentation together if any of the following changes:
 - [Panel Focus Style](./panel-focus-style.md)
 - [Session Title Compatibility](./session-title-compat.md)
 - [Session Context](./session-context.md)
+- [Terminal and Text Input Hardening](./terminal-input-hardening.md)

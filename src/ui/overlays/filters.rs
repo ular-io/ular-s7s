@@ -13,7 +13,7 @@ use crate::ui::components::modal::{modal_block, render_modal};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::truncate_w;
 use crate::ui::render::centered_fixed_rect;
-use crate::ui::{App, UiMode};
+use crate::ui::{insert_paste_at, App, UiMode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -226,6 +226,21 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Appends a bracketed paste to the folder filter's incremental search query.
+    /// The query has no cursor (typing only appends, Backspace pops), so pasted
+    /// text lands at the end.
+    pub(crate) fn paste_into_folder_query(&mut self, text: &str) {
+        if self.folder_modal.is_none() {
+            return;
+        }
+        let mut cursor = self.folder_query.len();
+        let outcome = insert_paste_at(&mut self.folder_query, &mut cursor, text);
+        if outcome.inserted > 0 {
+            self.refresh_folder_modal_labels();
+        }
+        self.note_paste_outcome(outcome);
     }
 
     fn refresh_folder_modal_labels(&mut self) {

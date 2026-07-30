@@ -362,6 +362,26 @@ impl App {
         }
     }
 
+    /// Inserts a bracketed paste into the focused profile-form text field. The
+    /// Agent row and the button row own no text input, so a paste there is
+    /// dropped rather than leaking into the last edited field.
+    pub(crate) fn paste_into_profile_form(&mut self, text: &str) {
+        let outcome = {
+            let Some(form) = self.profile_form.as_mut() else {
+                return;
+            };
+            let Some(input) = form.focused_input() else {
+                return;
+            };
+            let outcome = input.insert_paste(text);
+            if outcome.inserted > 0 {
+                form.error = None;
+            }
+            outcome
+        };
+        self.note_paste_outcome(outcome);
+    }
+
     /// Handles key inputs in the profile creation/edit form.
     pub fn on_key_profile_form(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};

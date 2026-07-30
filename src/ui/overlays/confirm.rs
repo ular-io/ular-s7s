@@ -84,6 +84,21 @@ impl App {
         self.mode = UiMode::Table;
     }
 
+    /// Inserts a bracketed paste into the rename input. A pasted newline becomes a
+    /// space instead of an Enter key, so a paste can never commit the rename.
+    pub(crate) fn paste_into_rename(&mut self, text: &str) {
+        let outcome = {
+            let Some(state) = self.rename_modal.as_mut() else {
+                return;
+            };
+            if state.focus != RenameFocus::Input {
+                return;
+            }
+            state.input.insert_paste(text)
+        };
+        self.note_paste_outcome(outcome);
+    }
+
     fn cancel_rename(&mut self) {
         self.rename_modal = None;
         self.rename_target = None;
