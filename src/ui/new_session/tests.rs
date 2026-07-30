@@ -1103,3 +1103,48 @@ fn new_session_launch_default_records_default_selection() {
         Some(LastSelection::Default)
     );
 }
+
+#[test]
+fn startup_dir_opens_ok_focused_with_the_folders_last_profile() {
+    // `s7s <dir>`: the runtime hands over an already resolved absolute path.
+    let mut app = app_with_profiles();
+    app.open_new_session_for_dir(PathBuf::from("/tmp"));
+
+    assert_eq!(app.mode, UiMode::NewSession);
+    {
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.focus, NewSessionFocus::Buttons);
+        assert!(state.ok_focused);
+        assert!(!state.dropdown_open);
+        assert_eq!(state.input.value, "/tmp");
+        // /tmp belongs to profile-x's session, so that profile is preselected.
+        assert_eq!(state.profile_idx, 1);
+    }
+
+    // One Enter starts the session; an absolute path must never be re-read as a
+    // bare project name (which would resolve under config::projects_dir()).
+    app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+    let req = app
+        .new_session_request
+        .as_ref()
+        .expect("new session request");
+    assert_eq!(req.profile_id, "profile-x");
+    assert_eq!(
+        req.cwd,
+        std::fs::canonicalize("/tmp").expect("canonicalize /tmp")
+    );
+    assert_eq!(app.mode, UiMode::Table);
+}
+
+#[test]
+fn startup_dir_without_sessions_falls_back_to_the_first_profile() {
+    let mut app = app_with_profiles();
+    app.open_new_session_for_dir(PathBuf::from("/usr"));
+
+    let state = app.new_session.as_ref().expect("new session dialog");
+    assert_eq!(state.profile_idx, 0);
+    assert_eq!(state.input.value, "/usr");
+    // The folder has no session yet, so it is absent from the dropdown list while
+    // the typed-in path still launches.
+    assert!(!state.folders.contains(&PathBuf::from("/usr")));
+}

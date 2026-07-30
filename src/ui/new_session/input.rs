@@ -104,6 +104,34 @@ impl App {
         self.status_msg = None;
     }
 
+    /// Startup shortcut (`s7s <dir>`): opens the dialog on an already resolved
+    /// absolute folder with OK focused, so one Enter starts the session.
+    ///
+    /// Path resolution belongs to the caller (`runtime::resolve_startup_dir`); the
+    /// absolute path keeps `confirm_new_session` from re-reading it as a bare project
+    /// name under `config::projects_dir()`. The profile defaults to that folder's most
+    /// recent session (`sessions` is activity-sorted), reusing the agent it was last
+    /// worked on with.
+    pub(crate) fn open_new_session_for_dir(&mut self, dir: PathBuf) {
+        let profile_idx = self
+            .sessions
+            .iter()
+            .find(|s| s.cwd == dir)
+            .and_then(|s| {
+                self.profiles
+                    .profiles
+                    .iter()
+                    .position(|p| p.id == s.profile_id)
+            })
+            .unwrap_or(0);
+        self.open_new_session_modal(
+            profile_idx,
+            Some(dir.to_string_lossy().into_owned()),
+            true,
+            None,
+        );
+    }
+
     /// Search/Details view helper: Opens dialog using targeted session's profile and cwd as defaults.
     /// Falls back to first profile and empty directory if session index is invalid.
     ///

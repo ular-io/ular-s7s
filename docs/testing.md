@@ -22,6 +22,7 @@ the change area below and run every check listed for it.
 | Panel focus / TUI style | Manual TUI or PTY visual check | [panel-focus-style.md](./panel-focus-style.md) |
 | Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
 | Storage structure change | Update code and the owning document together; consider whether `CACHE_VERSION` must bump | [session-title-compat.md](./session-title-compat.md) |
+| CLI flags / subcommands / `s7s <dir>` startup | `runtime::tests` parse cases, plus a run of the release binary: `s7s <dir>` opens the dialog on that folder, and a wrong path / a subcommand combination exits 2 before the scan | [architecture.md](./architecture.md) |
 
 ## Why unit tests are not enough
 

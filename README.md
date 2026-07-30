@@ -71,6 +71,7 @@ cp target/release/s7s ~/bin/   # Copy to your desired PATH location
 
 ```bash
 s7s                         # Run TUI
+s7s .                       # Run TUI with the New Session dialog open on that folder (OK focused)
 s7s demo                    # Run TUI in demo mode using mock English sessions (disposable sandbox under the OS cache dir, e.g. macOS ~/Library/Caches/s7s/demo)
 s7s session show <ID>       # View one past session's context (no TUI, see below)
 s7s session search <QUERY>  # List past sessions matching a keyword (no TUI, see below)
@@ -82,6 +83,25 @@ s7s --handoff-samples [DIR] # Generate one deterministic handoff Markdown sample
 s7s --help                  # Print help
 s7s version                 # Print version (same as -v / --version)
 ```
+
+#### `s7s <DIR>` — start in a folder
+
+Shorthand for launching a new session in a known folder: s7s starts normally and
+opens the New Session dialog on `<DIR>` with the OK button focused, so `enter`
+starts the agent. Profile/Model/Folder can still be changed as usual, and `esc`
+leaves the ordinary session list behind the dialog.
+
+- The path is resolved like any shell path (relative to the current directory,
+  `~/` expanded) and must be an existing directory — a wrong path exits with
+  code 2 before the session index is scanned. Unlike a bare name typed into the
+  dialog, `<DIR>` is never resolved under `~/.config/s7s/projects`.
+- The profile defaults to the one used by that folder's most recent session,
+  falling back to the first profile.
+- Subcommand names win over `<DIR>`, so a folder named `session`, `demo`,
+  `version`, or `help` needs a path form: `s7s ./demo` or `s7s -- demo`.
+- `<DIR>` cannot be combined with a subcommand or with the `--print` /
+  `--usage-probe` / `--model-probe` / `--handoff-samples` debug flags
+  (`--rebuild-cache` is allowed).
 
 ### Shortcuts (Session Screen)
 

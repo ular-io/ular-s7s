@@ -14,6 +14,7 @@ parsing is `clap` derive. Modes:
 | Invocation | Mode | Handler |
 | --- | --- | --- |
 | `s7s` (no command) | Interactive TUI | `ui::App` render/event loop in `main.rs` |
+| `s7s <dir>` | TUI with the New Session dialog open on `<dir>` (OK focused) | `runtime::resolve_startup_dir` → `App::open_new_session_for_dir` |
 | `s7s session show <id>` / `s7s session search <q>` | CLI context projection | `session_cli::run` |
 | `s7s --print` | Dump the session list, no TUI (debug) | `main.rs` |
 | `s7s --rebuild-cache` | Force full cache rebuild before the TUI | `scan` |
@@ -297,5 +298,6 @@ Rule of thumb: user-edited files are TOML; app-owned state files are JSON.
 | TUI layout / dialogs / focus | `ui/mod.rs`, `ui/render.rs`, `ui/session/*`, `ui/new_session/*`, `ui/profile/*`, `ui/detail/*`, `ui/overlays/*`, `ui/quick/*` | `cargo build --release` + PTY/TUI check — [panel-focus-style.md](./panel-focus-style.md) |
 | Themes | `theme.rs`, `ui/render.rs` | Render-buffer tests |
 | Resume / new-session / terminal handover | `resume.rs`, `main.rs` | Manual handover check |
+| CLI flags / subcommands / `s7s <dir>` startup | `runtime.rs` (`Cli`, `resolve_startup_dir`), `session_cli.rs` | `runtime::tests` parse cases + release-binary run — [testing.md](./testing.md) |
 
 See [testing.md](./testing.md) for the authoritative verification matrix.

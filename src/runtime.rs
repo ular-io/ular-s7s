@@ -41,6 +41,13 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
     disable_version_flag = true,
     about = "s7s — Search, inspect, and resume AI CLI sessions (TUI when run without a command)",
     after_help = "\
+DIR:      `s7s <dir>` starts the TUI with the New Session dialog already open on
+          that folder (OK focused). The path is resolved against the current
+          directory and must be an existing directory — unlike a bare name typed
+          into the dialog, it is never resolved under ~/.config/s7s/projects.
+          A folder whose name collides with a subcommand (session/demo/version/
+          help) needs a path form: `s7s ./demo` or `s7s -- demo`.
+
 PROFILES: ~/.config/s7s/profiles.json (builtin Claude/Antigravity/Codex + user-defined)
   Claude/Codex profiles support multiple subscriptions via CLAUDE_CONFIG_DIR/CODEX_HOME
 CONFIG:   ~/.config/s7s/config.toml overrides command templates ({prompt} token supported
@@ -55,6 +62,14 @@ SESSION:   `s7s session show <id>` renders one session's context;
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
+    /// Open the New Session dialog on this folder at startup (existing directory)
+    // Subcommand names win over this positional: a folder named `session`/`demo`/
+    // `version`/`help` needs a path form (`./demo`) or must follow `--`.
+    #[arg(
+        value_name = "DIR",
+        conflicts_with_all = ["print", "usage_probe", "model_probe", "handoff_samples"]
+    )]
+    dir: Option<String>,
     /// Print version
     // Replaces clap's built-in flag (disabled above) so the short form is `-v`, not `-V`.
     // clap handles the action and exits; the field itself is never read.
@@ -77,6 +92,15 @@ struct Cli {
     handoff_samples: Option<Option<std::path::PathBuf>>,
 }
 
+impl Cli {
+    /// Whether `<DIR>` was given together with a subcommand. clap accepts that
+    /// shape (the subcommand name matches at the first position, the path lands in
+    /// the positional), so the rejection is owned here.
+    fn dir_conflicts_with_subcommand(&self) -> bool {
+        self.dir.is_some() && self.command.is_some()
+    }
+}
+
 #[derive(Subcommand)]
 enum CliCommand {
     /// Query previous sessions: `show` one session's context or `search` by keyword
@@ -92,6 +116,28 @@ enum CliCommand {
 /// only forwards to it.
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.dir_conflicts_with_subcommand() {
+        eprintln!("error: <DIR> cannot be combined with a subcommand.");
+        eprintln!(
+            "hint: `s7s <dir>` stands alone; a folder named like a subcommand needs a path form \
+             (`s7s ./demo`)."
+        );
+        std::process::exit(2);
+    }
+
+    // Resolved before the index scan so a typo fails immediately instead of after
+    // a full (first-run: slow) scan.
+    let startup_dir = match cli.dir.as_deref() {
+        Some(raw) => match resolve_startup_dir(raw) {
+            Ok(dir) => Some(dir),
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
 
     // `s7s version` mirrors the `-v` / `--version` flag output.
     if let Some(CliCommand::Version) = &cli.command {
@@ -205,6 +251,11 @@ pub fn run() -> Result<()> {
     }
 
     let mut app = App::new(cfg, profiles, result.sessions, scan_info);
+    // `s7s <dir>`: the dialog opens over the ordinary session list, so cancelling
+    // lands in the normal TUI instead of exiting.
+    if let Some(dir) = startup_dir {
+        app.open_new_session_for_dir(dir);
+    }
     // Query agent usage in the background at app startup (shown in the header).
     app.start_usage_fetch();
     // Also update model lists in the background (version gate - keeps cache if CLI version is unchanged).
@@ -214,6 +265,34 @@ pub fn run() -> Result<()> {
     let res = run_loop(&mut terminal, &mut app);
     restore_terminal(&mut terminal)?;
     res
+}
+
+/// Resolves the positional `<DIR>` into an absolute, canonical directory.
+///
+/// Command-line semantics deliberately differ from the New Session dialog, where a
+/// separator-less name resolves under `config::projects_dir()`: a path given on the
+/// command line always means what the shell means by it, so `s7s .` is the process
+/// cwd. Handing the dialog an absolute path keeps it from re-interpreting the input.
+fn resolve_startup_dir(raw: &str) -> Result<std::path::PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("<DIR> is empty".to_string());
+    }
+    // `~/…` is normally expanded by the shell; this covers the quoted form.
+    let expanded = config::expand(trimmed);
+    let joined = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot resolve the current directory: {e}"))?
+            .join(expanded)
+    };
+    let canonical = std::fs::canonicalize(&joined)
+        .map_err(|e| format!("cannot open '{}': {e}", joined.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!("'{}' is not a directory", canonical.display()));
+    }
+    Ok(canonical)
 }
 
 /// Main event loop.
@@ -756,4 +835,94 @@ fn restore_terminal(terminal: &mut Tui) -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn dir_positional_parses_path_forms() {
+        let cli = parse(&["s7s", "."]).expect("parse");
+        assert_eq!(cli.dir.as_deref(), Some("."));
+        assert!(cli.command.is_none());
+
+        let cli = parse(&["s7s", "../other-project"]).expect("parse");
+        assert_eq!(cli.dir.as_deref(), Some("../other-project"));
+    }
+
+    #[test]
+    fn subcommand_names_win_over_dir_positional() {
+        // A folder literally named like a subcommand is unreachable as a bare word;
+        // a path form or `--` is the documented escape hatch.
+        assert!(matches!(
+            parse(&["s7s", "demo"]).expect("parse").command,
+            Some(CliCommand::Demo)
+        ));
+        assert_eq!(
+            parse(&["s7s", "./demo"]).expect("parse").dir.as_deref(),
+            Some("./demo")
+        );
+        assert_eq!(
+            parse(&["s7s", "--", "demo"]).expect("parse").dir.as_deref(),
+            Some("demo")
+        );
+    }
+
+    #[test]
+    fn dir_with_subcommand_is_rejected() {
+        // clap accepts this shape, so the explicit check owns the rejection.
+        let cli = parse(&["s7s", ".", "demo"]).expect("parse");
+        assert!(cli.dir_conflicts_with_subcommand());
+        assert!(!parse(&["s7s", "."])
+            .expect("parse")
+            .dir_conflicts_with_subcommand());
+        assert!(!parse(&["s7s", "demo"])
+            .expect("parse")
+            .dir_conflicts_with_subcommand());
+    }
+
+    #[test]
+    fn dir_conflicts_with_debug_only_flags_but_not_rebuild_cache() {
+        assert!(parse(&["s7s", "--print", "."]).is_err());
+        assert!(parse(&["s7s", "--usage-probe", "."]).is_err());
+        assert!(parse(&["s7s", "--model-probe", "."]).is_err());
+        // `--handoff-samples` takes an optional value, so a trailing `.` is its
+        // output directory, not <DIR>; the conflict shows in the other order.
+        assert_eq!(
+            parse(&["s7s", "--handoff-samples", "."])
+                .expect("parse")
+                .handoff_samples,
+            Some(Some(std::path::PathBuf::from(".")))
+        );
+        assert!(parse(&["s7s", ".", "--handoff-samples"]).is_err());
+        // Rebuilding the index before the dialog opens is a valid combination.
+        let cli = parse(&["s7s", "--rebuild-cache", "."]).expect("parse");
+        assert!(cli.rebuild_cache);
+        assert_eq!(cli.dir.as_deref(), Some("."));
+    }
+
+    #[test]
+    fn resolve_startup_dir_accepts_existing_relative_dir() {
+        // Tests run with the crate root as cwd.
+        let resolved = resolve_startup_dir("src").expect("resolve");
+        assert!(resolved.is_absolute());
+        assert!(resolved.is_dir());
+        assert!(resolved.ends_with("src"));
+        let dot = resolve_startup_dir(".").expect("resolve");
+        assert_eq!(dot, std::fs::canonicalize(".").expect("canonicalize"));
+    }
+
+    #[test]
+    fn resolve_startup_dir_rejects_missing_path_file_and_empty() {
+        assert!(resolve_startup_dir("no-such-folder-xyz").is_err());
+        assert!(resolve_startup_dir("Cargo.toml")
+            .expect_err("file must be rejected")
+            .contains("not a directory"));
+        assert!(resolve_startup_dir("   ").is_err());
+    }
 }
