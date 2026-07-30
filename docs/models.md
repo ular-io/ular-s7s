@@ -11,6 +11,7 @@ Design for querying, caching, and injecting the "selectable models list" to be d
 | agy | Line-by-line output of `agy models` | Display name exactly as is (`Gemini 3.1 Pro (Low)`) | Top-level `model` key in `settings.json` |
 
 - Only claude lacks an enumeration command, so PTY is required (takes a few seconds to boot per profile). The list may differ depending on the plan/account, so it is queried **per profile** (injecting `CLAUDE_CONFIG_DIR`).
+- The PTY child runs in the fixed `~/.config/s7s/probe` folder, not the directory s7s was started from, so a folder-scoped startup dialog cannot fail the query ([usage-display.md](./usage-display.md)). The startup version gate used to make such a failure sticky: with the CLI version unchanged, the stale catalog stayed cached until the next upgrade.
 - The `Default (recommended)` row in the claude `/model` screen duplicates s7s's own Default (no injection) item in the dropdown, so it is excluded from the list. If `✔` is on this row, the default model is set to None (CLI Default).
 - codex is also queried per profile (injecting `CODEX_HOME`), but it's a fast subprocess. The catalog is confirmed to be output even in an empty CODEX_HOME (bundled catalog).
 - agy cannot inject config env (see "agy env injection verification" below), so it is queried **globally once for the default path profile**, and additional agy profiles share that result (`ModelCatalog::for_profile` fallback).

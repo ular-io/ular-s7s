@@ -9,6 +9,31 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Screen text of the folder-trust dialogs that block a CLI before it reaches the
+/// prompt. Version-specific wording (claude 2.1.220, agy 1.1.8) — recheck on upgrade.
+const TRUST_PROMPT_MARKERS: &[&str] = &[
+    "Do you trust the files in this folder",
+    "Is this a project you created or one you trust",
+    "Do you trust the contents of this project",
+];
+
+/// Row label of the approval choice in those dialogs (identical across claude and agy).
+const TRUST_APPROVE_ROW: &str = "Yes, I trust this folder";
+
+/// How long the dialog may stay on screen after Enter was sent before the probe gives
+/// up: if confirming did not dismiss it, the dialog is not the one we recognized.
+const TRUST_CONFIRM_GRACE: Duration = Duration::from_secs(8);
+
+/// Whether the trust dialog's *highlighted* row is the approval choice, i.e. whether
+/// Enter confirms trust rather than declining it. Guards the auto-confirm against a
+/// reordered menu: the caret has to sit on the row that grants trust.
+fn trust_approval_selected(screen: &str) -> bool {
+    screen.lines().any(|line| {
+        let row = line.trim_start();
+        (row.starts_with('❯') || row.starts_with('>')) && row.contains(TRUST_APPROVE_ROW)
+    })
+}
+
 /// Result of `drive_screen`: final screen text showing completion markers, or a logged out status.
 pub(crate) enum DriveOutcome {
     Screen(String),
@@ -66,9 +91,14 @@ pub(crate) fn drive_screen(
     for (key, value) in envs {
         builder.env(key, value.as_os_str());
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        builder.cwd(cwd);
+    // Fixed probe directory, never the s7s launch directory: startup dialogs keyed on
+    // the working directory (claude trust prompt, project MCP approval) would otherwise
+    // make the query fail for whole folders. See `probe::probe_cwd`.
+    let probe_cwd = super::probe_cwd();
+    if let Some(cwd) = &probe_cwd {
+        builder.cwd(&cwd.path);
     }
+    let may_confirm_trust = probe_cwd.is_some_and(|cwd| cwd.dedicated);
     let child = pty
         .slave
         .spawn_command(builder)
@@ -102,6 +132,9 @@ pub(crate) fn drive_screen(
     // during automatic relogin; finalize as logged out only if grace time expires without ready markers.
     let mut logout_seen = false;
     let logout_decide = Duration::from_secs(15);
+    // When the trust dialog was confirmed, so a dialog that survives the grace period
+    // is reported as untrusted instead of silently eating the whole ready timeout.
+    let mut trust_confirmed_at: Option<Instant> = None;
 
     let result = loop {
         // Receives screen updates (200ms polling).
@@ -117,11 +150,26 @@ pub(crate) fn drive_screen(
         }
 
         if typed_at.is_none() {
-            // Fail immediately if Claude prompts for folder trust in an untrusted directory.
-            if screen.contains("Do you trust the files in this folder")
-                || screen.contains("Is this a project you created or one you trust")
-            {
-                break Err(anyhow!("{cmd}: untrusted folder (trust prompt)"));
+            // A folder-trust dialog blocks the boot this probe waits for, and agy raises it
+            // for every workspace missing from `trustedWorkspaces`, so the dedicated probe
+            // folder needs confirming once per agent config. Gated on that folder and on the
+            // caret sitting on the approval row. Never falls through to typing while a dialog
+            // is up (`/usage` would land in the menu), and runs before the logout grace so
+            // agy's boot-time "not signed in" line cannot become `NotLoggedIn`.
+            if TRUST_PROMPT_MARKERS.iter().any(|m| screen.contains(m)) {
+                match trust_confirmed_at {
+                    Some(at) if at.elapsed() > TRUST_CONFIRM_GRACE => {
+                        break Err(anyhow!("{cmd}: trust prompt not dismissed by confirm"));
+                    }
+                    Some(_) => continue,
+                    None if may_confirm_trust && trust_approval_selected(&screen) => {
+                        let _ = writer.write_all(b"\r");
+                        let _ = writer.flush();
+                        trust_confirmed_at = Some(Instant::now());
+                        continue;
+                    }
+                    None => break Err(anyhow!("{cmd}: untrusted folder (trust prompt)")),
+                }
             }
             let ready = ready_markers.iter().any(|m| screen.contains(m));
             // Write input after ready markers appear and `min_wait` (boot stabilization) elapses.
@@ -234,4 +282,42 @@ pub(crate) fn drive_screen(
     });
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// agy 1.1.8 dialog, approval row selected.
+    const AGY_TRUST: &str = "\n Accessing workspace:\n\n /Users/x/.config/s7s/probe\n\n \
+         Do you trust the contents of this project?\n\n > Yes, I trust this folder\n   No, exit\n";
+
+    /// claude 2.1.220 dialog, approval row selected (numbered rows).
+    const CLAUDE_TRUST: &str = "\n Quick safety check: Is this a project you created or one \
+         you trust?\n\n ❯ 1. Yes, I trust this folder\n   2. No, continue without these \
+         permissions\n";
+
+    #[test]
+    fn approval_row_is_recognized_for_both_dialog_layouts() {
+        assert!(trust_approval_selected(AGY_TRUST));
+        assert!(trust_approval_selected(CLAUDE_TRUST));
+        assert!(TRUST_PROMPT_MARKERS.iter().any(|m| AGY_TRUST.contains(m)));
+        assert!(TRUST_PROMPT_MARKERS
+            .iter()
+            .any(|m| CLAUDE_TRUST.contains(m)));
+    }
+
+    #[test]
+    fn confirm_is_withheld_unless_the_caret_sits_on_the_approval_row() {
+        // Reordered menu with the decline row selected: Enter would decline, so the
+        // probe must not send it and instead report the folder as untrusted.
+        let decline_selected = AGY_TRUST
+            .replace("> Yes, I trust this folder", "  Yes, I trust this folder")
+            .replace("   No, exit", " > No, exit");
+        assert!(!trust_approval_selected(&decline_selected));
+        // Approval text alone (no caret anywhere) is not a selection either.
+        assert!(!trust_approval_selected("  Yes, I trust this folder\n"));
+        // An ordinary boot screen carries neither the prompt nor a selection.
+        assert!(!trust_approval_selected("? for shortcuts\n"));
+    }
 }

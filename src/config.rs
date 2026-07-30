@@ -183,6 +183,17 @@ pub(crate) fn projects_dir() -> PathBuf {
     config_base_dir().join("projects")
 }
 
+/// Fixed working directory for CLI screen probes: `~/.config/s7s/probe`.
+///
+/// A probe only reads official screens, so the launch directory cannot change what
+/// it should report — but agent CLIs gate startup on the working directory (claude's
+/// trust dialog, project `.mcp.json` approval), which made the outcome depend on
+/// where s7s was started. Dedicated rather than `config_base_dir()` so no file placed
+/// under the config root can re-trigger those dialogs.
+pub(crate) fn probe_dir() -> PathBuf {
+    config_base_dir().join("probe")
+}
+
 /// Seed template written by `Edit Config` when config.toml is missing or blank.
 /// Every key is commented out showing its built-in default, so the file documents
 /// itself without pinning any value (commented keys never override defaults).
@@ -285,6 +296,17 @@ mod tests {
         assert_eq!(cfg.resume_codex, "codex resume {id}");
         // Unspecified keys keep built-in defaults.
         assert_eq!(cfg.new_codex, Config::built_in().new_codex);
+    }
+
+    #[test]
+    fn probe_dir_is_a_dedicated_folder_under_the_config_root() {
+        let dir = probe_dir();
+        // Must not collapse onto the config root or the user project root: those
+        // hold user-editable files, and a CLAUDE.md / .claude there would let the
+        // folder-scoped startup dialogs fail probes again.
+        assert!(dir.starts_with(config_base_dir()));
+        assert_ne!(dir, config_base_dir());
+        assert_ne!(dir, projects_dir());
     }
 
     #[test]

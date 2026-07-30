@@ -254,7 +254,9 @@ diffing of any future list-parser change.
   (graceful Ctrl+C/Ctrl+D, then pgid+descendant SIGKILL and PPID=1 orphan
   recovery). `probe/process.rs` owns process discovery/termination helpers and
   the PATH `installed` check. `probe/mod.rs` holds the CLI helpers shared by
-  both probe clients (`claude_logged_in`, `CLAUDE_READY_MARKERS`).
+  both probe clients (`claude_logged_in`, `CLAUDE_READY_MARKERS`, `probe_cwd`).
+  Probe children always run in the fixed `~/.config/s7s/probe` folder, never in
+  the s7s launch directory — see [usage-display.md](./usage-display.md).
 - `usage.rs` — a probe client: drives each agent CLI through the shared driver to
   read remaining % and reset countdown; owns the agent-specific commands, login
   interpretation (`agy_logged_in`/`codex_logged_in`), screen-to-domain parsing,
