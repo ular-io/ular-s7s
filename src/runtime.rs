@@ -38,6 +38,7 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 #[command(
     name = "s7s",
     version,
+    disable_version_flag = true,
     about = "s7s — Search, inspect, and resume AI CLI sessions (TUI when run without a command)",
     after_help = "\
 PROFILES: ~/.config/s7s/profiles.json (builtin Claude/Antigravity/Codex + user-defined)
@@ -54,6 +55,11 @@ SESSION:   `s7s session show <id>` renders one session's context;
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
+    /// Print version
+    // Replaces clap's built-in flag (disabled above) so the short form is `-v`, not `-V`.
+    // clap handles the action and exits; the field itself is never read.
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    version: Option<bool>,
     /// Force rebuild the entire session cache
     #[arg(long)]
     rebuild_cache: bool,
@@ -77,6 +83,8 @@ enum CliCommand {
     Session(session_cli::SessionArgs),
     /// Run s7s in demo mode using mock English sessions (disposable sandbox under the OS cache dir)
     Demo,
+    /// Print version
+    Version,
 }
 
 /// Runs s7s: parses the CLI, dispatches subcommands/debug modes, then drives the
@@ -84,6 +92,12 @@ enum CliCommand {
 /// only forwards to it.
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    // `s7s version` mirrors the `-v` / `--version` flag output.
+    if let Some(CliCommand::Version) = &cli.command {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     if let Some(CliCommand::Demo) = &cli.command {
         config::set_demo_mode(true);

@@ -20,6 +20,7 @@ parsing is `clap` derive. Modes:
 | `s7s --usage-probe` | Print usage for all profiles and exit (debug) | `usage` |
 | `s7s --model-probe` | Print model lists for all profiles and exit (debug) | `models` |
 | `s7s demo` | TUI over a disposable mock sandbox under the OS cache dir | `demo` |
+| `s7s version` / `s7s -v` / `s7s --version` | Print `s7s <version>` and exit | `runtime` |
 
 ## Session scan and cache flow
 

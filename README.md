@@ -80,7 +80,7 @@ s7s --usage-probe           # Print usage probe results only, without TUI (debug
 s7s --model-probe           # Print model list probe results only, without TUI (debug; no cache update)
 s7s --handoff-samples [DIR] # Generate one deterministic handoff Markdown sample per agent (debug)
 s7s --help                  # Print help
-s7s --version               # Print version
+s7s version                 # Print version (same as -v / --version)
 ```
 
 ### Shortcuts (Session Screen)
