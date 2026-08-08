@@ -12,6 +12,32 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+const TAB_STOP: usize = 4;
+
+/// Converts arbitrary external text into one terminal-safe display line.
+///
+/// Tabs advance to the next fixed tab stop instead of being passed to the
+/// terminal (where their width depends on the current cursor column). Other
+/// control characters become spaces so they cannot alter terminal state.
+pub(crate) fn sanitize_single_line(s: &str) -> String {
+    let mut out = String::new();
+    let mut width = 0usize;
+    for g in s.graphemes(true) {
+        if g == "\t" {
+            let spaces = TAB_STOP - (width % TAB_STOP);
+            out.push_str(&" ".repeat(spaces));
+            width += spaces;
+        } else if g.chars().any(char::is_control) {
+            out.push(' ');
+            width += 1;
+        } else {
+            out.push_str(g);
+            width += g.width();
+        }
+    }
+    out
+}
+
 /// Truncates a string to `max_w` display columns, appending `…` when clipped.
 pub(crate) fn truncate_w(s: &str, max_w: usize) -> String {
     truncate_w_with_ellipsis(s, max_w, "…")
@@ -68,9 +94,8 @@ pub(crate) fn truncate_w_with_ellipsis(s: &str, max_w: usize, ellipsis: &str) ->
 
 /// Wraps text to a `max_w` display-column limit (no ellipsis).
 pub(crate) fn wrap_w(s: &str, max_w: usize) -> Vec<String> {
-    // Tab stops (space expansion width). unicode-width counts `\t` as 0 width, but terminals expand it.
-    // This discrepancy causes text to overflow past frames. Expands tabs to spaces before calculation to match widths.
-    const TAB_STOP: usize = 4;
+    // unicode-width counts `\t` as 0 width, but terminals expand it. Expand
+    // tabs before measuring so content cannot overflow its frame.
     if max_w == 0 {
         return Vec::new();
     }
@@ -187,6 +212,13 @@ mod tests {
     fn tab_expansion_is_unchanged() {
         assert_eq!(wrap_w("a\tb", 8), vec!["a   b".to_string()]);
         assert_eq!(wrap_w("\tx", 8), vec!["    x".to_string()]);
+    }
+
+    #[test]
+    fn single_line_text_expands_tabs_and_neutralizes_controls() {
+        let out = sanitize_single_line(&format!("{HEART}\tmodel\nname\u{1b}"));
+        assert_eq!(out, format!("{HEART}  model name "));
+        assert!(!out.chars().any(char::is_control));
     }
 
     #[test]

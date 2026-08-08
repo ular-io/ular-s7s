@@ -1,15 +1,16 @@
 //! Querying and caching of selectable models per agent CLI (for the New Session model dropdown).
 //!
-//! Methods of enumeration (verified in 2026-07, see docs/models.md):
+//! Methods of enumeration (verified in 2026-08, see docs/models.md):
 //! - claude: Lacks an enumeration command, so we scrape the `/model` screen via PTY (sharing
 //!   the same driver `probe::pty::drive_screen` with usage). Since the list depends on plans/accounts,
 //!   we query it per profile (injecting `CLAUDE_CONFIG_DIR`) and obtain the current default model
 //!   marked with ✔.
 //! - codex: `codex debug models` prints a JSON catalog (only `visibility=="list"` is used).
 //!   The default model is the top-level `model` key in `<CODEX_HOME>/config.toml`.
-//! - agy: `agy models` prints display names line-by-line. Since environment injection is not supported,
-//!   we only query the default path profile, and other profiles share its result (fallback in
-//!   `ModelCatalog::for_profile`). The default model is the top-level `model` key in `settings.json`.
+//! - agy: `agy models` prints tab-separated slug/display-name rows (legacy versions printed only
+//!   display names). Since environment injection is not supported, we only query the default path
+//!   profile, and other profiles share its result (fallback in `ModelCatalog::for_profile`). The
+//!   default model is the top-level `model` key in `settings.json`.
 //!
 //! Because CLIs do not validate invalid model names (agy silently falls back to the default model,
 //! codex does not validate on startup - verified), this module is responsible for the accuracy of the list.
@@ -107,7 +108,9 @@ struct ModelsFile {
 /// - 2: claude `--model` values are normalized aliases (see `claude_alias`); v1 caches may
 ///   hold the raw display name of the 1M-context row (`opus (1m context)`), which no CLI
 ///   accepts.
-const MODELS_FILE_VERSION: u32 = 2;
+/// - 3: agy `models` rows are split into tab-separated slug/display-name fields; v2 caches
+///   may hold the whole row (including a tab) as an invalid `--model` value.
+const MODELS_FILE_VERSION: u32 = 3;
 
 impl ModelCatalog {
     /// Loads models.json. Returns an empty catalog if missing or corrupted.
@@ -599,8 +602,9 @@ fn codex_default_model(path: &Path) -> Option<String> {
     None
 }
 
-/// agy: Line-separated display names from `agy models`. Default model is the top-level
-/// `model` key in settings.json (verified to share the same format as display name).
+/// agy: Tab-separated `slug<TAB>display name` rows from `agy models`. Older CLI versions
+/// emitted one display name per line, which remains supported. Default model is the top-level
+/// `model` key in settings.json.
 fn fetch_agy(config_root: &Path) -> Result<(Vec<ModelEntry>, Option<String>)> {
     let out = std::process::Command::new("agy").arg("models").output()?;
     if !out.status.success() {
@@ -609,18 +613,48 @@ fn fetch_agy(config_root: &Path) -> Result<(Vec<ModelEntry>, Option<String>)> {
             out.status.code().unwrap_or(-1)
         ));
     }
-    let models: Vec<ModelEntry> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|l| ModelEntry {
-            value: l.to_string(),
-            label: l.to_string(),
-            note: String::new(),
-        })
-        .collect();
-    let default_model = agy_default_model(&config_root.join("settings.json"));
+    let models = parse_agy_models(&String::from_utf8_lossy(&out.stdout));
+    let default_model = normalize_agy_model_value(
+        agy_default_model(&config_root.join("settings.json")),
+        &models,
+    );
     Ok((models, default_model))
+}
+
+/// Parses current `agy models` output (`slug<TAB>display name`) while retaining
+/// compatibility with legacy display-name-only output.
+fn parse_agy_models(text: &str) -> Vec<ModelEntry> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let Some((value, display)) = line.split_once('\t') else {
+                let value = line.split_whitespace().collect::<Vec<_>>().join(" ");
+                return (!value.is_empty()).then(|| ModelEntry {
+                    label: value.clone(),
+                    value,
+                    note: String::new(),
+                });
+            };
+            let value = value.trim();
+            if value.is_empty() {
+                return None;
+            }
+            let display = display.split_whitespace().collect::<Vec<_>>().join(" ");
+            let note = if display == value {
+                String::new()
+            } else {
+                display
+            };
+            Some(ModelEntry {
+                value: value.to_string(),
+                label: value.to_string(),
+                note,
+            })
+        })
+        .collect()
 }
 
 /// Read top-level `model` key from agy settings.json.
@@ -628,6 +662,19 @@ fn agy_default_model(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     v.get("model")?.as_str().map(str::to_string)
+}
+
+/// Maps a legacy display-name setting to the slug emitted alongside it by current agy.
+/// Unknown values stay unchanged so the dialog can block them as missing.
+fn normalize_agy_model_value(configured: Option<String>, models: &[ModelEntry]) -> Option<String> {
+    let configured = configured?;
+    models
+        .iter()
+        .find(|model| {
+            model.value == configured || (!model.note.is_empty() && model.note == configured)
+        })
+        .map(|model| model.value.clone())
+        .or(Some(configured))
 }
 
 #[cfg(test)]
@@ -743,6 +790,22 @@ uu
     }
 
     #[test]
+    fn load_from_discards_v2_agy_rows_with_embedded_tabs() {
+        let dir = std::env::temp_dir().join(format!("ular-models-agy-ver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        std::fs::write(
+            &path,
+            r#"{"version":2,"profiles":{"builtin-antigravity":{"agent":"Antigravity","cli_version":"1.1.11","models":[{"value":"gemini-3.6-flash-high\tGemini 3.6 Flash (High)","label":"gemini-3.6-flash-high\tGemini 3.6 Flash (High)","note":""}],"default_model":null}}}"#,
+        )
+        .unwrap();
+        assert!(ModelCatalog::load_from(&path)
+            .cached_version("builtin-antigravity")
+            .is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn parse_claude_model_screen_default_row_checked_means_cli_default() {
         // If ✔ is on the Default row, default_model is None (relying on CLI Default).
         let screen = "\
@@ -775,6 +838,52 @@ uu
         assert_eq!(values, ["gpt-5.6-sol", "gpt-5.4"]);
         assert_eq!(models[0].label, "GPT-5.6-Sol");
         assert!(models[0].note.starts_with("Latest frontier"));
+    }
+
+    #[test]
+    fn parse_agy_models_splits_slug_and_display_name() {
+        let models = parse_agy_models(
+            "gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n\
+             claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n",
+        );
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].value, "gemini-3.6-flash-high");
+        assert_eq!(models[0].label, "gemini-3.6-flash-high");
+        assert_eq!(models[0].note, "Gemini 3.6 Flash (High)");
+        assert_eq!(models[1].value, "claude-opus-4-6-thinking");
+        assert!(!models.iter().any(|model| {
+            model.value.contains('\t') || model.label.contains('\t') || model.note.contains('\t')
+        }));
+    }
+
+    #[test]
+    fn parse_agy_models_keeps_legacy_display_name_rows() {
+        let models = parse_agy_models("Gemini 3.1 Pro (High)\nGemini 3 Flash\n");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].value, "Gemini 3.1 Pro (High)");
+        assert_eq!(models[0].label, "Gemini 3.1 Pro (High)");
+        assert!(models[0].note.is_empty());
+    }
+
+    #[test]
+    fn normalize_agy_default_maps_legacy_display_name_to_slug() {
+        let models = parse_agy_models(
+            "gemini-3.6-flash-low\tGemini 3.6 Flash (Low)\n\
+             gemini-3.5-flash-low\tGemini 3.5 Flash (Low)\n",
+        );
+        assert_eq!(
+            normalize_agy_model_value(Some("Gemini 3.6 Flash (Low)".to_string()), &models)
+                .as_deref(),
+            Some("gemini-3.6-flash-low")
+        );
+        assert_eq!(
+            normalize_agy_model_value(Some("removed-model".to_string()), &models).as_deref(),
+            Some("removed-model")
+        );
+        assert_eq!(
+            normalize_agy_model_value(Some(String::new()), &models).as_deref(),
+            Some("")
+        );
     }
 
     #[test]

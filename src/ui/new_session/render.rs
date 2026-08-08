@@ -3,7 +3,7 @@
 //! overlay popup.
 
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
-use crate::ui::components::text::{pad_w, truncate_w};
+use crate::ui::components::text::{pad_w, sanitize_single_line, truncate_w};
 use crate::ui::render::{centered_fixed_rect, input_view, usage_spans};
 use crate::ui::App;
 use ratatui::{
@@ -137,6 +137,8 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
     let model_inner = model_block.inner(rows[2]);
     f.render_widget(model_block, rows[2]);
     if let Some(opt) = state.model_options.get(state.model_idx) {
+        let display_label = sanitize_single_line(&opt.label);
+        let display_note = sanitize_single_line(&opt.note);
         let label_style = if opt.missing {
             // Default configured model absent from retrieved options: triggers red alert and disables OK button.
             Style::default().fg(th.error).add_modifier(Modifier::BOLD)
@@ -144,12 +146,12 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
             Style::default().add_modifier(Modifier::BOLD)
         };
         let inner_w = model_inner.width as usize;
-        let label_txt = truncate_w(&opt.label, inner_w);
+        let label_txt = truncate_w(&display_label, inner_w);
         let used = label_txt.width() + 2;
         let mut spans = vec![Span::styled(format!("{label_txt}  "), label_style)];
-        if !opt.note.is_empty() && inner_w > used {
+        if !display_note.is_empty() && inner_w > used {
             spans.push(Span::styled(
-                truncate_w(&opt.note, inner_w - used),
+                truncate_w(&display_note, inner_w - used),
                 th.soft_dim(),
             ));
         }
@@ -361,7 +363,7 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
             let label_w = state
                 .model_options
                 .iter()
-                .map(|o| o.label.width())
+                .map(|o| sanitize_single_line(&o.label).width())
                 .max()
                 .unwrap_or(1);
             state
@@ -373,7 +375,8 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 .map(|(i, opt)| {
                     let selected = i == state.model_idx;
                     let mark = if selected { "●" } else { "○" };
-                    let label = pad_w(&opt.label, label_w);
+                    let label = pad_w(&sanitize_single_line(&opt.label), label_w);
+                    let note = sanitize_single_line(&opt.note);
                     let label_style = if opt.missing {
                         Style::default().fg(th.error)
                     } else {
@@ -390,10 +393,10 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                         ),
                         Span::styled(format!("{label}  "), label_style),
                     ];
-                    if !opt.note.is_empty() {
+                    if !note.is_empty() {
                         let used = 3 + label_w + 2;
                         spans.push(Span::styled(
-                            truncate_w(&opt.note, inner_w.saturating_sub(used)),
+                            truncate_w(&note, inner_w.saturating_sub(used)),
                             th.soft_dim(),
                         ));
                     }

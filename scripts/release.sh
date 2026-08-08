@@ -43,5 +43,5 @@ gh release create "$VERSION" dist/s7s-mac-arm64.tar.gz dist/s7s-mac-amd64.tar.gz
   --title "$VERSION" \
   --generate-notes
 
-echo "=== Release task-124 finished successfully ==="
+echo "=== Release $VERSION finished successfully ==="
 echo "Copy the SHA256 hashes above to update your Homebrew Formula."

@@ -2,19 +2,31 @@
 
 Design for querying, caching, and injecting the "selectable models list" to be displayed in the Model dropdown of the New Session dialog. Implementation: `src/models.rs` (query/cache), `src/ui/mod.rs` (dropdown state/background integration), `src/resume.rs::with_model_flag` (command injection).
 
-## Model List Enumeration Methods (Observed July 2026)
+## Model List Enumeration Methods (Observed August 2026)
 
 | Agent | Method | Value Format | Default Model Source |
 | :-- | :-- | :-- | :-- |
 | claude | Scraping `/model` screen via PTY (`probe::pty::drive_screen`, shared with usage) | alias normalized from the row name (`fable`, `opus[1m]`) | `✔` mark in the screen list |
 | codex | `codex debug models` JSON (only `visibility=="list"`) | slug (`gpt-5.6-sol`) | Top-level `model` key in `<CODEX_HOME>/config.toml` |
-| agy | Line-by-line output of `agy models` | Display name exactly as is (`Gemini 3.1 Pro (Low)`) | Top-level `model` key in `settings.json` |
+| agy | `agy models`, one `slug<TAB>display name` row per model | slug (`gemini-3.6-flash-high`); legacy display-name-only rows remain supported | Top-level `model` key in `settings.json`, normalized to its matching slug |
 
 - Only claude lacks an enumeration command, so PTY is required (takes a few seconds to boot per profile). The list may differ depending on the plan/account, so it is queried **per profile** (injecting `CLAUDE_CONFIG_DIR`).
 - The PTY child runs in the fixed `~/.config/s7s/probe` folder, not the directory s7s was started from, so a folder-scoped startup dialog cannot fail the query ([usage-display.md](./usage-display.md)). The startup version gate used to make such a failure sticky: with the CLI version unchanged, the stale catalog stayed cached until the next upgrade.
 - The `Default (recommended)` row in the claude `/model` screen duplicates s7s's own Default (no injection) item in the dropdown, so it is excluded from the list. If `✔` is on this row, the default model is set to None (CLI Default).
 - codex is also queried per profile (injecting `CODEX_HOME`), but it's a fast subprocess. The catalog is confirmed to be output even in an empty CODEX_HOME (bundled catalog).
 - agy cannot inject config env (see "agy env injection verification" below), so it is queried **globally once for the default path profile**, and additional agy profiles share that result (`ModelCatalog::for_profile` fallback).
+
+### agy row parsing (`models.rs::parse_agy_models`)
+
+- agy 1.1.11 emits `slug<TAB>display name`, for example
+  `gemini-3.6-flash-high<TAB>Gemini 3.6 Flash (High)`.
+- The slug is the `--model` value and primary dropdown label; the display name is the dimmed note.
+- Older display-name-only rows remain valid for compatibility with earlier CLI versions.
+- A legacy display-name value in `settings.json` is mapped to the slug whose display name matches.
+  Truly unknown configured values remain unchanged and therefore use the existing missing-model guard.
+- A tab must never survive in `ModelEntry.value`, `label`, or `note`. `unicode-width` assigns a tab
+  zero width while terminals advance it to the next tab stop; measuring the row as zero-width and
+  then emitting the raw tab corrupts every later cell in that row, including the popup border.
 
 ### claude row name → `--model` alias (`models.rs::claude_alias`)
 
@@ -43,7 +55,7 @@ by any CLI — the alias is `opus[1m]` (verified in the 2.1.220 binary and in th
 ## Cache and Update Timing
 
 - Cache: `~/.config/s7s/models.json` (profile id key, `ModelCatalog`). The CLI version at the time of query (first line of `--version`) is saved along with the items.
-- **Schema version (`MODELS_FILE_VERSION`)**: a file whose `version` differs is discarded wholesale on load. Bump it whenever cached values can be *wrong* rather than merely stale — the version gate below keys off the CLI version, so a parser fix alone would never evict a bad entry (nor the `default_model` / `last_selected` derived from it). v2 = claude values are normalized aliases.
+- **Schema version (`MODELS_FILE_VERSION`)**: a file whose `version` differs is discarded wholesale on load. Bump it whenever cached values can be *wrong* rather than merely stale — the version gate below keys off the CLI version, so a parser fix alone would never evict a bad entry (nor the `default_model` / `last_selected` derived from it). v2 = claude values are normalized aliases; v3 = agy tab-separated rows are split into slug/display fields, evicting v2 rows that stored the entire tabbed line as the model value.
 - **App Startup**: Initiates background querying but with a **version gate** — if the cached CLI version and current version match, re-querying is skipped (`ModelsResult::Skipped`) to eliminate the cost of booting the claude PTY. The model list only changes upon CLI upgrade/plan change.
 - **ctrl+u**: Force re-query (ignores version gate) — covers plan changes.
 - **Profile Save**: Only saved profiles are incrementally force-queried (path might have changed).
@@ -69,14 +81,14 @@ by any CLI — the alias is `opus[1m]` (verified in the 2.1.220 binary and in th
 - `None` = never recorded (fall back to the CLI default). An explicit **Default** pick is remembered distinctly from "never picked", so choosing Default sticks.
 - Stored on the same `models.json` entry as the fetched list. Since background re-fetches build a fresh `ProfileModels` (with `last_selected == None`), `ModelCatalog::insert` **carries over** the previously stored pick so refreshes never wipe it.
 - Written via `ModelCatalog::set_last_selected` + `save()` at launch time; a no-op if the profile has no cached entry yet (rare first-run window before any fetch completes). `save()` is test-guarded so unit tests never touch the real cache.
-- Motivation: when a CLI renames models across versions (e.g. agy display-name → slug), the CLI's own `default_model` in its config can go stale and no longer match the fetched list. Once the user picks a valid model once, `last_selected` becomes the dialog default and the stale config no longer resurfaces.
+- Motivation: when a CLI removes or renames models across versions, the CLI's own `default_model` in its config can go stale and no longer match the fetched list. Matching agy display-name defaults are normalized to current slugs; for genuinely stale defaults, once the user picks a valid model, `last_selected` becomes the dialog default and the stale config no longer resurfaces.
 
 ## Command Injection (Append Method)
 
 - `NewSessionRequest.model` (Option) → `resume::run_new`/`preview_new_command` appends ` --model '<value>'` to the tail of the template. If Default (None), it leaves it as is.
 - Templates (`new_*` in `config.toml`) are not touched, ensuring compatibility with existing user settings.
-- The value is always wrapped in single quotes (in preparation for spaces/parentheses in agy display names).
-- The `--model` long flag behavior for all three CLIs was empirically verified via the boot banner/status bar: claude alias/full name (`claude-haiku-4-5-20251001`), codex slug, agy display name.
+- The value is always wrapped in single quotes (legacy agy display-name values contain spaces/parentheses).
+- The `--model` long flag behavior for all three CLIs was empirically verified via the boot banner/status bar: claude alias/full name (`claude-haiku-4-5-20251001`), codex slug, and agy slug (legacy versions used display names).
 
 ## Blocking Antigravity in Add Profile
 
