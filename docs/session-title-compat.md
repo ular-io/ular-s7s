@@ -92,6 +92,13 @@ in `title::resolve`.
 - title index: `~/.codex/session_index.jsonl`
 - title DB: `threads.title` in `~/.codex/state_*.sqlite`
 
+> **Unverified since codex 0.147.** `session_index.jsonl` has not been written
+> since the upgrade, and 0.147 added a `local_thread_catalog` table
+> (`thread_id`, `display_title`) in `~/.codex/sqlite/codex-*.db` that may have
+> replaced it as the rename target. Neither store can be ruled out from the files
+> on disk alone — perform a real rename in the CLI and observe which file
+> actually changes before adjusting the write paths below.
+
 ### Title fields
 
 - body

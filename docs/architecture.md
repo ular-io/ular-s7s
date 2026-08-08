@@ -92,8 +92,9 @@ same `parse_lines` → `chain_filter` (`parentUuid` active-branch reduction) →
 task-notification identity, turn-acceptance gates) pipeline. Codex —
 `src/parser/codex/events.rs` (R13): both consumers run the same streaming
 `decode` (one `CodexRecord` per rollout line: session_meta, ai-title,
-`thread_rolled_back` backtrack marker, user turn in either `event_msg` or
-`response_item` form, QA, assistant text, tool call/result) with the rollback
+`thread_rolled_back` backtrack marker, user turn in any of the three storage
+forms — 0.147+ `item_completed`, pre-0.147 `event_msg`, `response_item` — QA,
+assistant text, tool call/result) with the rollback
 truncation applied by each accumulator. Codex needs no pre-pass because the
 backtrack marker truncates in file order (unlike Claude's leaf-known-at-end
 chain). In both, a storage-format change can no longer silently diverge the two

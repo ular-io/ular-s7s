@@ -34,7 +34,7 @@ pub(crate) enum CodexRecord<'a> {
     /// turns. Boundaries are counted for every [`CodexRecord::User`] (including
     /// noise), so `num_turns` counts real CLI turns.
     RolledBack(usize),
-    /// A user turn in either supported form (unified in R13 — see [`decode`]).
+    /// A user turn in any supported form (see [`decode`]).
     User(UserRecord),
     /// An `AskUserQuestion`/`ask_question` response, formatted `· question →
     /// answer`. Each consumer applies its own turn gate / promotion.
@@ -80,12 +80,14 @@ pub(crate) enum UserTextKind {
 
 /// Decodes one rollout line into its single contributing record.
 ///
-/// The user-turn form is unified in R13: both consumers now accept a turn via
-/// [`turn::extract_user_text`], which covers the `event_msg` `user_message`
-/// form *and* the `response_item` `role == "user"` form. The context parser
-/// previously read only the `event_msg` form, so a `response_item` user turn
-/// would have diverged the list Q count from the detail turn count; the shared
-/// decoder removes that divergence.
+/// Three user-turn forms are accepted, and both consumers see the same one:
+/// the `item_completed` envelope written by codex 0.147+ (see
+/// [`item_completed_user_text`]), the older `event_msg` `user_message` event,
+/// and the `response_item` `role == "user"` form — the last two via
+/// [`turn::extract_user_text`]. The context parser previously read only the
+/// `event_msg` form, so a `response_item` user turn would have diverged the
+/// list Q count from the detail turn count; the shared decoder removes that
+/// divergence (R13).
 pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
     match v.get("type").and_then(Value::as_str) {
         Some("session_meta") => {
@@ -122,16 +124,8 @@ pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
             completed_at_ms: codex_completed_at_ms(v),
         };
     }
-    if let Some(text) = turn::extract_user_text(v) {
-        let kind = match (!is_noise_turn(&text)).then(|| clean_turn(&text)).flatten() {
-            Some(cleaned) => UserTextKind::Turn { cleaned },
-            None => UserTextKind::Boundary,
-        };
-        return CodexRecord::User(UserRecord {
-            text,
-            kind,
-            submitted_at_ms: record_timestamp_ms(v),
-        });
+    if let Some(text) = item_completed_user_text(v).or_else(|| turn::extract_user_text(v)) {
+        return CodexRecord::User(user_record(text, record_timestamp_ms(v)));
     }
     if let Some(qa) = turn::extract_question_answers(v) {
         return CodexRecord::Qa {
@@ -161,6 +155,52 @@ pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
         }
     }
     CodexRecord::Other
+}
+
+/// Applies the shared turn-acceptance gate to extracted user text.
+fn user_record(text: String, submitted_at_ms: Option<i64>) -> UserRecord {
+    let kind = match (!is_noise_turn(&text)).then(|| clean_turn(&text)).flatten() {
+        Some(cleaned) => UserTextKind::Turn { cleaned },
+        None => UserTextKind::Boundary,
+    };
+    UserRecord {
+        text,
+        kind,
+        submitted_at_ms,
+    }
+}
+
+/// Extracts user text from the `item_completed` envelope, or None when the line
+/// is not a completed user message.
+///
+/// Codex 0.147 stopped emitting the `event_msg` `user_message` / `agent_message`
+/// events and replaced them with one item stream: a submitted turn now arrives
+/// as `event_msg` with `payload.type == "item_completed"` and
+/// `payload.item.type == "UserMessage"`. Without this form a 0.147 rollout
+/// yields no user turns at all, and the session drops out of the list entirely.
+///
+/// Two neighbouring records are deliberately left unread:
+/// - `item.type == "AgentMessage"` — `response_item` `role == "assistant"` still
+///   carries every answer, so reading both would duplicate each answer in the
+///   detailed context view.
+/// - the `response_item` `role == "user"` line accompanying each turn — it also
+///   appears once per session for the instruction preamble the CLI prepends,
+///   which is not a user turn. It stays inert because its content parts are
+///   `input_text`, which [`turn::extract_user_text`] does not accept.
+///
+/// A `UserMessage` carrying no text (an image-only input) still returns
+/// `Some("")` so it records a rollback boundary without opening a turn, exactly
+/// as the empty `user_message` event did.
+fn item_completed_user_text(v: &Value) -> Option<String> {
+    let payload = v.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("item_completed") {
+        return None;
+    }
+    let item = payload.get("item")?;
+    if item.get("type").and_then(Value::as_str) != Some("UserMessage") {
+        return None;
+    }
+    Some(message_text(item).unwrap_or_default())
 }
 
 fn codex_completed_at_ms(v: &Value) -> Option<i64> {
@@ -209,7 +249,8 @@ fn assistant_text(v: &Value) -> Option<String> {
     }
 }
 
-/// Joins the non-empty text parts of a `response_item` assistant message.
+/// Joins the non-empty text parts of a `content`-carrying record (a
+/// `response_item` message or an `item_completed` item).
 fn message_text(payload: &Value) -> Option<String> {
     match payload.get("content")? {
         Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
@@ -270,6 +311,43 @@ mod tests {
             panic!("expected user turn from response_item form");
         };
         assert!(matches!(u.kind, UserTextKind::Turn { cleaned } if cleaned == "질문"));
+    }
+
+    #[test]
+    fn decode_accepts_item_completed_user_form() {
+        // codex 0.147+ writes the submitted turn only in this form.
+        let v = val(
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"질문","text_elements":[]}]}}}"#,
+        );
+        let CodexRecord::User(u) = decode(&v) else {
+            panic!("expected user turn from item_completed form");
+        };
+        assert!(matches!(u.kind, UserTextKind::Turn { cleaned } if cleaned == "질문"));
+    }
+
+    #[test]
+    fn item_completed_user_message_without_text_is_boundary() {
+        // Image-only input: records a rollback boundary without opening a turn.
+        let v = val(
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"image","image_url":"data:..."}]}}}"#,
+        );
+        let CodexRecord::User(u) = decode(&v) else {
+            panic!("expected user boundary from empty item_completed user message");
+        };
+        assert!(matches!(u.kind, UserTextKind::Boundary));
+    }
+
+    #[test]
+    fn item_completed_non_user_items_contribute_nothing() {
+        // AgentMessage stays unread: `response_item` role=assistant already
+        // carries every answer, so decoding both would duplicate it.
+        for json in [
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"답변"}],"phase":"final_answer"}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning","summary_text":[]}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":"ls"}}}"#,
+        ] {
+            assert!(matches!(decode(&val(json)), CodexRecord::Other));
+        }
     }
 
     #[test]

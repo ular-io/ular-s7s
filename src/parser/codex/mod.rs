@@ -1,8 +1,9 @@
 //! OpenAI Codex session parser.
 //!
 //! File path: `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`
-//! Session ID/cwd are extracted from `session_meta` lines. User turns are identified in `event_msg` where
-//! `payload.type=="user_message"` or user messages within `response_item`.
+//! Session ID/cwd are extracted from `session_meta` lines. User turns are identified in `event_msg`
+//! where `payload.type=="item_completed"` carries an `item.type=="UserMessage"` (codex 0.147+), where
+//! `payload.type=="user_message"` (pre-0.147), or in user messages within `response_item`.
 //!
 //! Backtrack (esc-esc "edit previous message") handling: the rollout is append-only; editing
 //! a past message appends `event_msg` `payload.type=="thread_rolled_back"` with `num_turns` =
@@ -318,6 +319,32 @@ mod tests {
             session.user_turn_timestamps_ms,
             vec![Some(1_784_768_523_456), Some(1_784_775_845_678)]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parses_item_completed_rollout_without_counting_instruction_preamble() {
+        // codex 0.147 line shape: the turn arrives as `item_completed`, and the
+        // `response_item` role=user lines that mirror it (one of them the
+        // prepended AGENTS.md preamble) must not add turns of their own.
+        let content = r##"
+{"type":"session_meta","payload":{"id":"items","cwd":"/tmp/demo"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/demo\n<INSTRUCTIONS>\n</INSTRUCTIONS>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"첫 질문"}]}}
+{"timestamp":"2026-08-08T09:46:04.037Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"첫 질문","text_elements":[]}]}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"답변 answerkw"}],"phase":"final_answer"}}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"답변 answerkw"}]}}
+{"timestamp":"2026-08-08T09:50:00.000Z","type":"event_msg","payload":{"type":"task_complete"}}
+"##;
+        let (root, path) = write_rollout("item-completed", content);
+        let session = parse_file(&path, 0, None).expect("expected session");
+        assert_eq!(session.user_turns, vec!["첫 질문"]);
+        assert_eq!(
+            session.user_turn_timestamps_ms,
+            vec![Some(1_786_182_364_037)]
+        );
+        assert_eq!(session.updated_at_ms, 1_786_182_600_000);
+        assert_eq!(session.assistant_blob.matches("answerkw").count(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 

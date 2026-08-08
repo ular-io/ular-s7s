@@ -79,6 +79,7 @@ If rename/session-title logic has been changed or an external CLI has upgraded, 
 
 - Check `thread_name` in `~/.codex/session_index.jsonl`
 - Check `threads.title` in `~/.codex/state_*.sqlite`
+- Check `display_title` in `local_thread_catalog` of `~/.codex/sqlite/codex-*.db` — a store 0.147 added; confirm whether a rename now lands here instead of `session_index.jsonl`
 - Verify any changes in the behavior of non-interactive `codex exec resume <id> "/rename ..."`
 
 ### Antigravity
@@ -97,6 +98,14 @@ If session context (`src/session_context/` · `s7s session`) or New Session with
 3. Actual contextual launch (each agent): Check if the bootstrap prompt is recorded as a user turn in the transcript, if `s7s session show ... --bootstrap` succeeds, if there are no past tasks/file changes executed, and if the ready message is in the source user turn's primary language.
 4. Check that the launched session does not contaminate the s7s list's Q count/preview/title/search (sessions with only a bootstrap are hidden from the list), and remains the same even after `--rebuild-cache`.
 5. Reverify the initial prompt injection method upon CLI upgrade: claude/codex positional (`[prompt]`/`[PROMPT]`), agy `--prompt-interactive` (positional unsupported).
+6. **On a codex upgrade, diff the record shape of a freshly written rollout** — codex 0.147 dropped the `event_msg` `user_message`/`agent_message` events in favor of one `item_completed` item stream, which silently removed every 0.147 session from the list. A record-name change is invisible to `cargo test -q` (fixtures still use the old names) and to the parity test (a session with zero turns is simply absent from both views), so compare the distribution directly:
+
+   ```bash
+   jq -r '"\(.type)/\(.payload.type // "-")\(if .payload.item.type then "["+.payload.item.type+"]" else "" end)"' \
+     "$(ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl | head -1)" | sort | uniq -c | sort -rn
+   ```
+
+   Then confirm the session is listed with the right Q count: `s7s session search --agent codex --limit 3 ""`.
 
 ## Session activity checks
 

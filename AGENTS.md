@@ -72,3 +72,13 @@ authoritative matrix; the essentials:
 - Some paths have only been validated indirectly (e.g. agy contextual launch and
   real-kitty `ctrl+shift+n`). Such gaps are recorded with their iteration number
   in [development-history.md](./docs/development-history.md).
+- **Codex 0.147 rewrote its rollout event stream** and two consequences are still
+  unverified, because neither could be reproduced from the sessions on disk:
+  - Whether the `thread_rolled_back` marker survived the move to the
+    `item_completed` item stream. If it was renamed, rolled-back turns reappear
+    in both the list and the detail view. Verify with a real esc-esc rewind
+    ([testing.md](./docs/testing.md) rewind row).
+  - Whether renames still land in `~/.codex/session_index.jsonl`. It has not been
+    written since the upgrade, and 0.147 added a `local_thread_catalog`
+    (`display_title`) table in `~/.codex/sqlite/codex-*.db` that may have replaced
+    it. Verify with a real rename ([session-title-compat.md](./docs/session-title-compat.md)).
