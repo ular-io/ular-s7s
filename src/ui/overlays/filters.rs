@@ -38,7 +38,7 @@ pub struct ModalState {
 }
 
 impl ModalState {
-    fn new(labels: Vec<String>, preselected: HashSet<usize>) -> Self {
+    pub(super) fn new(labels: Vec<String>, preselected: HashSet<usize>) -> Self {
         ModalState {
             labels,
             cursor: 0,
@@ -412,7 +412,7 @@ pub(crate) fn draw_folder_modal(f: &mut Frame, app: &App) {
 }
 
 /// Individual modal list item: checkbox mark + label (truncated to inner width) + cursor highlight.
-fn modal_list_item<'a>(
+pub(super) fn modal_list_item<'a>(
     i: usize,
     label: &str,
     m: &ModalState,
@@ -420,7 +420,7 @@ fn modal_list_item<'a>(
     th: &Theme,
 ) -> ListItem<'a> {
     let mark = if m.selected.contains(&i) {
-        "[x]"
+        "[✓]"
     } else {
         "[ ]"
     };

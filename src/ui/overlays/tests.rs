@@ -247,3 +247,21 @@ fn theme_select_left_right_swaps_the_whole_list() {
     assert!(state.visible().iter().all(|&i| state.themes[i].dark));
     assert!(app.theme.dark, "preview switched to a dark theme");
 }
+
+#[test]
+fn modal_list_item_renders_checkmark_mark() {
+    let m = ModalState::new(
+        vec!["Option A".to_string(), "Option B".to_string()],
+        HashSet::from([0]),
+    );
+    let app = empty_app();
+
+    let selected_item = super::filters::modal_list_item(0, &m.labels[0], &m, 40, &app.theme);
+    let unselected_item = super::filters::modal_list_item(1, &m.labels[1], &m, 40, &app.theme);
+
+    let selected_debug = format!("{selected_item:?}");
+    let unselected_debug = format!("{unselected_item:?}");
+
+    assert!(selected_debug.contains("[✓] Option A"));
+    assert!(unselected_debug.contains("[ ] Option B"));
+}
