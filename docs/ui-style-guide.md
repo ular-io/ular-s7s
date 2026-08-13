@@ -101,6 +101,7 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
   * Disable the shortcut behavior where pressing Enter immediately submits the form while focus is in a text input box.
   * Process events such that the form is submitted **only when the user manually moves focus to the bottom button row and presses Enter while the Confirm/Execute button is active**.
   * Pressing Enter while the Cancel button is focused must act as a cancel action that closes the dialog.
+  * The Folder filter is a search-backed multi-select list rather than a form. In that dialog, Enter selects the focused folder and confirms the current selection. Selection is idempotent: an already selected folder stays selected, and Enter with no visible results confirms without changing existing selections.
 
 ## 4. Selected Row (Table row highlight)
 

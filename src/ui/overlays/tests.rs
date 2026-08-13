@@ -1,12 +1,12 @@
-//! Overlay tests: the rename modal (open/validate/confirm), the message dialog,
-//! the `?` help screen (kept off the screen rotation), and the theme selector
-//! (live preview, Enter/Esc, clamping, and dark/light list swap).
+//! Overlay tests: folder-filter confirmation, rename and message dialogs, the
+//! `?` help screen, and theme selection (preview, confirmation, and navigation).
 
 use crate::model::Agent;
 use crate::ui::effect::AppEffect;
 use crate::ui::test_support::*;
 use crate::ui::*;
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[test]
@@ -113,6 +113,58 @@ fn profile_screen_question_mark_help_returns_to_profile_table() {
     app.on_key_help(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.mode, UiMode::Table);
     assert_eq!(app.screen, Screen::Profile);
+}
+
+#[test]
+fn folder_modal_enter_selects_focused_folder_and_confirms() {
+    let mut app = app_with_profiles();
+    app.open_folder_modal();
+
+    app.on_key_folder_modal(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.mode, UiMode::Table);
+    assert!(app.folder_modal.is_none());
+    assert_eq!(app.filter.folders, HashSet::from(["/".to_string()]));
+}
+
+#[test]
+fn folder_modal_enter_preserves_existing_selections() {
+    let mut app = app_with_profiles();
+    app.filter.folders.insert("/".to_string());
+    app.filter.folders.insert("tmp".to_string());
+    app.open_folder_modal();
+
+    app.on_key_folder_modal(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.filter.folders,
+        HashSet::from(["/".to_string(), "tmp".to_string()])
+    );
+}
+
+#[test]
+fn folder_modal_enter_selects_focused_search_result() {
+    let mut app = app_with_profiles();
+    app.open_folder_modal();
+    app.on_key_folder_modal(key(KeyCode::Char('t'), KeyModifiers::NONE));
+
+    app.on_key_folder_modal(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.filter.folders, HashSet::from(["tmp".to_string()]));
+}
+
+#[test]
+fn folder_modal_enter_with_no_results_preserves_existing_selection() {
+    let mut app = app_with_profiles();
+    app.filter.folders.insert("/".to_string());
+    app.open_folder_modal();
+    for c in "missing".chars() {
+        app.on_key_folder_modal(key(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    app.on_key_folder_modal(key(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.filter.folders, HashSet::from(["/".to_string()]));
 }
 
 #[test]

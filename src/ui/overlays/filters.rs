@@ -70,6 +70,13 @@ impl ModalState {
             self.selected.insert(self.cursor);
         }
     }
+
+    /// Selects the focused item without clearing an existing selection.
+    fn select_focused(&mut self) {
+        if !self.labels.is_empty() {
+            self.selected.insert(self.cursor);
+        }
+    }
 }
 
 // ---- Input ----
@@ -217,7 +224,12 @@ impl App {
                 self.folder_query.pop();
                 self.refresh_folder_modal_labels();
             }
-            KeyCode::Enter => self.confirm_folder_modal(),
+            KeyCode::Enter => {
+                if let Some(m) = &mut self.folder_modal {
+                    m.select_focused();
+                }
+                self.confirm_folder_modal();
+            }
             KeyCode::Esc => {
                 // Active selections are already synced to filter; simply close modal and recompute.
                 self.folder_modal = None;
