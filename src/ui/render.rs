@@ -17,6 +17,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 /// Right-aligned ASCII art logo (5 rows, width 16, splitting "s-7-s" partitions).
+const LOGO_WIDTH: u16 = 16;
+const LOGO_GAP: u16 = 2;
 const LOGO_PARTS: [(&str, &str, &str); 5] = [
     ("", "    ██████      ", ""),
     (" ____", "   ██", "____  "),
@@ -353,21 +355,13 @@ pub(crate) fn usage_spans(entry: crate::usage::UsageEntry, th: &Theme) -> Vec<Sp
     ]
 }
 
-/// Renders top header: left side displays profile quick keys, usage stats, and hotkey grid; right side shows right-aligned ASCII logo.
+/// Renders top header: left side displays profile quick keys, usage stats, and hotkey grid; right side shows the logo when every hotkey column fits.
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     let numbered = app.profiles.numbered_profiles();
     let is_loading = numbered
         .iter()
         .any(|p| app.usage.entry(&p.id).phase == crate::usage::UsagePhase::Loading);
-    let logo_len = 16;
-
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(logo_len)])
-        .split(area);
-
     // Layout from left: 1 space padding -> quick-keys + usage column -> screen-specific columns (2) + common column (1).
-    // Right logo is pushed to right margin using a flexible spacer (Min(0)).
     // Quick-keys column width = key (3) + space (1) + name (max of active profiles, clamped between 12-18)
     //                          + usage leading space (1) + usage segments (current 12 + space 1 + weekly 12 + " left" 5)
     //                          + right padding 8 (margin to column 2).
@@ -412,7 +406,18 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     const LEFT_PAD: u16 = 1;
     let mut visible = left_widths.len();
     let mut total = LEFT_PAD + agent_col_w + left_widths.iter().sum::<u16>();
-    while visible > 0 && total > cols[0].width {
+    let show_logo = area.width >= total.saturating_add(LOGO_GAP + LOGO_WIDTH);
+    let (key_area, logo_area) = if show_logo {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(LOGO_GAP), Constraint::Length(LOGO_WIDTH)])
+            .split(area);
+        (cols[0], Some(cols[1]))
+    } else {
+        (area, None)
+    };
+
+    while visible > 0 && total > key_area.width {
         visible -= 1;
         total -= left_widths[visible];
     }
@@ -425,11 +430,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .map(|w| Constraint::Length(*w)),
     );
-    constraints.push(Constraint::Min(0)); // Flexible spacing up to the right logo
+    constraints.push(Constraint::Min(0)); // Flexible trailing space, including the logo gap when shown
     let key_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(constraints)
-        .split(cols[0]);
+        .split(key_area);
 
     // Quick-keys column (rendered after 1 space padding, index=1): maps numbered profiles to hotkeys (<1>..<5>) and remaining usage percentage.
     // Always top-aligned. Profile names are padded to fit width, keeping usage stats left-aligned.
@@ -474,6 +479,10 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(lines), key_cols[2 + ci]);
     }
 
+    let Some(logo_area) = logo_area else {
+        return;
+    };
+
     // Logo: ASCII art rendered left-aligned within the rightmost column to maintain art alignment.
     // Center '7' segment highlighted in the same color as the eye (U) icon; flanking 's' segments in accent.
     // If any active profile is loading, render the blinking eye (U) icon instead of the standard logo.
@@ -510,7 +519,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             })
             .collect()
     };
-    f.render_widget(Paragraph::new(logo_lines), cols[1]);
+    f.render_widget(Paragraph::new(logo_lines), logo_area);
 }
 
 /// Body: left session table and right preview panel.
@@ -1038,6 +1047,12 @@ mod tests {
         out
     }
 
+    fn rendered_text(app: &crate::ui::App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal.draw(|f| super::draw(f, app)).expect("draw");
+        buffer_text(&terminal)
+    }
+
     /// Locates the buffer cell where `needle` starts. Assumes single-width symbols
     /// (test data is ASCII plus single-width bullets), so char offset == cell x.
     fn find_cell(terminal: &Terminal<TestBackend>, needle: &str) -> (u16, u16) {
@@ -1365,6 +1380,38 @@ mod tests {
                 "<4> CLD-Share    100%           0%(   22h) left",
             ]
         );
+    }
+
+    #[test]
+    fn header_hides_logo_before_shortcut_columns() {
+        let app = session_app();
+        // This fixture's complete left side needs 137 cells; 154 leaves room for
+        // the 16-cell logo but not the required 2-cell gap.
+        let text = rendered_text(&app, 154, 20);
+
+        assert!(text.contains("Quick Command"));
+        assert!(text.contains("Help"));
+        assert!(!text.contains("██████"));
+    }
+
+    #[test]
+    fn header_shows_logo_when_shortcuts_logo_and_gap_fit() {
+        let app = session_app();
+        let text = rendered_text(&app, 155, 20);
+
+        assert!(text.contains("Quick Command"));
+        assert!(text.contains("Help"));
+        assert!(text.contains("██████"));
+    }
+
+    #[test]
+    fn header_drops_rightmost_shortcut_column_after_logo_is_hidden() {
+        let app = session_app();
+        let text = rendered_text(&app, 136, 20);
+
+        assert!(text.contains("Resume Session"));
+        assert!(!text.contains("Quick Command"));
+        assert!(!text.contains("██████"));
     }
 
     #[test]

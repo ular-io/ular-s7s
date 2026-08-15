@@ -21,7 +21,14 @@ The top constants in `src/ui/render.rs` and the `agent_tag` helper are the only 
 - Differences in terminal themes are resolved first using "modifiers" (BOLD/DIM/REVERSED) below, not through RGB fine-tuning.
 - Standard 16-color ANSI colors like `Color::LightBlue` might not render as a proper light blue or might be ignored depending on the user's terminal theme, so always use the true color RGB value `USAGE_HIGH` for bright blue highlights such as the logo.
 
-## 2. Text Highlight (Modifier)
+## 2. Header Width Priority
+
+- Preserve the profile/usage column and all three shortcut columns before showing the decorative logo.
+- Show the logo only when the complete left-side content, a 2-cell gap, and the 16-cell logo all fit.
+- When the logo is hidden and the header is still too narrow, remove shortcut columns from right to left without wrapping or overlap.
+- The loading eye uses the logo area and follows the same visibility rule; the profile row's `Loading...` pulse remains visible.
+
+## 3. Text Highlight (Modifier)
 
 | State | Style | Example |
 | :--- | :--- | :--- |
@@ -32,7 +39,7 @@ The top constants in `src/ui/render.rs` and the `agent_tag` helper are the only 
 - The information hierarchy is expressed as: **labels are always `soft_dim_style`**, and **only core values are highlighted**. Supplemental metadata (created/updated times, ID, path) should also have their values suppressed using `soft_dim_style`.
 - Use `BOLD` only for "the one thing the user needs to see right now." Overusing it destroys the hierarchy.
 
-### 2.1 Prompt Header Metadata Grid
+### 3.1 Prompt Header Metadata Grid
 
 The Prompt pane header (and the Detail screen header — both share
 `session_meta_lines`) renders as a `● <Heading>` section title followed by
@@ -55,7 +62,7 @@ The Prompt pane header (and the Detail screen header — both share
 - The `c` clipboard copy mirrors this grid verbatim (`ui/copy.rs`), including the
   Context Source block; keep the two in sync when the format changes.
 
-## 3. Border Highlight (BorderType)
+## 4. Border Highlight (BorderType)
 
 Focus/active states are distinguished by a dual signal of **color (ACCENT) + thickness (BorderType)**.
 Using color alone is ineffective in monochrome or colorblind environments, so adjust the thickness alongside it.
@@ -77,7 +84,7 @@ Using color alone is ineffective in monochrome or colorblind environments, so ad
   Destructive/blocking situations are `Red`, warnings are `Yellow`, and simple information is `ACCENT`.
 - Unfocused panel borders are **not dimmed.** Past application of `soft_dim_style` has been reverted — dimming is reserved only for text hierarchy representation, while border distinction relies on thickness.
 
-### 3.1 Dialog Internal Separators, Padding, and Button Design Rules
+### 4.1 Dialog Internal Separators, Padding, and Button Design Rules
 
 To improve the visual stability and polish of dialogs (modals), adhere to the following rules:
 
@@ -103,7 +110,7 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
   * Pressing Enter while the Cancel button is focused must act as a cancel action that closes the dialog.
   * The Folder filter is a search-backed multi-select list rather than a form. In that dialog, Enter selects the focused folder and confirms the current selection. Selection is idempotent: an already selected folder stays selected, and Enter with no visible results confirms without changing existing selections.
 
-## 4. Selected Row (Table row highlight)
+## 5. Selected Row (Table row highlight)
 
 | State | Background | Foreground/Attribute |
 | :--- | :--- | :--- |
@@ -113,7 +120,7 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
 
 - When representing an inactive panel, verify the borders, titles, headers, standard rows, and selected row **as a complete set**. Since the selected row highlight overwrites at the end, check `row_highlight_style` first. (Background: [Panel Focus Style](./panel-focus-style.md))
 
-### 4.1 List Items and Footer Layout Rules
+### 5.1 List Items and Footer Layout Rules
 
 * **Item Name Right Margin**:
   * For items that might have long text, such as folder/session lists, add a 1-character margin (` `) to the right of the name to enhance readability.
@@ -122,7 +129,7 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
   * Metrics/status information (e.g., `xx matching folders`, errors) is placed on the bottom **left**.
   * User operation guides and shortcut explanations are placed on the bottom **right** and right-aligned (`Alignment::Right`).
 
-## 5. Implementation Locations Summary
+## 6. Implementation Locations Summary
 
 | Target | Function |
 | :--- | :--- |
@@ -134,7 +141,7 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
 | Session table/selected row | `draw_table` |
 | Prompt header meta information | `draw_preview` |
 
-## 6. Checklist (When changing styles)
+## 7. Checklist (When changing styles)
 
 - [ ] Are new colors defined as constants instead of being inlined?
 - [ ] Are highlights using `ACCENT + BOLD`, non-highlights using `soft_dim_style`, and borders following the `Thick/Plain` rule?
