@@ -8,7 +8,7 @@ use super::components::text::{pad_w, truncate_w, truncate_w_with_ellipsis};
 use super::{next_grapheme_boundary, App, Screen, TextInput, UiMode};
 use crate::theme::Theme;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph, Wrap},
@@ -765,36 +765,33 @@ fn meta_grid(g: MetaGrid, inner_w: usize, th: &Theme, dimmed: bool) -> Vec<Line<
     lines
 }
 
-/// Footer status bar: displays keyword queries / filters on the left, scan stats on the right.
+/// Footer status bar rendered inside an explicit one-cell horizontal margin.
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let th = &app.theme;
     let dim_style = Style::default().fg(th.dim);
     let left: Line = if app.mode == UiMode::Keyword {
-        Line::from(Span::styled(" enter confirm  ·  esc cancel ", dim_style))
+        Line::from(Span::styled("enter confirm  ·  esc cancel", dim_style))
     } else if app.mode == UiMode::Help {
-        Line::from(Span::styled(" esc/q/? close help ", dim_style))
+        Line::from(Span::styled("esc/q/? close help", dim_style))
     } else if app.mode == UiMode::ThemeSelect {
         Line::from(Span::styled(
-            " ↑↓ preview  ·  enter apply  ·  esc cancel ",
+            "↑↓ preview  ·  enter apply  ·  esc cancel",
             dim_style,
         ))
     } else if let Some(msg) = &app.status_msg {
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!(" {} ", msg),
-                Style::default().fg(th.on_accent).bg(th.accent),
-            ),
-        ])
+        Line::from(Span::styled(
+            format!(" {} ", msg),
+            Style::default().fg(th.on_accent).bg(th.accent),
+        ))
     } else if app.screen == Screen::Detail {
-        Line::from(Span::styled(" . toggle tool logs  ·  ← back ", dim_style))
+        Line::from(Span::styled(". toggle tool logs  ·  ← back", dim_style))
     } else if app.mode == UiMode::NewSession {
         Line::from(Span::styled(
-            " enter open/select  ·  ↑↓ move focus  ·  tab focus  ·  space select  ·  → complete  ·  esc close ",
+            "enter open/select  ·  ↑↓ move focus  ·  tab focus  ·  space select  ·  → complete  ·  esc close",
             dim_style,
         ))
     } else if app.mode == UiMode::Rename {
-        Line::from(Span::styled(" enter save  ·  esc cancel ", dim_style))
+        Line::from(Span::styled("enter save  ·  esc cancel", dim_style))
     } else if app.filter.is_active() {
         Line::from(vec![
             Span::styled(" filter: ", Style::default().fg(th.on_accent).bg(th.accent)),
@@ -804,10 +801,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ),
         ])
     } else {
-        Line::from(Span::styled(" q/ctrl+c quit ", dim_style))
+        Line::from(Span::styled("q/ctrl+c quit", dim_style))
     };
 
-    f.render_widget(Paragraph::new(left), area);
+    f.render_widget(Paragraph::new(left), area.inner(Margin::new(1, 0)));
 }
 
 /// Returns the horizontal viewport containing the cursor without mutating the input text.
@@ -1051,6 +1048,38 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
         terminal.draw(|f| super::draw(f, app)).expect("draw");
         buffer_text(&terminal)
+    }
+
+    #[test]
+    fn status_bar_keeps_one_cell_horizontal_margins() {
+        let mut app = session_app();
+        let mut terminal = Terminal::new(TestBackend::new(12, 1)).expect("test terminal");
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                super::draw_status_bar(f, &app, area);
+            })
+            .expect("draw status bar");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert_eq!(buffer[(1, 0)].symbol(), "q");
+        assert_eq!(buffer[(11, 0)].symbol(), " ");
+
+        app.status_msg = Some("x".repeat(20));
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                super::draw_status_bar(f, &app, area);
+            })
+            .expect("draw long status message");
+
+        let buffer = terminal.backend().buffer();
+        assert_ne!(buffer[(0, 0)].bg, app.theme.accent);
+        assert_eq!(buffer[(1, 0)].bg, app.theme.accent);
+        assert_eq!(buffer[(10, 0)].bg, app.theme.accent);
+        assert_ne!(buffer[(11, 0)].bg, app.theme.accent);
     }
 
     /// Locates the buffer cell where `needle` starts. Assumes single-width symbols

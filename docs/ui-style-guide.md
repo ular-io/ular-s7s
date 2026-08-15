@@ -120,14 +120,19 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
 
 - When representing an inactive panel, verify the borders, titles, headers, standard rows, and selected row **as a complete set**. Since the selected row highlight overwrites at the end, check `row_highlight_style` first. (Background: [Panel Focus Style](./panel-focus-style.md))
 
-### 5.1 List Items and Footer Layout Rules
+### 5.1 List Item Layout Rules
 
 * **Item Name Right Margin**:
   * For items that might have long text, such as folder/session lists, add a 1-character margin (` `) to the right of the name to enhance readability.
   * The selected inverted bar (background highlight) must maintain its default state of fully occupying the original entire area (Inner width).
-* **Footer Information Layout**:
-  * Metrics/status information (e.g., `xx matching folders`, errors) is placed on the bottom **left**.
-  * User operation guides and shortcut explanations are placed on the bottom **right** and right-aligned (`Alignment::Right`).
+
+### 5.2 Root Status Bar (Footer)
+
+The bottom row of the root layout, rendered by `draw_status_bar`.
+
+* Render the footer `Paragraph` in `area.inner(Margin::new(1, 0))` so both edges keep an explicit one-cell inset even when the text is long enough to be truncated.
+* Do not encode the outer inset as a leading/trailing space in footer text or as a separate `Span::raw(" ")`. Every mode branch then shares the same insets.
+* Padding inside a colored status chip (`format!(" {} ", msg)`) is content styling; it is independent of the footer's outer inset and stays in the string.
 
 ## 6. Implementation Locations Summary
 
@@ -140,6 +145,7 @@ To improve the visual stability and polish of dialogs (modals), adhere to the fo
 | General notification dialog (reused) | `draw_message_modal` / `App::show_message` |
 | Session table/selected row | `draw_table` |
 | Prompt header meta information | `draw_preview` |
+| Root status bar (footer) | `draw_status_bar` |
 
 ## 7. Checklist (When changing styles)
 
