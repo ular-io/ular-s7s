@@ -27,6 +27,15 @@ The top constants in `src/ui/render.rs` and the `agent_tag` helper are the only 
 - Show the logo only when the complete left-side content, a 2-cell gap, and the 16-cell logo all fit.
 - When the logo is hidden and the header is still too narrow, remove shortcut columns from right to left without wrapping or overlap.
 - The loading eye uses the logo area and follows the same visibility rule; the profile row's `Loading...` pulse remains visible.
+- The header is five rows tall and each shortcut column renders as one top-aligned
+  `Paragraph`, so **a column may hold at most five entries** — a sixth is clipped
+  with no warning (`header_shortcut_columns_fit_the_five_row_header` guards this).
+  A column's width is `max(<key>) + 1 + max(action) + 4`, so an action label longer
+  than the column's current longest widens it and drops the rightmost column
+  earlier on narrow terminals. Keep new labels within the existing maximum.
+- Header action labels must not duplicate a control name used elsewhere on screen
+  (the New Session dialog's `Context Source` box, for instance): buffer-text render
+  assertions match the first occurrence, and the header renders above everything.
 
 ## 3. Text Highlight (Modifier)
 
@@ -59,8 +68,17 @@ The Prompt pane header (and the Detail screen header — both share
   Created/Updated rows, and `- Id:` appends ` · <profile>`). An unresolvable
   source collapses to the heading plus `- Id: … (source unavailable)`. Source of
   truth for when it appears: [session-context.md](./session-context.md).
+- That block's heading also carries a right-aligned `<ctrl+o>` hotkey hint
+  (`meta_grid`'s `heading_hint`, in `key_style` — soft-dim when the panel is
+  unfocused). It is the conditional affordance for the jump key: the block only
+  exists for a context-derived session, and the hint is dropped both for an
+  unresolvable source (the key cannot reach it) and when fewer than two blank
+  columns would remain — the heading is never truncated to fit it. Prefer this
+  pattern over making a top header shortcut conditional: header rows must not
+  appear and disappear as the cursor moves.
 - The `c` clipboard copy mirrors this grid verbatim (`ui/copy.rs`), including the
-  Context Source block; keep the two in sync when the format changes.
+  Context Source block; keep the two in sync when the format changes. The heading
+  hint is a UI affordance, not content, so it is not copied.
 
 ## 4. Border Highlight (BorderType)
 

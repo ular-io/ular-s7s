@@ -54,12 +54,15 @@ const SHORTCUTS_SESSION: [&[(&str, &str)]; 2] = [
         ("c", "Copy to Clipboard"),
         ("0", "Clear"),
     ],
-    // Session operations
+    // Session operations. Five entries is the ceiling (§ui-style-guide, enforced by
+    // `header_shortcut_columns_fit_the_five_row_header`), so `ctrl+b` — the return
+    // key paired with `ctrl+o` — lives in `?` help and the `:` palette only.
     &[
         ("enter", "Resume Session"),
         ("ctrl+n", "New Session"),
         ("ctrl+r", "Rename Session"),
         ("ctrl+d", "Delete Session"),
+        ("ctrl+o", "Go to Source"),
     ],
 ];
 
@@ -71,6 +74,7 @@ const SHORTCUTS_DETAIL: [&[(&str, &str)]; 2] = [
         ("ctrl+n", "New Session"),
         ("ctrl+r", "Rename Session"),
         ("ctrl+d", "Delete Session"),
+        ("ctrl+o", "Go to Source"),
     ],
 ];
 
@@ -613,6 +617,7 @@ pub(crate) fn session_meta_lines(
     meta_grid(
         MetaGrid {
             heading: "Session",
+            heading_hint: None,
             folder: &s.folder,
             full_path: &s.cwd.to_string_lossy(),
             title: &s.title(),
@@ -628,11 +633,20 @@ pub(crate) fn session_meta_lines(
     )
 }
 
+/// Minimum blank columns kept between a grid heading and its right-aligned hotkey
+/// hint. Below this the hint is dropped rather than crowding the heading.
+const HEADING_HINT_MIN_GAP: usize = 2;
+
+/// Hotkey hint on the `● Context Source` heading, in the same `<key>` notation the
+/// header and `?` help use. Bound in `ui/context_jump.rs`.
+const CONTEXT_SOURCE_JUMP_HINT: &str = "<ctrl+o>";
+
 /// Renders the `● Context Source` block shown above `Q1` for a session launched
 /// via "New Session with Context". `resolved` is the source session found in the
 /// scanned set (supplies Project/Name); when `None` (source deleted or from an
 /// unscanned profile) only the Id line is shown with a `(source unavailable)`
-/// marker. Same tone as the current-session block (§ui-style-guide).
+/// marker and the jump hint is dropped, since `ctrl+o` cannot reach it. Same tone
+/// as the current-session block (§ui-style-guide).
 pub(crate) fn context_source_lines(
     src: &crate::model::ContextSource,
     resolved: Option<&crate::model::Session>,
@@ -645,6 +659,10 @@ pub(crate) fn context_source_lines(
         Some(s) => meta_grid(
             MetaGrid {
                 heading: "Context Source",
+                // The block is the affordance for the jump key: it appears only for
+                // a context-derived session, and the hint only when the source is
+                // actually reachable (the unresolved arm below passes None).
+                heading_hint: Some(CONTEXT_SOURCE_JUMP_HINT),
                 folder: &s.folder,
                 full_path: &s.cwd.to_string_lossy(),
                 title: &s.title(),
@@ -661,6 +679,7 @@ pub(crate) fn context_source_lines(
             let full = meta_grid(
                 MetaGrid {
                     heading: "Context Source",
+                    heading_hint: None,
                     folder: "",
                     full_path: "",
                     title: "",
@@ -688,6 +707,10 @@ pub(crate) fn context_source_lines(
 /// Content of a `● <Heading>` + `- Field: value` metadata grid (see [`meta_grid`]).
 struct MetaGrid<'a> {
     heading: &'a str,
+    /// Hotkey hint pushed to the right end of the heading line (e.g. `<ctrl+o>`).
+    /// Dropped when the pane is too narrow to keep [`HEADING_HINT_MIN_GAP`] between
+    /// the heading and the hint — the heading itself is never truncated for it.
+    heading_hint: Option<&'a str>,
     folder: &'a str,
     full_path: &'a str,
     title: &'a str,
@@ -702,6 +725,7 @@ struct MetaGrid<'a> {
 fn meta_grid(g: MetaGrid, inner_w: usize, th: &Theme, dimmed: bool) -> Vec<Line<'static>> {
     let MetaGrid {
         heading,
+        heading_hint,
         folder,
         full_path,
         title,
@@ -714,10 +738,23 @@ fn meta_grid(g: MetaGrid, inner_w: usize, th: &Theme, dimmed: bool) -> Vec<Line<
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
     };
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!("● {heading}"),
-        accent_style,
-    )));
+    let heading_text = format!("● {heading}");
+    let mut heading_spans = vec![Span::styled(heading_text.clone(), accent_style)];
+    if let Some(hint) = heading_hint {
+        let gap = inner_w.saturating_sub(heading_text.width() + hint.width());
+        if gap >= HEADING_HINT_MIN_GAP {
+            heading_spans.push(Span::raw(" ".repeat(gap)));
+            heading_spans.push(Span::styled(
+                hint.to_string(),
+                if dimmed {
+                    th.soft_dim()
+                } else {
+                    th.key_style()
+                },
+            ));
+        }
+    }
+    lines.push(Line::from(heading_spans));
 
     let project_prefix = "- Project: ";
     // Allocates residual width to brackets and full paths: total - prefix - folder - " (" - ")".
@@ -900,7 +937,10 @@ pub(crate) fn centered_fixed_rect(width: u16, height: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_view, pad_w, preview_turn_lines, truncate_w, usage_spans, PreviewTurnLine};
+    use super::{
+        input_view, pad_w, preview_turn_lines, truncate_w, usage_spans, PreviewTurnLine,
+        SHORTCUTS_COMMON, SHORTCUTS_DETAIL, SHORTCUTS_PROFILE, SHORTCUTS_SESSION,
+    };
     use crate::ui::TextInput;
     use crate::usage::{ResetCountdown, UsageEntry, UsagePhase, UsageSnapshot, UsageWindow};
     use chrono::TimeZone;
@@ -1097,6 +1137,89 @@ mod tests {
             }
         }
         panic!("needle not found in buffer: {needle}");
+    }
+
+    /// The `● Context Source` block is the affordance for `ctrl+o`: it only exists
+    /// for a context-derived session, and the hint only when the jump can succeed.
+    #[test]
+    fn context_source_heading_hints_the_jump_key_only_when_reachable() {
+        use crate::model::{Agent, ContextSource, Session};
+        use std::path::PathBuf;
+        use unicode_width::UnicodeWidthStr;
+        let th = crate::theme::default_theme();
+        let src = ContextSource {
+            id: "source-1".to_string(),
+            agent: Agent::Codex,
+            profile: "p1".to_string(),
+        };
+        let source_session = Session {
+            agent: Agent::Codex,
+            profile_id: "p1".to_string(),
+            id: "source-1".to_string(),
+            source_path: None,
+            cwd: PathBuf::from("/tmp/demo"),
+            folder: "demo".to_string(),
+            updated_at_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec!["question".to_string()],
+            user_turn_timestamps_ms: Vec::new(),
+            search_blob: String::new(),
+            assistant_blob: String::new(),
+            title_hint: Some("source title".to_string()),
+            title_fixed: false,
+            context_source: None,
+        };
+        let heading_of = |lines: &[ratatui::text::Line<'static>]| -> String {
+            lines[0]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        };
+
+        let resolved = super::context_source_lines(&src, Some(&source_session), 60, &th, false);
+        let heading = heading_of(&resolved);
+        assert!(heading.starts_with("● Context Source"));
+        assert!(heading.ends_with("<ctrl+o>"), "heading was {heading:?}");
+        assert_eq!(heading.width(), 60, "hint is flush with the pane edge");
+
+        // Unresolved source: the key would report "unavailable", so no hint.
+        let missing = super::context_source_lines(&src, None, 60, &th, false);
+        assert!(!heading_of(&missing).contains("ctrl+o"));
+
+        // Narrow pane: the hint is dropped rather than crowding the heading.
+        let narrow = super::context_source_lines(&src, Some(&source_session), 20, &th, false);
+        assert_eq!(heading_of(&narrow), "● Context Source");
+    }
+
+    /// The header is a fixed five rows and each hotkey column renders as one
+    /// top-aligned `Paragraph`, so a sixth entry would be silently clipped.
+    #[test]
+    fn header_shortcut_columns_fit_the_five_row_header() {
+        const HEADER_ROWS: usize = 5;
+        for col in SHORTCUTS_SESSION
+            .iter()
+            .chain(SHORTCUTS_DETAIL.iter())
+            .chain(SHORTCUTS_PROFILE.iter())
+            .chain(std::iter::once(&SHORTCUTS_COMMON))
+        {
+            assert!(
+                col.len() <= HEADER_ROWS,
+                "column overflows the header: {col:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn header_shows_the_context_source_jump_key() {
+        let app = session_app();
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+
+        // Fifth row of the session-operations column, still inside the header.
+        let (_, y) = find_cell(&terminal, "Go to Source");
+        assert!(y < 5, "shortcut row {y} is clipped out of the header");
     }
 
     #[test]

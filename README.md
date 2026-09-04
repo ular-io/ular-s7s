@@ -118,6 +118,8 @@ leaves the ordinary session list behind the dialog.
 | `ctrl+u` | Update Session (reflect session list additions/changes + recheck usage) |
 | `ctrl+n` | New Session (Profile/Model/Folder dialog; typing a bare name instead of a path offers to create a new project folder under `~/.config/s7s/projects`) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |
+| `ctrl+o` | Go to Context Source (move to the session the selected one was launched from; clears filters if they hide it) |
+| `ctrl+b` | Back to Previous Session (return along the `ctrl+o` jumps, restoring the filter each was made under) |
 | `ctrl+r` | Rename Session |
 | `ctrl+d` / `del` | Confirm Delete Session |
 | `tab` / `shift+tab` | Toggle focus between left table ↔ right preview panel |
@@ -195,6 +197,12 @@ s7s session search rename --profile builtin-claude --limit 50
 Pressing `ctrl+shift+n` (or **New Session with Context** in the `:` palette) on the Session/Detail screen opens the existing New Session dialog with the focused session captured as the **source session** (indicated in the title). Profile/Model/Folder can be freely selected as usual — you can also start with a different agent/project than the source. Upon OK, a short bootstrap prompt is injected into the new agent, and the new agent reads the source using `s7s session show ... --bootstrap`, leaving a ready message in the source language without performing past tasks. Subsequent actual requests (including long text/images) can be entered in the agent's own UI.
 
 > **Terminal Compatibility**: Legacy terminals cannot distinguish between `Ctrl+Shift+N` and `Ctrl+N` (same control byte). s7s only distinguishes chords in terminals that support the kitty keyboard protocol; in other environments, **New Session with Context** in the `:` palette is the guaranteed fallback.
+
+### Navigating to the Context Source
+
+A session started with context keeps a `● Context Source` block above `Q1` on the Session and Detail screens, with a `<ctrl+o>` hint on its heading whenever the source can actually be reached. `ctrl+o` (or **Go to Context Source** in the `:` palette) moves to that source session; because a source may live in another agent, folder, or profile, the active filters are cleared when they would hide it (the status bar says so). Repeating `ctrl+o` keeps walking up the chain, since every derived session carries its own source.
+
+`ctrl+b` (**Back to Previous Session**) returns along the jumps already made, restoring the filter each jump started under. Only `ctrl+o` jumps are recorded — ordinary cursor movement is not — and origins whose session has since been deleted are skipped. Both keys use plain control bytes, so they work identically in every terminal.
 
 ## Data Sources
 

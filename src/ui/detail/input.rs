@@ -109,6 +109,12 @@ impl App {
                     self.open_delete_confirm_at(idx);
                 }
             }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.jump_to_context_source();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.return_to_jump_origin();
+            }
             // Focus-aware expand toggle:
             // - Prompt (Questions) panel: expand the selected turn's omitted prompt.
             // - Work & Answer panel: reveal hidden tool calls/results and lift the

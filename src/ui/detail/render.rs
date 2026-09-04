@@ -77,10 +77,7 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
     let mut rows: Vec<Line> = session_meta_lines(s, inner_w, th, !focused);
     rows.push(sep_line());
     if let Some(src) = &s.context_source {
-        let resolved = app
-            .sessions
-            .iter()
-            .find(|c| c.agent == src.agent && c.id == src.id);
+        let resolved = app.context_source_index(s).map(|i| &app.sessions[i]);
         rows.extend(context_source_lines(src, resolved, inner_w, th, !focused));
         rows.push(sep_line());
     }

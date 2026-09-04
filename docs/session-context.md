@@ -192,6 +192,45 @@ stores it in `Session.context_source`.
   line with a `(source unavailable)` marker. See [ui-style-guide.md](./ui-style-guide.md).
 - Adding the field bumped `CACHE_VERSION` (a full one-time reparse).
 
+### Context Source navigation (`ctrl+o` / `ctrl+b`)
+
+`src/ui/context_jump.rs` turns the surfaced reference into navigation on the
+Session and Detail screens (Profile has no focused session). Both keys are also
+`:` palette commands (`Go to Context Source`, `Back to Previous Session`), which
+gate on the same predicates that drive the keys.
+
+- **Affordance.** The `● Context Source` block's heading carries a right-aligned
+  `<ctrl+o>` hint, shown only when the source resolves (an unavailable source
+  drops it, matching what the key can actually do). The top header keeps its
+  unconditional `ctrl+o  Go to Source` row; a conditional header row would blink
+  in and out as the list cursor moves. See [ui-style-guide.md](./ui-style-guide.md).
+- **`ctrl+o` — go to the source.** `App::context_source_index` resolves it by
+  `agent`+`id`, the single resolver now shared with the Prompt pane, the Detail
+  header, and clipboard copy, so what the block shows and what the key can reach
+  cannot diverge. An unresolved source reports and does not move. Repeating the
+  key walks up the chain (each session holds its own source); the reverse
+  direction — descending to sessions derived *from* this one — is deliberately
+  out of scope (it needs a reverse index and a multi-candidate picker).
+- **Filters are cleared when they hide the target.** Context sessions may cross
+  agent, folder, and profile, so an active filter blocks the jump in ordinary
+  use. When the target is not in `filtered`, the filter resets to
+  `Filter::default()` (which matches everything, so the target is then always
+  reachable) and the status bar reports `(filters cleared)`.
+- **`ctrl+b` — return along the jumps.** Only `ctrl+o` jumps push an entry, so
+  what the key undoes stays predictable. Each entry stores the origin's
+  `(agent, id)` — never an index, which `refresh_sessions` invalidates — plus the
+  `Filter` active at jump time, which is restored on return (the origin was
+  selected under that filter, so restoring it cannot hide the origin). Entries
+  whose session is gone are skipped, the stack is capped at 32, and it is
+  process-local (never persisted).
+- **Detail screen.** The jump reopens the detail view on the target and moves the
+  list cursor with it. `handoff::load_turns` falls back to the list's user turns
+  whenever detailed parsing fails, and listed sessions always have ≥1 user turn,
+  so the empty-turns branch is defensive only; it leaves the current detail open.
+- Keys were chosen for legacy-encoding safety: `ctrl+o`/`ctrl+b` are plain
+  control bytes, unlike `ctrl+shift+o` (indistinguishable from `ctrl+o`) or
+  `ctrl+[` (identical to `Esc`).
+
 ## Failure Behavior
 
 | Failure | Behavior |

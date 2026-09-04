@@ -111,6 +111,12 @@ impl App {
                     Screen::Profile => false,
                 }
             }
+            // Both move the session list cursor; Profile has no focused session,
+            // which already excludes the jump and is why Back is gated explicitly.
+            GoToContextSource => self.can_jump_to_context_source(),
+            BackToPreviousSession => {
+                self.screen != Screen::Profile && self.can_return_to_jump_origin()
+            }
             TerminalCommand => self.terminal_target().is_some(),
             NewSession => true,
             CreateProfile => self.screen == Screen::Profile,
@@ -384,6 +390,8 @@ impl App {
             }
             // Guaranteed fallback for terminals that cannot distinguish Ctrl+Shift+N.
             NewSessionWithContext => self.open_new_session_modal_for_session(session_idx, true),
+            GoToContextSource => self.jump_to_context_source(),
+            BackToPreviousSession => self.return_to_jump_origin(),
             RenameSession => {
                 if let Some(idx) = session_idx {
                     self.open_rename_modal_at(idx);

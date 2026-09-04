@@ -230,10 +230,7 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         )));
 
         if let Some(src) = &s.context_source {
-            let resolved = app
-                .sessions
-                .iter()
-                .find(|c| c.agent == src.agent && c.id == src.id);
+            let resolved = app.context_source_index(s).map(|i| &app.sessions[i]);
             lines.extend(context_source_lines(src, resolved, inner_w, th, false));
             lines.push(Line::from(Span::styled(
                 "─".repeat(inner_w.max(1)),

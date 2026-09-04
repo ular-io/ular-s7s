@@ -51,10 +51,7 @@ impl App {
                     Focus::Table => {
                         let mut text = session_info_text(s);
                         if let Some(src) = &s.context_source {
-                            let resolved = self
-                                .sessions
-                                .iter()
-                                .find(|c| c.agent == src.agent && c.id == src.id);
+                            let resolved = self.context_source_index(s).map(|i| &self.sessions[i]);
                             text.push('\n');
                             text.push_str(&context_source_text(src, resolved));
                         }

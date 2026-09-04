@@ -19,7 +19,7 @@ Read the linked document before modifying code in that area.
 | Usage display / parsing | [usage-display.md](./docs/usage-display.md) |
 | Profiles / env injection (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) | [profiles.md](./docs/profiles.md) |
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
-| Session context (`src/session_context/`, `s7s session` CLI, New Session with Context) | [session-context.md](./docs/session-context.md) |
+| Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
 | TUI panel focus / visual style | [panel-focus-style.md](./docs/panel-focus-style.md), [preview-omission-style.md](./docs/preview-omission-style.md), [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |

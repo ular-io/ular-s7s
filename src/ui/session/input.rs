@@ -100,6 +100,12 @@ impl App {
                 let idx = self.filtered.get(self.selected).copied();
                 self.open_new_session_modal_for_session(idx, false);
             }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.jump_to_context_source();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.return_to_jump_origin();
+            }
             KeyCode::Char(c @ '1'..='5') => self.set_single_profile(c as usize - '1' as usize),
             KeyCode::Char('0') => self.clear_all_filters(),
             // ←/→ (h/l): Moves focus between the left table and the right preview column.

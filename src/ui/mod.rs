@@ -2,6 +2,7 @@
 
 pub mod background;
 pub mod components;
+pub mod context_jump;
 pub mod copy;
 pub mod detail;
 pub mod effect;
@@ -137,6 +138,9 @@ pub struct App {
     /// bypassing the `preview_turn_lines` omission. Toggled via `.` while the preview is focused;
     /// reset to false whenever the selected session changes.
     pub preview_expanded: bool,
+    /// Return stack for context-source jumps (`ctrl+o`), consumed by `ctrl+b`.
+    /// Holds only jump origins — never ordinary cursor movement (`ui/context_jump.rs`).
+    pub(crate) context_jump_origins: Vec<context_jump::JumpOrigin>,
 
     pub agent_modal: Option<ModalState>,
     pub folder_modal: Option<ModalState>,
@@ -258,6 +262,7 @@ impl App {
             preview_scroll: 0,
             preview_max_scroll: std::cell::Cell::new(0),
             preview_expanded: false,
+            context_jump_origins: Vec::new(),
             agent_modal: None,
             folder_modal: None,
             rename_modal: None,

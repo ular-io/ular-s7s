@@ -97,6 +97,45 @@ pub(crate) fn app_with_two_deletable_sessions() -> (App, std::path::PathBuf) {
     (app, root)
 }
 
+/// Three sessions forming a context chain: `root` <- `middle` <- `leaf`, each in
+/// its own folder so folder filtering can hide one from another. The list order
+/// is leaf, middle, root (indices 0, 1, 2).
+pub(crate) fn app_with_context_chain() -> App {
+    use crate::model::ContextSource;
+    let session = |id: &str, source: Option<&str>| Session {
+        agent: Agent::Codex,
+        profile_id: "p1".to_string(),
+        id: id.to_string(),
+        source_path: None,
+        cwd: PathBuf::from(format!("/tmp/{id}")),
+        folder: id.to_string(),
+        updated_at_ms: 0,
+        ctime_ms: 0,
+        size_bytes: 0,
+        user_turns: vec![format!("{id} question")],
+        user_turn_timestamps_ms: Vec::new(),
+        search_blob: format!("{id} question"),
+        assistant_blob: String::new(),
+        title_hint: Some(id.to_string()),
+        title_fixed: false,
+        context_source: source.map(|src| ContextSource {
+            id: src.to_string(),
+            agent: Agent::Codex,
+            profile: "p1".to_string(),
+        }),
+    };
+    App::new(
+        Config::load(),
+        test_profiles(),
+        vec![
+            session("leaf", Some("middle")),
+            session("middle", Some("root")),
+            session("root", None),
+        ],
+        "3 sessions · reparsed 0/0".to_string(),
+    )
+}
+
 pub(crate) fn app_with_cwd(cwd: &str) -> App {
     App::new(
         Config::load(),
