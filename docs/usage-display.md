@@ -1,5 +1,9 @@
 # Usage Display
 
+> Status: Current and version-sensitive
+> Read when: Changing usage probes, parsing, cache state, or rendering.
+> Entry points: `src/usage.rs`, `src/probe/`, `src/ui/render.rs`
+
 The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query/parsing) and `src/ui/render.rs::usage_spans` (formatting), on top of the neutral PTY/process driver in `src/probe/` (shared with the model list query — the driver itself knows nothing about usage).
 
 ## Mechanism
@@ -46,13 +50,19 @@ Fixed-width columns are maintained across all states to align vertically between
 ```
 
 - % is right-aligned with width 3. Blue for >=50%, Red for <50%. Loading is a spinner (`✽✻✶%`), failure is `--%`.
-- In the header, if either current(5h) or weekly is `0%`, both usage segments are displayed in a dim gray (`Color::Gray` + `Modifier::DIM`), the same as `left`.
+- In the header, if either current (5h) or weekly is `0%`, both usage segments
+  use the theme's faint-text treatment, matching `left`.
 - current(5h) countdown: `(4h 30m)` — minutes right-aligned with width 2.
 - weekly countdown: minutes omitted, `(2d 16h)` / `(   17h)`; under one hour it falls back to minutes, `(   45m)`, instead of `(    0h)`.
 - The profile screen table splits the usage into four columns: `5H` / `RESET` / `1W` / `RESET`, omitting the parentheses in the reset columns.
 - On the profile screen, if either current(5h) or weekly is `0%` based on the latest snapshot, the entire row is displayed in the same light gray as the `left` text.
 - **Profiles determined to have missing config folders** (`UsagePhase::MissingDir` — deleted, renamed, etc.) display `Config folder not found` (Red, `MISSING_DIR_LABEL`) instead of usage — displayed in the usage slot in the header, and in the USAGE cell (width 30) of the profile table, while maintaining `Error` in the STATUS cell so they read side-by-side (ratatui Table cells cannot overflow into adjacent columns, so the adjacent USAGE cell is used instead of STATUS). If inactive, it is submerged with a soft dim. The determination is based on query time; `is_dir()` checks are not made at render time.
-- While usage is refreshing (`Loading`), only the `Loading...` text (header usage slot, profile table STATUS cell) blinks with a fade pulse. The rest of the cells in the row do not blink: normal → light (fg 60% attenuated) → lighter (soft dim like `left` label) → invisible (replaced with space of the same width) → lighter → light cycle. Each step is 200ms (cycle 1.2s) — double the redraw polling cycle (100ms, `main.rs`) to ensure steps aren't skipped by aliasing. The invisible step is processed by space replacement rather than the HIDDEN (conceal) attribute due to varying terminal support. Implementation is `PULSE_SEQ`/`pulse_span` in `src/ui/render.rs`.
+- While usage is refreshing (`Loading`), only the `Loading...` text (header
+  usage slot, profile table STATUS cell) blinks with a fade pulse. The rest of
+  the row stays stable. Each step is 200ms against the 100ms runtime polling
+  cycle. The invisible step replaces content with equal-width spaces instead of
+  relying on terminal conceal support. Implementation is
+  `PULSE_SEQ`/`pulse_span` in `src/ui/render.rs`.
 
 ## Verification Methods
 

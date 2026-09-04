@@ -1,175 +1,164 @@
-# UI Standard Style Guide
+# UI Style Guide
 
-A single reference document to maintain consistency in colors, text highlighting, and border highlighting in TUI rendering. All style constants/helpers are defined in `src/ui/render.rs`. When adding new widgets or changing colors, use existing tokens from this document before creating new values.
+> Status: Current
+> Read when: Changing TUI layout, themes, focus, selected rows, dialogs, text
+> omission, or expansion behavior.
+> Entry points: `src/theme.rs`, `src/ui/render.rs`,
+> `src/ui/components/modal.rs`, feature `render.rs` files
 
-## 1. Color Tokens
+Use semantic theme roles and shared render primitives. Do not recreate a visual
+rule inside an individual feature.
 
-The top constants in `src/ui/render.rs` and the `agent_tag` helper are the only places where colors are defined.
+## Theme roles
 
-| Token | Value | Purpose |
-| :--- | :--- | :--- |
-| `ACCENT` | `Color::Black` | Highlights (focused border/title, header, primary values) |
-| `KEYCOL` | `Color::Rgb(120, 170, 255)` | Key notation in the top shortcut header |
-| `DIM` | `Color::DarkGray` | Low-priority text like separators, informational messages |
-| `USAGE_HIGH` | `Color::Rgb(80, 150, 255)` | Usage 50% or more (Blue), ASCII logo '7' part (Light Blue) |
-| `USAGE_LOW` | `Color::Rgb(235, 90, 90)` | Usage under 50% (Red) |
-| agent `Claude` | `Rgb(217, 119, 87)` | Table `A` (agent) tag `CLD` |
-| agent `Antigravity` | `Rgb(120, 170, 255)` | Table `A` tag `AGY` |
-| agent `Codex` | `Rgb(140, 220, 160)` | Table `A` tag `CDX` |
+`Theme` in `src/theme.rs` is the only palette contract. Render code consumes
+semantic fields rather than literal colors.
 
-- If a new color is needed, do not inline arbitrary RGB; elevate it to a constant and add it to this table.
-- Differences in terminal themes are resolved first using "modifiers" (BOLD/DIM/REVERSED) below, not through RGB fine-tuning.
-- Standard 16-color ANSI colors like `Color::LightBlue` might not render as a proper light blue or might be ignored depending on the user's terminal theme, so always use the true color RGB value `USAGE_HIGH` for bright blue highlights such as the logo.
+| Role | Use |
+| --- | --- |
+| `bg`, `fg` | frame background and default text |
+| `muted`, `dim` | labels/hints and faint separators |
+| `accent`, `on_accent` | focused borders, titles, bullets, chips |
+| `selection_bg`, `selection_fg` | focused table row |
+| `selection_inactive_bg` | selected row in an unfocused table |
+| `key_hint` | shortcut notation |
+| `usage_high`, `usage_low` | usage status and logo accent |
+| `button_*` | focused/unfocused dialog buttons |
+| `success`, `warning`, `error` | severity |
+| `agent_*` | CLD/CDX/AGY badges |
 
-## 2. Header Width Priority
+- Add a new visual role to `Theme`, every built-in palette, and custom-theme
+  loading before using it. Do not inline arbitrary RGB values in render code.
+- `Theme::soft_dim()` is secondary text. Add `Modifier::DIM` only for a third,
+  deliberately fainter level such as omission markers.
+- `Theme::base_style()` must be painted under the full frame and repainted after
+  `Clear`; otherwise a custom background leaks terminal-default cells.
+- Severity and state must not rely on color alone. Pair them with text, symbols,
+  border thickness, or modifiers.
 
-- Preserve the profile/usage column and all three shortcut columns before showing the decorative logo.
-- Show the logo only when the complete left-side content, a 2-cell gap, and the 16-cell logo all fit.
-- When the logo is hidden and the header is still too narrow, remove shortcut columns from right to left without wrapping or overlap.
-- The loading eye uses the logo area and follows the same visibility rule; the profile row's `Loading...` pulse remains visible.
-- The header is five rows tall and each shortcut column renders as one top-aligned
-  `Paragraph`, so **a column may hold at most five entries** — a sixth is clipped
-  with no warning (`header_shortcut_columns_fit_the_five_row_header` guards this).
-  A column's width is `max(<key>) + 1 + max(action) + 4`, so an action label longer
-  than the column's current longest widens it and drops the rightmost column
-  earlier on narrow terminals. Keep new labels within the existing maximum.
-- Header action labels must not duplicate a control name used elsewhere on screen
-  (the New Session dialog's `Context Source` box, for instance): buffer-text render
-  assertions match the first occurrence, and the header renders above everything.
+## Focus and information hierarchy
 
-## 3. Text Highlight (Modifier)
+`titled_block_nav` is the shared panel frame:
 
-| State | Style | Example |
-| :--- | :--- | :--- |
-| Highlighted Value | `fg(ACCENT) + BOLD` | `● Session` / `● Context Source` headings, `Name` value, `Project` folder name, table headers |
-| Non-highlighted/Supplemental | `soft_dim_style()` = `fg(Gray) + DIM` | Entire Prompt header label, `Created/Updated/Id` values, full path |
-| Low Priority Text | `fg(DIM)` | Separators, status bar text, "No sessions" |
+| State | Border | Style |
+| --- | --- | --- |
+| Focused | `Thick` | theme accent + bold |
+| Unfocused | `Plain` | default style; do not dim the border |
 
-- The information hierarchy is expressed as: **labels are always `soft_dim_style`**, and **only core values are highlighted**. Supplemental metadata (created/updated times, ID, path) should also have their values suppressed using `soft_dim_style`.
-- Use `BOLD` only for "the one thing the user needs to see right now." Overusing it destroys the hierarchy.
+When Prompt is focused:
 
-### 3.1 Prompt Header Metadata Grid
+- Session header, rows, and agent tag use `soft_dim()`.
+- The selected Session row uses `selection_inactive_bg`, `soft_dim()`, and a
+  weak `REVERSED` signal.
+- Prompt alone keeps the thick accent border.
 
-The Prompt pane header (and the Detail screen header — both share
-`session_meta_lines`) renders as a `● <Heading>` section title followed by
-`- Field: value` rows (built by the shared `meta_grid` helper in `render.rs`):
+When Session is focused:
 
-```
+- Its selected row uses `selection_bg`/`selection_fg` plus bold.
+- Prompt uses a plain inactive border.
+
+Inspect border, title, header, normal rows, and selected row together. The
+selected-row style is applied last and can otherwise defeat the intended focus
+hierarchy.
+
+Labels and supplemental metadata use `soft_dim()`. Highlight only the value that
+drives the current decision. Avoid using bold for every value.
+
+## Session metadata grid
+
+`session_meta_lines` and `meta_grid` own the shared Session/Detail header shape:
+
+```text
 ● Session
 - Project: <folder> (<full path>)
 - Name: <title>
-- Created at: <…>
-- Updated at: <…>
+- Created at: <time>
+- Updated at: <time>
 - Id: [TAG] <id>
 ```
 
-- For a session launched via **New Session with Context**, a second block —
-  `● Context Source` — is inserted above `Q1` (same grid, same tone; no
-  Created/Updated rows, and `- Id:` appends ` · <profile>`). An unresolvable
-  source collapses to the heading plus `- Id: … (source unavailable)`. Source of
-  truth for when it appears: [session-context.md](./session-context.md).
-- That block's heading also carries a right-aligned `<ctrl+o>` hotkey hint
-  (`meta_grid`'s `heading_hint`, in `key_style` — soft-dim when the panel is
-  unfocused). It is the conditional affordance for the jump key: the block only
-  exists for a context-derived session, and the hint is dropped both for an
-  unresolvable source (the key cannot reach it) and when fewer than two blank
-  columns would remain — the heading is never truncated to fit it. Prefer this
-  pattern over making a top header shortcut conditional: header rows must not
-  appear and disappear as the cursor moves.
-- The `c` clipboard copy mirrors this grid verbatim (`ui/copy.rs`), including the
-  Context Source block; keep the two in sync when the format changes. The heading
-  hint is a UI affordance, not content, so it is not copied.
+- `Project` folder and `Name` are primary values; labels, full path, timestamps,
+  and ID are supplemental.
+- A context-derived session inserts `Context Source` above Q1. Its conditional
+  `ctrl+o` heading hint appears only when the source resolves and sufficient
+  width remains. Do not put cursor-dependent actions in the global header.
+- `ui/copy.rs` mirrors the metadata content without visual hints. Keep copied and
+  rendered content aligned.
+- Each Prompt `Qn` heading shows an available local submit timestamp in
+  `YYYY-MM-DD HH:MM:SS` using `soft_dim()`.
 
-## 4. Border Highlight (BorderType)
+## Header width
 
-Focus/active states are distinguished by a dual signal of **color (ACCENT) + thickness (BorderType)**.
-Using color alone is ineffective in monochrome or colorblind environments, so adjust the thickness alongside it.
+- Preserve profile/usage and shortcut columns before the decorative logo.
+- Show the logo only when the complete left side, gap, and logo fit.
+- If still narrow, drop shortcut columns from right to left; never wrap or
+  overlap them.
+- The five-row header permits at most five actions per shortcut column. The
+  `header_shortcut_columns_fit_the_five_row_header` test guards this ceiling.
+- A longer label widens its column and hides later columns sooner. Keep action
+  labels within existing widths.
+- Header action labels must not duplicate control names used by render-buffer
+  assertions elsewhere on the screen.
 
-| State | BorderType | border/title style |
-| :--- | :--- | :--- |
-| Focused/Active | `Thick` (thick line) | `fg(ACCENT) + BOLD` |
-| Unfocused | `Plain` (thin line) | `Style::default()` (default color, **no dimming applied**) |
+## Dialogs and overlays
 
-- Container shared by the two panels (Session/Prompt): `titled_block(title, focused)`.
-- Always-active UIs (search bar, all dialogs) always have a `Thick` highlighted border:
-  - Search block of `draw_search_prompt` (`ACCENT`)
-  - `modal_block` (Agent/Folder filters, Rename) (`ACCENT`)
-  - Input block of `draw_rename_modal` (`ACCENT`)
-  - `draw_delete_confirm` (`Color::Red` — destructive action)
-  - `draw_message_modal` (general notifications) — highlight color by severity (see below)
-- **Severity Colors**: Notifications/confirmation dialogs change their border and button colors based on their meaning.
-  `MessageKind::Info` → `ACCENT`, `Warn` → `Color::Yellow`, `Error` → `Color::Red`.
-  Destructive/blocking situations are `Red`, warnings are `Yellow`, and simple information is `ACCENT`.
-- Unfocused panel borders are **not dimmed.** Past application of `soft_dim_style` has been reverted — dimming is reserved only for text hierarchy representation, while border distinction relies on thickness.
+Use the shared primitives in `ui/components/modal.rs`:
 
-### 4.1 Dialog Internal Separators, Padding, and Button Design Rules
+- `modal_block` for thick titled framing;
+- `render_modal` to clear/repaint the outer area and inset the frame by one cell,
+  protecting borders from background double-width glyphs;
+- `button_styles` for theme-aware focused and unfocused buttons;
+- `dim_backdrop` only for modes selected by `backdrop_dimmed`.
 
-To improve the visual stability and polish of dialogs (modals), adhere to the following rules:
+Additional rules:
 
-* **Border Adhesion and Thickness Consistency**:
-  * The bottom separator of a modal must tightly adhere to the left and right modal borders without any gaps.
-  * Since the modal block is drawn in an area with a 1-character left/right margin (`block_area`), the separator's X coordinate must be `area.x + 1`, and the width `area.width - 2`.
-  * Because the modal border is `Thick + BOLD`, the separator must perfectly match the thickness using thick line symbols (`┣`, `━`, `┫`) and `Modifier::BOLD`.
-* **Uniform Bottom Padding and Button Margin Structure**:
-  * Set bottom padding to `0` to eliminate unnecessary blank space at the bottom of the dialog (`Padding::new(1, 1, 1, 0)`).
-  * With a bottom padding of `0`, the row of buttons strictly adheres to the border directly beneath it, and you must ensure there is **always 1 line of empty space (`Constraint::Length(1)`) immediately above the buttons**.
-  * When there are error/info messages, dynamically increase the dialog's vertical height (`h`) and constraints (e.g., 12 lines -> 13 lines) to prevent the 1-line margin structure between the message and the button row from collapsing.
-* **Uniform Dialog Button Colors and Order**:
-  * The button styles across all dialogs use the same color scheme.
-    * **Focused** state: Text is white (`Rgb(255, 255, 255)`), background is light blue (`Rgb(80, 150, 255)`), with Bold effect applied.
-    * **Unfocused** state: Text is dark gray (`Color::DarkGray`), background is light gray (`Color::Gray`).
-  * The button layout order is uniformly **[Confirm/Execute] [Cancel]** (e.g., `[OK] [Cancel]`, `[Save] [Cancel]`, `[Delete] [Cancel]`).
-* **Dynamic Height Adjustment and Collapse Prevention**:
-  * Dynamically calculate the modal's vertical height (`h`) based on the number of contents (like folder lists) to ensure no empty space is left at the bottom.
-  * To prevent layout breakage when there are `0` search results and no content, enforce a minimum height (minimum `10` including basic offsets) (`clamp(10, max_h)`) to secure at least 1 row of space for an empty list.
-* **Enter Shortcut Misoperation Prevention**:
-  * Disable the shortcut behavior where pressing Enter immediately submits the form while focus is in a text input box.
-  * Process events such that the form is submitted **only when the user manually moves focus to the bottom button row and presses Enter while the Confirm/Execute button is active**.
-  * Pressing Enter while the Cancel button is focused must act as a cancel action that closes the dialog.
-  * The Folder filter is a search-backed multi-select list rather than a form. In that dialog, Enter selects the focused folder and confirms the current selection. Selection is idempotent: an already selected folder stays selected, and Enter with no visible results confirms without changing existing selections.
+- Keep action order `[Confirm/Execute] [Cancel]`.
+- A text-input Enter must not submit a form. Submission occurs only when the
+  confirm button owns focus; Enter on Cancel closes the dialog.
+- Folder filter is the exception: it is a search-backed selection list, so Enter
+  selects the focused item and confirms idempotently.
+- Keep at least one blank row above buttons. Expand modal height when an error or
+  information row would collapse that spacing.
+- Clamp dynamic list modals to a usable minimum height when there are no results.
+- A popup drawn over background text must clear enough adjacent cells to remove
+  both halves of a clipped double-width glyph before painting its border.
+- Theme selection does not dim its backdrop because the background is the live
+  preview.
 
-## 5. Selected Row (Table row highlight)
+## Preview omission and expansion
 
-| State | Background | Foreground/Attribute |
-| :--- | :--- | :--- |
-| Session Focused | `Color::Cyan` | `fg(Black) + BOLD` |
-| Session Unfocused (Prompt Active) | `Rgb(55,55,55)` | `soft_dim_style + REVERSED` |
-| Other | `DIM` | `fg(Black) + BOLD` |
+- A user turn of at most eight original lines is shown in full. Longer turns
+  show the first four and last four lines with the exact omitted-line count.
+- Count original lines before width wrapping. `wrap_w` display rows do not alter
+  the omission count.
+- Render the omission marker as its own `soft_dim() + DIM` span.
+- Session Prompt `.` toggles every turn through `App.preview_expanded`; changing
+  the selected session resets it.
+- Detail Prompt `.` expands only the selected truncated turn. Up/Down scroll
+  within a tall expanded turn instead of moving the selection.
+- Detail Work & Answer `.` toggles tool visibility and removes per-entry display
+  caps.
+- Both preview paths use `preview_turn_display(turn, expanded)` so collapsed and
+  expanded forms cannot drift.
 
-- When representing an inactive panel, verify the borders, titles, headers, standard rows, and selected row **as a complete set**. Since the selected row highlight overwrites at the end, check `row_highlight_style` first. (Background: [Panel Focus Style](./panel-focus-style.md))
+## Width and root layout
 
-### 5.1 List Item Layout Rules
+- Use `ui/components/text.rs` for width-aware padding, truncation, and wrapping.
+  Never use byte or scalar counts as terminal-cell width.
+- Preserve one-cell right margins for long list names while allowing the selected
+  highlight to occupy the complete row.
+- `draw_status_bar` renders inside `area.inner(Margin::new(1, 0))`. Do not encode
+  the root footer inset as spaces in each message branch.
+- Padding inside a colored status chip is content styling and remains in the
+  string.
 
-* **Item Name Right Margin**:
-  * For items that might have long text, such as folder/session lists, add a 1-character margin (` `) to the right of the name to enhance readability.
-  * The selected inverted bar (background highlight) must maintain its default state of fully occupying the original entire area (Inner width).
+## Verification
 
-### 5.2 Root Status Bar (Footer)
-
-The bottom row of the root layout, rendered by `draw_status_bar`.
-
-* Render the footer `Paragraph` in `area.inner(Margin::new(1, 0))` so both edges keep an explicit one-cell inset even when the text is long enough to be truncated.
-* Do not encode the outer inset as a leading/trailing space in footer text or as a separate `Span::raw(" ")`. Every mode branch then shares the same insets.
-* Padding inside a colored status chip (`format!(" {} ", msg)`) is content styling; it is independent of the footer's outer inset and stays in the string.
-
-## 6. Implementation Locations Summary
-
-| Target | Function |
-| :--- | :--- |
-| Color constants / agent colors | Top of `render.rs`, `agent_tag` |
-| Shared non-highlight style | `soft_dim_style` |
-| Panel container (focus branching) | `titled_block_nav` |
-| Dialog container | `modal_block` |
-| General notification dialog (reused) | `draw_message_modal` / `App::show_message` |
-| Session table/selected row | `draw_table` |
-| Prompt header meta information | `draw_preview` |
-| Root status bar (footer) | `draw_status_bar` |
-
-## 7. Checklist (When changing styles)
-
-- [ ] Are new colors defined as constants instead of being inlined?
-- [ ] Are highlights using `ACCENT + BOLD`, non-highlights using `soft_dim_style`, and borders following the `Thick/Plain` rule?
-- [ ] For bright blue highlights like the '7' in the logo, is the true color RGB (`USAGE_HIGH`) used instead of `Color::LightBlue`?
-- [ ] When switching focus back and forth (`Tab`) multiple times, do the tones of the two panels change together?
-- [ ] Do both the search bar and dialogs maintain `Thick` highlighted borders?
-- [ ] Does it pass `cargo clippy` without warnings?
+- Run render-buffer tests and the baseline in [testing.md](./testing.md).
+- Perform a real TUI or PTY check for layout, focus, theme, or popup changes.
+- Check narrow and wide terminals, a light and dark theme, and content containing
+  CJK or emoji where clipping boundaries changed.
+- Toggle focus repeatedly and verify the complete hierarchy, not just borders.
+- Verify the 8-line omission boundary and all three `.` behaviors.
+- Confirm every dialog can reach all controls and that text-input Enter does not
+  execute the primary action.

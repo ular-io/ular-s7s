@@ -1,5 +1,9 @@
 # Releasing and Distribution Guide
 
+> Status: Current operational procedure
+> Read when: Preparing or publishing a release.
+> Entry point: `scripts/release.sh`
+
 This document describes how to release a new version of `s7s` and distribute it via a custom Homebrew Tap.
 
 > **A release is not complete until the Homebrew tap is updated.** When asked to

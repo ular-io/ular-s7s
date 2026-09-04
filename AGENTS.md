@@ -6,12 +6,12 @@ multiple profiles, plus a `s7s session` CLI that projects stored session context
 It reads each agent's on-disk session storage directly, so much of its behavior is
 coupled to external CLI formats that can change on upgrade.
 
-Start from [docs/architecture.md](./docs/architecture.md) for the module map and a
-change-request-to-source routing table.
-
 ## Routing: read before you change
 
-Read the linked document before modifying code in that area.
+Read only the document for the area being changed. Use
+[architecture.md](./docs/architecture.md) when a change crosses areas or the
+owning module is unclear. Use [backlog.md](./docs/backlog.md) only for feature
+planning; backlog entries are not implementation authorization.
 
 | If you change… | Read first |
 | --- | --- |
@@ -20,13 +20,13 @@ Read the linked document before modifying code in that area.
 | Profiles / env injection (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) | [profiles.md](./docs/profiles.md) |
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
-| TUI panel focus / visual style | [panel-focus-style.md](./docs/panel-focus-style.md), [preview-omission-style.md](./docs/preview-omission-style.md), [ui-style-guide.md](./docs/ui-style-guide.md) |
+| TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |
 
-For the reasoning behind a past change, consult
-[docs/development-history.md](./docs/development-history.md) — an archived,
-non-authoritative log. Do not read it by default.
+For past reasoning, prefer `git log -- <path>`, `git blame`, and `git show`.
+Completed plans and chronological change logs are intentionally not kept as
+active documentation.
 
 ## Critical rules
 
@@ -70,8 +70,9 @@ authoritative matrix; the essentials:
   screen output can change between CLI versions even under identical flags. Treat
   every parser and probe as version-specific and re-verify on upgrade.
 - Some paths have only been validated indirectly (e.g. agy contextual launch and
-  real-kitty `ctrl+shift+n`). Such gaps are recorded with their iteration number
-  in [development-history.md](./docs/development-history.md).
+  real-kitty `ctrl+shift+n`). Current gaps are tracked in
+  [backlog.md](./docs/backlog.md); the detailed procedures live in
+  [testing.md](./docs/testing.md).
 - **Codex 0.147 rewrote its rollout event stream** and two consequences are still
   unverified, because neither could be reproduced from the sessions on disk:
   - Whether the `thread_rolled_back` marker survived the move to the

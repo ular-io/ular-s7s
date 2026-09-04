@@ -271,11 +271,14 @@ accent = "#88C0D0"    # focus borders / selection
 
 ## Documentation
 
-- [AGENTS.md](./AGENTS.md)
-- [Panel Focus Style](./docs/panel-focus-style.md)
-- [Preview Omission Style](./docs/preview-omission-style.md)
-- [Session Title Compatibility](./docs/session-title-compat.md)
-- [Testing Guide](./docs/testing.md)
-- [Usage Display](./docs/usage-display.md)
-- [Profiles](./docs/profiles.md)
-- [Session Context](./docs/session-context.md)
+- Contributor routing and safety rules: [AGENTS.md](./AGENTS.md)
+- Cross-cutting module map: [Architecture](./docs/architecture.md)
+- Verification: [Testing Guide](./docs/testing.md)
+- Current planning candidates and verification debt: [Backlog](./docs/backlog.md)
+- Domain contracts: [Session Context](./docs/session-context.md),
+  [Session Title Compatibility](./docs/session-title-compat.md),
+  [Profiles](./docs/profiles.md), [Model Selection](./docs/models.md),
+  [Usage Display](./docs/usage-display.md),
+  [Terminal and Text Input](./docs/terminal-input-hardening.md)
+- Visual contract: [UI Standard Style Guide](./docs/ui-style-guide.md)
+- Operations: [Releasing Guide](./docs/releasing.md)

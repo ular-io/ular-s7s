@@ -1,5 +1,9 @@
 # Testing Guide
 
+> Status: Current
+> Read when: Verifying any code change or revalidating after an external CLI upgrade.
+> Entry point: `scripts/check.sh`
+
 This is the authoritative verification matrix for the repository. `AGENTS.md`
 carries only the concise routing rules and defers here for the full procedure.
 
@@ -19,8 +23,8 @@ the change area below and run every check listed for it.
 | Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
 | Session activity time / Updated ordering | `cargo test real_data_index_snapshot -- --ignored --nocapture`; compare Updated against the real CLI record, then resume and exit without input and verify it is unchanged | §Session activity checks below |
-| New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [panel-focus-style.md](./panel-focus-style.md) |
-| Panel focus / TUI style | Manual TUI or PTY visual check | [panel-focus-style.md](./panel-focus-style.md) |
+| New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [ui-style-guide.md](./ui-style-guide.md) |
+| Panel focus / TUI style | Manual TUI or PTY visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
 | Terminal lifecycle / bracketed paste / grapheme editing | Fault-injection lifecycle tests + paste-routing tests, plus the real-terminal checks below | §Terminal lifecycle and paste checks · [terminal-input-hardening.md](./terminal-input-hardening.md) |
 | Storage structure change | Update code and the owning document together; consider whether `CACHE_VERSION` must bump | [session-title-compat.md](./session-title-compat.md) |
@@ -168,7 +172,7 @@ Update tests and documentation together if any of the following changes:
 
 ## Related docs
 
-- [Panel Focus Style](./panel-focus-style.md)
+- [UI Standard Style Guide](./ui-style-guide.md)
 - [Session Title Compatibility](./session-title-compat.md)
 - [Session Context](./session-context.md)
 - [Terminal and Text Input Hardening](./terminal-input-hardening.md)

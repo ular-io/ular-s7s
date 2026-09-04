@@ -1,5 +1,9 @@
 # Profiles (Multiple Subscriptions)
 
+> Status: Current
+> Read when: Changing profiles, config roots, login, or agent environment injection.
+> Entry points: `src/profile.rs`, `src/ui/profile/`, `src/resume.rs`
+
 Profile = a bundle of **Agent type + Name + config folder (path) + OAuth token (storage only)**.
 Even for the same agent, if the config folder is different, it is a separate profile (e.g., Claude personal subscription + team subscription). Implementation is in `src/profile.rs` (model/storage) and `src/ui/profile/` (profile screen/form: `state`, `input`, `render`). Usage/model fetch coordination and cross-feature helpers (`set_single_profile`, `profile_name`, `session_profile_root`) remain in `src/ui/mod.rs`.
 
@@ -75,7 +79,8 @@ If you save a non-existent path in the add/edit profile form, a confirmation mod
   **Model Combobox** (text input disabled — for items, initial selection, and OK disable rules, see [Model Selection](models.md)),
   **Folder Combobox** (text input allowed).
   Focus cycles through Profile → Model → Folder → OK → Cancel using `tab`/`shift+tab` (buttons are independent tab stops; movement between buttons is also possible with `←`/`→`).
-  Focused buttons are displayed as bright blue boxes, unfocused buttons as bright gray boxes + gray dim text like the "left" label.
+  Button and focus styling follows [ui-style-guide.md](./ui-style-guide.md); this
+  document owns interaction and profile semantics only.
   - Default profile: The query/detail screen uses the selected session's profile; the profile screen uses the selected profile.
   - Initial folder value & focus: The query/detail screen starts with the selected session's folder filled and focus on Profile; the profile screen starts with the folder empty and focus on Folder, with the Folder dropdown open (first item highlighted).
   - `enter` is the default action of the focused control: Buttons perform their function (OK = start session, Cancel = cancel); if a dropdown is closed, it opens the list; if open, it commits the cursor item and closes (if the cursor is not on the list, it commits the input text as is). The global `enter` = OK (start session) shortcut has been removed — to start a session, focus on the OK button and press `enter`.
@@ -85,7 +90,10 @@ If you save a non-existent path in the add/edit profile form, a confirmation mod
   - Folder Combo: Typing automatically opens the dropdown (can also be opened with `enter`/`→`), displaying matching folders at the top (normal color) and non-matching folders at the bottom (soft dim color like the "left" label) (no hiding). `→` while open only moves the text cursor right (the select+close complete function is removed — press `space` to reflect the cursor folder in the input box, or `enter` to reflect + close).
   - Starting a session is done via OK button `enter` (if the folder is empty, a "Select a folder first" error is shown on the left of the button row), cancel via Cancel button/`esc`. After execution, it returns to the session screen and rescans to reflect the newly saved session.
 - Scanning is performed per profile loop, assigning a `profile_id` to each session (cached values are not trusted and always reassigned on scan — prevents stale data when deleting/recreating profiles).
-- The meta paths used by rename (`rename.rs`) and Antigravity meta cleanup on session deletion are derived from `session.profile_id → Profile.path` (Commit 46). If the affiliated profile is not found, it does not fallback to the default path — rename aborts after showing an error, and deletion skips agy meta cleanup (body file deletion proceeds).
+- The meta paths used by rename (`rename.rs`) and Antigravity meta cleanup on
+  session deletion derive from `session.profile_id → Profile.path`. If the
+  affiliated profile is missing, do not fall back to the default path: rename
+  aborts, while deletion skips agy metadata cleanup after deleting the body.
 - Profiles without numbers are also scanned (the spec is to display all in the session list). The header displays up to 5 profiles as `<1>`~`<5>`, filtering them using the same number keys in the session screen.
 - Rows 1~3 in the profile table are fixed to the default `Claude` → `Codex` → `Antigravity` order. User-added profiles are displayed from row 4 in registration order.
 - In the profile screen, pressing `1`~`5` inserts the selected profile at that number position. Subsequent numbers shift down by one, and if 5 are already assigned, the existing number 5 is unassigned. `space` toggles the number. If assigned, the profile loses its number, shifts following numbers up, and unassigned profiles are appended after the current last number. Attempting to add when all 5 are assigned displays an error dialog and leaves the state unchanged. Number order is managed by a separate `shortcut` field, while profile table rows are fixed to registration order regardless of number changes.

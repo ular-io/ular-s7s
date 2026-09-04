@@ -1,6 +1,13 @@
 # Model Selection (New Session Model Dropdown)
 
-Design for querying, caching, and injecting the "selectable models list" to be displayed in the Model dropdown of the New Session dialog. Implementation: `src/models.rs` (query/cache), `src/ui/mod.rs` (dropdown state/background integration), `src/resume.rs::with_model_flag` (command injection).
+> Status: Current and version-sensitive
+> Read when: Changing model discovery, caching, selection, or command injection.
+> Entry points: `src/models.rs`, `src/ui/new_session/`, `src/resume.rs`
+
+Contract for querying, caching, and injecting selectable models in the New
+Session dialog. `src/models.rs` owns query/cache data,
+`src/ui/new_session/` owns dialog state and interaction, `src/ui/background.rs`
+coordinates probes, and `src/resume.rs::with_model_flag` injects the command.
 
 ## Model List Enumeration Methods (Observed August 2026)
 
