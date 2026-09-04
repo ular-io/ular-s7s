@@ -143,6 +143,60 @@ fn folder_modal_enter_preserves_existing_selections() {
 }
 
 #[test]
+fn folder_modal_prioritizes_selected_folders_only_when_opened() {
+    let mut app = app_with_profiles();
+    app.filter.folders.insert("tmp".to_string());
+    app.open_folder_modal();
+
+    let modal = app.folder_modal.as_ref().expect("folder modal");
+    assert_eq!(modal.labels, vec!["tmp".to_string(), "/".to_string()]);
+    assert_eq!(modal.cursor, 0);
+    assert_eq!(modal.selected, HashSet::from([0]));
+
+    // Live deselection changes the filter but must not move the row under the cursor.
+    app.on_key_folder_modal(key(KeyCode::Char(' '), KeyModifiers::NONE));
+    let modal = app.folder_modal.as_ref().expect("folder modal");
+    assert_eq!(modal.labels, vec!["tmp".to_string(), "/".to_string()]);
+    assert!(app.filter.folders.is_empty());
+}
+
+#[test]
+fn folder_modal_search_preserves_the_order_captured_at_open() {
+    let mut app = app_with_profiles();
+    app.filter.folders.insert("tmp".to_string());
+    app.open_folder_modal();
+
+    app.on_key_folder_modal(key(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert_eq!(
+        app.folder_modal.as_ref().expect("folder modal").labels,
+        vec!["/".to_string()]
+    );
+
+    app.on_key_folder_modal(key(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(
+        app.folder_modal.as_ref().expect("folder modal").labels,
+        vec!["tmp".to_string(), "/".to_string()]
+    );
+}
+
+#[test]
+fn folder_modal_reopen_uses_the_latest_selection_order() {
+    let mut app = app_with_profiles();
+    app.filter.folders.insert("tmp".to_string());
+    app.open_folder_modal();
+
+    app.on_key_folder_modal(key(KeyCode::Char(' '), KeyModifiers::NONE));
+    app.on_key_folder_modal(key(KeyCode::Down, KeyModifiers::NONE));
+    app.on_key_folder_modal(key(KeyCode::Char(' '), KeyModifiers::NONE));
+    app.on_key_folder_modal(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.open_folder_modal();
+
+    let modal = app.folder_modal.as_ref().expect("folder modal");
+    assert_eq!(modal.labels, vec!["/".to_string(), "tmp".to_string()]);
+    assert_eq!(modal.selected, HashSet::from([0]));
+}
+
+#[test]
 fn folder_modal_enter_selects_focused_search_result() {
     let mut app = app_with_profiles();
     app.open_folder_modal();

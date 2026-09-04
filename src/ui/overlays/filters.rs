@@ -116,6 +116,9 @@ impl App {
 
     pub(crate) fn open_folder_modal(&mut self) {
         self.folder_query.clear();
+        self.folder_order = (0..self.all_folders.len()).collect();
+        self.folder_order
+            .sort_by_key(|&i| !self.filter.folders.contains(self.all_folders[i].as_str()));
         self.rebuild_folder_visible();
         let mut pre = HashSet::new();
         for (vis_i, &all_i) in self.folder_visible.iter().enumerate() {
@@ -137,11 +140,12 @@ impl App {
     fn rebuild_folder_visible(&mut self) {
         let q = crate::normalize::nfc_lower(&self.folder_query);
         self.folder_visible = self
-            .all_folders
+            .folder_order
             .iter()
-            .enumerate()
-            .filter(|(_, f)| q.is_empty() || crate::normalize::nfc_lower(f).contains(&q))
-            .map(|(i, _)| i)
+            .copied()
+            .filter(|&i| {
+                q.is_empty() || crate::normalize::nfc_lower(&self.all_folders[i]).contains(&q)
+            })
             .collect();
     }
 

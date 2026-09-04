@@ -156,6 +156,10 @@ pub struct App {
     pub delete_ok_focused: bool,
     /// Incremental search keyword in the folder filter modal.
     pub folder_query: String,
+    /// Folder indices in the stable order captured when the folder modal opens.
+    /// Selected folders lead, while both selected and unselected groups retain
+    /// the alphabetical order from `all_folders`.
+    folder_order: Vec<usize>,
     /// Mapping: folder modal label index <-> index in `all_folders` (reflects search filtering).
     folder_visible: Vec<usize>,
 
@@ -272,6 +276,7 @@ impl App {
             pending_delete: None,
             delete_ok_focused: false,
             folder_query: String::new(),
+            folder_order: Vec::new(),
             folder_visible: Vec::new(),
             scan_info,
             status_msg: None,
