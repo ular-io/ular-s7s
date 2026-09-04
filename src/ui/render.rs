@@ -236,15 +236,18 @@ pub(crate) fn reset_label_current(reset: Option<crate::usage::ResetCountdown>) -
     }
 }
 
-// Weekly countdown discards minutes, tracking down to hours: `(2d  6h)`, `(   17h)`, `(    2h)`.
+// Weekly countdown tracks down to hours, dropping minutes: `(2d  6h)`, `(   17h)`, `(    2h)`.
+// Under an hour hours would read `(    0h)`, so it falls back to minutes: `(   45m)`.
 pub(crate) fn reset_label_weekly(reset: Option<crate::usage::ResetCountdown>) -> String {
     let Some(r) = reset else {
         return String::new();
     };
     if r.days > 0 {
         format!("({}d {:>2}h)", r.days, r.hours)
-    } else {
+    } else if r.hours > 0 {
         format!("(   {:>2}h)", r.hours)
+    } else {
+        format!("(   {:>2}m)", r.minutes)
     }
 }
 
@@ -1461,6 +1464,13 @@ mod tests {
         );
 
         assert_eq!(plain_usage(entry), " 15%(1h 50m)  38%(1d 22h) left");
+    }
+
+    #[test]
+    fn usage_spans_show_weekly_reset_in_minutes_under_one_hour() {
+        let entry = ready_usage(usage_window(15, 0, 0, 12), usage_window(3, 0, 0, 45));
+
+        assert_eq!(plain_usage(entry), " 15%(   12m)   3%(   45m) left");
     }
 
     #[test]
