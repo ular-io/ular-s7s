@@ -184,6 +184,62 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
   (Antigravity metadata, sqlite sidecars) are only touched under the owning
   profile's root, and are skipped entirely when that profile is gone.
 
+### Handoff
+
+```text
+s7s session handoff --title <TITLE> [--agent <AGENT>] [--profile <ID>]
+                    [--folder <DIR>] [--from <ID>] [--no-source]
+                    [--body-file <PATH>]
+```
+
+Parks a task in a new session so it can be resumed once the current work ends.
+The body is read from stdin unless `--body-file` is given. Owned by
+[session_handoff.rs](../src/session_handoff.rs).
+
+**Prompt composition.** Body, then the origin as plain text, then the stop
+instruction, then the `<s7s-context-bootstrap>` envelope.
+
+The envelope goes **last** by requirement, not by taste: `is_noise_turn` matches
+the marker only at the start of a turn, so an envelope placed first would make the
+whole turn noise and the parked session would vanish from the list (a session with
+no real turn is dropped entirely). Placed last, the turn stays visible while
+`parse_context_bootstrap`, which matches anywhere in the text, still records the
+link. The origin is repeated as plain text because the envelope is filtered out of
+`session show`, so plain text is the only form a CLI reader sees.
+
+**Not acting on it.** The body reads like a work order, so two defenses combine:
+the trailing instruction (`config.toml` `handoff_instruction`, English by default
+because committed sources are English — override it to hand off in another
+language) and the agent's own restriction flags. Both were measured against a body
+that deliberately invited action, on claude with tools fully allowed and a
+competing "run it immediately" project directive; neither agent acted.
+
+**Per-agent differences** the module absorbs:
+
+| agent | session id from | restriction | title at creation |
+| --- | --- | --- | --- |
+| claude | `--output-format json` → `session_id` | `--allowedTools ""` + `--permission-mode plan` | `--name` |
+| codex | `--json` → `thread.started.thread_id` | `-s read-only` | none; renamed after |
+| antigravity | `cache/last_conversations.json`, keyed by cwd (exact match) | none | none; renamed after |
+
+**Defaults.** `--agent`/`--profile` follow the source session, `--folder` its
+working directory, so resuming lands in the project the work belongs to. The
+source's profile is inherited **only** when the target agent matches it: every
+title store a rename writes derives from `Profile.path`, so carrying a claude
+profile into a codex handoff would write into another account's config root. A
+`--profile` naming another agent's profile is refused for the same reason.
+
+**Source resolution.** `--from`, else `$CLAUDE_CODE_SESSION_ID`, else the most
+recent session in the folder. A named `--from` that cannot be found is an error;
+the heuristic simply yields no link. `--no-source` omits both the origin block and
+the envelope.
+
+**After creation** the index is rescanned rather than the exit code trusted: the
+handoff counts only once the session is on disk, and the scan supplies the record
+the rename and the resume command need. `--title` gains a `HAND-OVER: ` prefix
+when absent. Nothing else is tracked — a parked session sits at one turn (`Q1`),
+which is what marks it as not started.
+
 ## Excerpts and redaction
 
 - Redact before rendering or caching searchable assistant text.

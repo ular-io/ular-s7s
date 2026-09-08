@@ -24,6 +24,7 @@ pub mod scratch;
 pub mod session_cli;
 pub mod session_context;
 pub mod session_delete;
+pub mod session_handoff;
 pub mod theme;
 pub mod title;
 pub mod ui;

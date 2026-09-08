@@ -24,13 +24,14 @@ them, and move enduring behavior into the owning domain document.
 | Per-result keyword snippets in session search | `session_cli.rs`, list index | Index size and snippet source |
 | Configurable bootstrap response language | bootstrap rendering/config | Trust boundary and default behavior |
 | Cross-session reference graph/deduplication | parser/context model | Requires nested-reference recognition first |
+| Context source line in `session show` output | `session_context/render.rs` | `context_source` is rendered only in the TUI, so a CLI reader cannot see what a session was derived from; wording must match the Detail block |
 
 ## Verification debt
 
 | Gap | Required evidence | Procedure |
 | --- | --- | --- |
 | Codex rollback marker after the `item_completed` stream change | Fresh real rollback storage diff proving whether `thread_rolled_back` still exists | [testing.md](./testing.md), rewind row |
-| Codex rename target after the local thread catalog appeared | Fresh real rename storage diff identifying the authoritative file/table | [session-title-compat.md](./session-title-compat.md) |
+| Rollout integrity after `codex migrate-rollouts --apply` | One migrated thread showing the rollout JSONL unchanged in size and line count, then `real_data_turn_parity` over the whole index | [testing.md](./testing.md), session context checks |
 | Antigravity contextual launch | Interactive launch showing prompt injection, successful bootstrap, no historical task execution, and no Q-count pollution | [testing.md](./testing.md#session-context--contextual-launch-checks) |
 | Real kitty `ctrl+shift+n` handling | Actual terminal check showing chord distinction and mode cleanup across handover | [testing.md](./testing.md#keyboard-protocol-checks) |
 | New Session dropdown over a CJK background title | PTY/TUI visual check confirming no glyph bleed at popup borders | [testing.md](./testing.md), New Session layout row |

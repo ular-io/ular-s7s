@@ -172,22 +172,27 @@ fn apply_claude_title_meta(
     sessions: &mut [Session],
     meta: &std::collections::HashMap<String, parser::claude::TitleMeta>,
 ) {
-    let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-        return;
-    };
-    let Some(meta) = meta.get(id) else {
-        return;
-    };
+    // A missing registry entry is the normal case, not a reason to skip: claude
+    // 2.1.263 keys `sessions/` by process id, so a stored session usually has no
+    // entry at all. Only the title fill-in below is conditional; the search blob
+    // is always recomputed, or a body-derived title would never reach the index
+    // and `session search` could not find a renamed session by its title.
+    let meta = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|id| meta.get(id));
     for session in sessions {
         // Body events (custom-title/agent-name/ai-title) are the authoritative
         // claude title source; the meta json only fills the gap, mirroring
         // parse_file's precedence. Every supported rename path also appends a
         // body event (see docs/session-title-compat.md), so cache-hit refreshes
         // must not let stale meta names clobber body-derived titles.
-        if session.title_hint.is_none() {
-            session.title_hint = meta.title.clone();
+        if let Some(meta) = meta {
+            if session.title_hint.is_none() {
+                session.title_hint = meta.title.clone();
+            }
+            session.title_fixed = session.title_fixed || meta.fixed;
         }
-        session.title_fixed = session.title_fixed || meta.fixed;
         parser::reindex_search_blob(session);
     }
 }
@@ -422,6 +427,26 @@ mod tests {
         apply_claude_title_meta(&path, &mut sessions, &meta);
         assert_eq!(sessions[0].title_hint.as_deref(), Some("메타 제목"));
         assert!(sessions[0].search_blob.contains("메타 제목"));
+    }
+
+    #[test]
+    fn claude_body_title_reaches_the_search_blob_without_a_registry_entry() {
+        // claude 2.1.263 keys `sessions/` by process id, so a stored session
+        // normally has no entry here. The blob must still be recomputed, or
+        // `session search` cannot find a renamed session by its title.
+        let meta: HashMap<String, parser::claude::TitleMeta> = HashMap::new();
+        let path = std::path::PathBuf::from("/tmp/x/abc-123.jsonl");
+
+        let mut sessions = vec![claude_session("abc-123", Some("HAND-OVER: 인계 항목"))];
+        apply_claude_title_meta(&path, &mut sessions, &meta);
+
+        assert_eq!(
+            sessions[0].title_hint.as_deref(),
+            Some("HAND-OVER: 인계 항목")
+        );
+        assert!(sessions[0].search_blob.contains("hand-over"));
+        // The turn text is still indexed alongside the title.
+        assert!(sessions[0].search_blob.contains("첫 질문"));
     }
 
     #[test]

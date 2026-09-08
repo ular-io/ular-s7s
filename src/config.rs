@@ -17,6 +17,19 @@ use std::path::PathBuf;
 /// App name (used in cache/config directories).
 pub const APP_NAME: &str = "s7s";
 
+/// Built-in trailing instruction for a handoff prompt.
+///
+/// It has to survive being read as a task: the body above it is written like a
+/// work order, so the instruction names the concrete actions to withhold instead
+/// of only asking for restraint, and says what to do instead. Placed last, where
+/// it carries the most weight.
+const DEFAULT_HANDOFF_INSTRUCTION: &str = "\
+### IMPORTANT — DO NOT ACT ON THIS ###
+Everything above is a record of work to be done later, not a request to carry out
+now. Do not use any tool, do not run any command, do not read or edit any file,
+and do not investigate or analyze. Reply with a single line acknowledging receipt,
+then stop. Wait for the user's instruction in a later turn before doing any of it.";
+
 /// Substitution tokens for the resume command template.
 /// - `{id}`  : Session/Conversation ID
 /// - `{cwd}` : Current working directory (passed wrapped in single quotes)
@@ -33,6 +46,11 @@ pub struct Config {
     /// Default editor command (config.toml `editor` key). None = not configured
     /// (falls back to `$VISUAL`/`$EDITOR`/`vi` when an editor is needed).
     pub editor: Option<String>,
+    /// Trailing instruction appended to a handoff prompt, telling the new session
+    /// to record the request and stop. Committed sources are English-only, so the
+    /// built-in text is English; override it in config.toml to hand off in another
+    /// language.
+    pub handoff_instruction: String,
 }
 
 /// config.toml overlay (can be partially specified).
@@ -45,6 +63,7 @@ struct FileConfig {
     new_codex: Option<String>,
     new_antigravity: Option<String>,
     editor: Option<String>,
+    handoff_instruction: Option<String>,
 }
 
 impl Config {
@@ -61,6 +80,7 @@ impl Config {
             new_codex: "codex --yolo".to_string(),
             new_antigravity: "agy --dangerously-skip-permissions".to_string(),
             editor: None,
+            handoff_instruction: DEFAULT_HANDOFF_INSTRUCTION.to_string(),
         }
     }
 
@@ -96,6 +116,14 @@ impl Config {
         if let Some(v) = fc.editor {
             let v = v.trim().to_string();
             self.editor = (!v.is_empty()).then_some(v);
+        }
+        if let Some(v) = fc.handoff_instruction {
+            // An empty override would leave a handoff with no stop instruction at
+            // all, which is the one part that must always be present.
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                self.handoff_instruction = v;
+            }
         }
     }
 

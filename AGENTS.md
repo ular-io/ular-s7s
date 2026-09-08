@@ -22,6 +22,7 @@ planning; backlog entries are not implementation authorization.
 | Scratch workspace (`src/scratch.rs`, folder dropdown `[SCRATCH]` row) | [architecture.md](./docs/architecture.md) §Scratch workspace + [testing.md](./docs/testing.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
 | Session deletion (`src/session_delete.rs`, shared by the TUI action and `s7s session delete`) | [session-context.md](./docs/session-context.md) §Delete + [testing.md](./docs/testing.md) |
+| Work handoff (`src/session_handoff.rs`, `s7s session handoff`) | [session-context.md](./docs/session-context.md) §Handoff + [testing.md](./docs/testing.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |

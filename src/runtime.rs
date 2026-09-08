@@ -59,7 +59,8 @@ SESSION:   `s7s session search <query>` lists matching sessions and
            `s7s session list` lists them by filter alone; `s7s session show <id>`
            renders one session's context; `s7s session rename <id> <title>` sets a
            title and `s7s session delete <id> --yes` removes a session for good.
-           Run `s7s session --help` or `s7s session <cmd> --help` for examples."
+           `s7s session handoff --title <t>` parks a task in a new session to pick
+           up later. Run `s7s session --help` or `s7s session <cmd> --help`."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -105,7 +106,7 @@ impl Cli {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Query and manage previous sessions: search/list, show, rename, delete
+    /// Query and manage previous sessions: search/list, show, rename, delete, handoff
     Session(session_cli::SessionArgs),
     /// Run s7s in demo mode using mock English sessions (disposable sandbox under the OS cache dir)
     Demo,

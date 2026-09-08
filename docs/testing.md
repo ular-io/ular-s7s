@@ -22,6 +22,7 @@ the change area below and run every check listed for it.
 | Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
 | Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
 | `s7s session` mutating subcommands (`rename`, `delete`) | Run both against a disposable session and confirm the on-disk effect, not just the exit code | §Session CLI mutation checks below |
+| `s7s session handoff` | Park one disposable handoff per agent and confirm the store, the profile scoping, and that the new session did not act | §Session handoff checks below |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
 | Session activity time / Updated ordering | `cargo test real_data_index_snapshot -- --ignored --nocapture`; compare Updated against the real CLI record, then resume and exit without input and verify it is unchanged | §Session activity checks below |
 | Scratch workspace (`scratch.rs`, the folder dropdown `[SCRATCH]` row) | Start a session on the `[SCRATCH]` row, write a file into the folder from inside the session, exit, and start again: the file must be gone and both policy files present with their current text. Confirm the agent asks for a target directory instead of writing there or picking its own path | [architecture.md](./architecture.md) §Scratch workspace |
@@ -94,6 +95,29 @@ not evidence. Use a disposable session rather than a real one.
 Exit codes to confirm: 0 on success, 1 for an unresolved ID, a missing profile,
 or a declined delete, and 2 for argument errors (a missing rename title, an
 unknown `--agent`).
+
+## Session handoff checks
+
+`handoff` starts a real agent session, so this needs one disposable handoff per
+agent. Delete each one afterwards.
+
+1. `echo "probe" | s7s session handoff --title 'probe' --agent <AGENT>` from a
+   project directory. The printed profile must belong to that agent — a
+   `codex/builtin-claude` line means the profile scoping regressed and a rename
+   just wrote into another account's config root.
+2. Check that no store of another agent was touched:
+   `~/.claude/session_index.jsonl` and `~/.codex/annotations` must not exist.
+3. `s7s session show <id> --turn 1 --user-only` must contain the body, the
+   `## Handoff source` block, the stop instruction, and the envelope **last**.
+4. `s7s session search HAND-OVER` must list it. A miss means the title never
+   reached the search blob (see the claude registry note in
+   [session-title-compat.md](./session-title-compat.md)).
+5. The new session must have acted on nothing: one turn, an acknowledgement only,
+   and no file created in the folder.
+6. Re-measure the instruction when a CLI is upgraded: hand off a body that asks
+   for a file to be written in a temp directory, with restriction flags removed,
+   and confirm the file is absent.
+7. `s7s session delete <id> --yes` for each probe.
 
 ## Agent-specific manual checks
 
