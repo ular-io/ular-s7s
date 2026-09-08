@@ -63,9 +63,22 @@ share `parser::{clean_turn, is_noise_turn}`.
   older `event_msg`/`response_item` forms without double-counting mirrored data.
 - Each consumer applies `thread_rolled_back` truncation in file order.
 - Image-only inputs without accepted text do not create user turns.
-- `response_item` assistant records supply answer text; mirrored agent-message
-  records must not duplicate it.
+- Assistant text is accepted from legacy `agent_message`, `response_item`
+  assistant messages, and completed `AgentMessage` items. Some completed items
+  have no response mirror (including migrated completion notices).
+- A shared pre-pass pairs completed assistant items with response messages by
+  exact text and occurrence count within each user/QA/rollback boundary. The
+  response representation wins regardless of arrival order; unmatched items
+  retain their original position. Matching must not suppress a later independent
+  answer or carry across turns. Legacy assistant decoding remains unchanged.
 - `session_context/codex.rs` alone extracts detailed tool payloads.
+
+Codex 0.153.4 `migrate-rollouts --apply` was verified on isolated copies of
+443 eligible sessions. It retains JSONL but rewrites records (including
+`ordinal`, history mode, and legacy message events); file sizes and line counts
+can increase or decrease. Both legacy and paginated histories remain JSONL
+inputs for s7s. Migration checks must compare assistant/search/work content as
+well as Q counts: turn parity alone missed an unmirrored `AgentMessage`.
 
 ### Antigravity
 

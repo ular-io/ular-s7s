@@ -83,10 +83,10 @@ authoritative matrix; the essentials:
   ([testing.md](./docs/testing.md) rewind row) — it could not be reproduced from
   the sessions on disk.
 - **Codex 0.153 is migrating session history into `thread_history_*.sqlite`.**
-  That database is a projection of the rollout JSONL (it stores
-  `rollout_byte_offset`/`rollout_ordinal`), and the JSONL is still complete for
-  already-paginated sessions — `real_data_turn_parity` passes over 833 sessions.
-  The open risk is `codex migrate-rollouts --apply`, which s7s has never been run
-  against: 443 sessions are reported eligible, and if migration truncates or
-  removes a rollout the parser loses its source. Re-run the parity check after any
-  migration.
+  Version 0.153.4 `migrate-rollouts --apply` was checked on isolated copies of
+  443 eligible sessions. It retains JSONL but rewrites event representations;
+  byte sizes and line counts are not preservation invariants. Both formats use
+  the JSONL parser, including unmirrored completed `AgentMessage` items. On future
+  migrations, compare assistant/search/work content as well as session and Q
+  counts: turn parity alone cannot detect missing assistant text. See
+  [session-context.md](./docs/session-context.md) for the decoder contract.

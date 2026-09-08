@@ -28,13 +28,14 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
     // truncate the last N turns on a rollback marker (list-parser parity).
     let mut turn_starts: Vec<usize> = Vec::new();
 
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+    let decoder = events::Decoder::new(&content);
+    for (line_no, line) in content.lines().enumerate() {
         let v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
 
-        match events::decode(&v) {
+        match decoder.decode(line_no, &v) {
             CodexRecord::RolledBack(n) => {
                 // Flush the in-progress turn so truncation sees every completed turn.
                 if let Some(done) = current.take() {
@@ -113,6 +114,71 @@ mod tests {
         ));
         std::fs::write(&path, content).expect("write temp file");
         path
+    }
+
+    #[test]
+    fn migrated_standalone_assistant_survives_in_context_and_search() {
+        let legacy = r#"
+{"type":"event_msg","payload":{"type":"user_message","message":"test migration"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"initial answer"}]}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"completion notice"}}
+"#;
+        let migrated = legacy.replace(
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"completion notice"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"completion notice"}]}}}"#,
+        );
+        for (name, content) in [
+            ("legacy-assistant", legacy),
+            ("migrated-assistant", &migrated),
+        ] {
+            let path = write_temp(name, content);
+            let session = crate::parser::codex::parse_file(&path, 0, None).expect("listed");
+            let context = crate::session_context::load(&session);
+            assert_eq!(session.user_turns.len(), 1);
+            assert_eq!(context.turns.len(), 1);
+            assert_eq!(
+                context.turns[0].last_assistant_text.as_deref(),
+                Some("completion notice")
+            );
+            assert!(session.assistant_blob.contains("completion notice"));
+            let rendered = crate::session_context::render::render_reference(&context, false);
+            assert!(rendered.contains("completion notice"));
+            assert_eq!(context.turns[0].entries.len(), 1);
+            assert_eq!(context.turns[0].entries[0].text, "initial answer");
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn migrated_assistant_mirrors_do_not_duplicate_or_replace_later_answers() {
+        let user =
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"test mirrors"}}"#;
+        let response = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"progress report"}]}}"#;
+        let mirror = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"progress report"}]}}}"#;
+        let tool = r#"{"type":"response_item","payload":{"type":"function_call","name":"test","arguments":"{}"}}"#;
+        let final_answer = r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"final answer"}]}}}"#;
+        for records in [
+            vec![user, mirror, tool, response, final_answer],
+            vec![user, response, tool, final_answer, mirror],
+        ] {
+            let path = write_temp("assistant-mirrors", &records.join("\n"));
+            let turns = parse_turns(&path).unwrap();
+            let assistants: Vec<_> = turns[0]
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == ContextEntryKind::AssistantText)
+                .map(|entry| entry.text.as_str())
+                .collect();
+            assert_eq!(assistants, ["progress report", "final answer"]);
+            assert_eq!(
+                turns[0].last_assistant_text.as_deref(),
+                Some("final answer")
+            );
+            let session = crate::parser::codex::parse_file(&path, 0, None).unwrap();
+            assert!(session.assistant_blob.contains("final answer"));
+            assert!(!session.assistant_blob.contains("progress report"));
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

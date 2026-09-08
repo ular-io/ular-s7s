@@ -5,10 +5,9 @@
 //! (`session_context::codex`) — so a storage-format change cannot silently
 //! diverge the two views (list/detail turn parity).
 //!
-//! Codex is decoded in a single streaming pass: each line classifies into one
-//! [`CodexRecord`], and the `thread_rolled_back` backtrack (esc-esc "edit
-//! previous message") truncates the most recent turns in file order. There is
-//! no leaf-known-at-end pre-pass as in Claude, so records borrow from the
+//! A text-only pre-pass pairs new assistant items with their response mirrors.
+//! Each line then classifies into one [`CodexRecord`], and `thread_rolled_back`
+//! truncates the most recent turns in file order. Records borrow from the
 //! caller's per-line `Value` and are consumed within the same iteration; the
 //! rollback boundary accounting stays in each consumer's accumulator (the list
 //! tracks `(indexable, answer)` per turn, the context tracks `ContextTurn`s).
@@ -19,6 +18,80 @@
 
 use crate::parser::{clean_turn, is_noise_turn, record_timestamp_ms, turn};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+
+/// Prefer response records when a completed assistant item has a matching
+/// mirror. Items without a mirror still contribute at their original position.
+/// A pre-pass is needed because either representation can arrive first, with
+/// tool records or other assistant messages in between. Pair occurrences, not
+/// all equal strings, and never match across user/QA/rollback boundaries.
+#[derive(Default)]
+pub(crate) struct Decoder {
+    mirrored_items: HashSet<usize>,
+}
+
+impl Decoder {
+    pub fn new(content: &str) -> Self {
+        let mut decoder = Self::default();
+        // Legacy rollouts carry no completed items, so nothing can pair: skip
+        // the extra parse pass instead of decoding every line twice.
+        if !content.contains("AgentMessage") {
+            return decoder;
+        }
+        let mut items: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut responses: HashMap<String, Vec<usize>> = HashMap::new();
+        for (line_no, line) in content.lines().enumerate() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            match decode(&v) {
+                CodexRecord::User(_) | CodexRecord::Qa { .. } | CodexRecord::RolledBack(_) => {
+                    decoder.pair_mirrors(&mut items, &mut responses);
+                }
+                CodexRecord::Assistant { text, .. } => {
+                    if completed_item(&v, "AgentMessage").is_some() {
+                        items.entry(text).or_default().push(line_no);
+                    } else if v.get("type").and_then(Value::as_str) == Some("response_item") {
+                        responses.entry(text).or_default().push(line_no);
+                    }
+                }
+                _ => {}
+            }
+        }
+        decoder.pair_mirrors(&mut items, &mut responses);
+        decoder
+    }
+
+    fn pair_mirrors(
+        &mut self,
+        items: &mut HashMap<String, Vec<usize>>,
+        responses: &mut HashMap<String, Vec<usize>>,
+    ) {
+        for (text, mut lines) in items.drain() {
+            for response_line in responses.get(&text).into_iter().flatten() {
+                // Prefer the nearby occurrence when a turn repeats identical
+                // text; a distant standalone item must not lose its position.
+                let Some((index, _)) = lines
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, line)| (line.abs_diff(*response_line), **line))
+                else {
+                    break;
+                };
+                self.mirrored_items.insert(lines.remove(index));
+            }
+        }
+        responses.clear();
+    }
+
+    pub fn decode<'a>(&self, line_no: usize, v: &'a Value) -> CodexRecord<'a> {
+        if self.mirrored_items.contains(&line_no) {
+            CodexRecord::Other
+        } else {
+            decode(v)
+        }
+    }
+}
 
 /// One decoded rollout line. Classification is mutually exclusive by line
 /// `type` / `payload.type`, so a line maps to exactly one record.
@@ -88,7 +161,7 @@ pub(crate) enum UserTextKind {
 /// `event_msg` form, so a `response_item` user turn would have diverged the
 /// list Q count from the detail turn count; the shared decoder removes that
 /// divergence (R13).
-pub(crate) fn decode(v: &Value) -> CodexRecord<'_> {
+fn decode(v: &Value) -> CodexRecord<'_> {
     match v.get("type").and_then(Value::as_str) {
         Some("session_meta") => {
             let payload = v.get("payload");
@@ -179,28 +252,28 @@ fn user_record(text: String, submitted_at_ms: Option<i64>) -> UserRecord {
 /// `payload.item.type == "UserMessage"`. Without this form a 0.147 rollout
 /// yields no user turns at all, and the session drops out of the list entirely.
 ///
-/// Two neighbouring records are deliberately left unread:
-/// - `item.type == "AgentMessage"` — `response_item` `role == "assistant"` still
-///   carries every answer, so reading both would duplicate each answer in the
-///   detailed context view.
-/// - the `response_item` `role == "user"` line accompanying each turn — it also
-///   appears once per session for the instruction preamble the CLI prepends,
-///   which is not a user turn. It stays inert because its content parts are
-///   `input_text`, which [`turn::extract_user_text`] does not accept.
+/// The accompanying `response_item` user line also occurs for the instruction
+/// preamble. It stays inert because its `input_text` content parts are not
+/// accepted by [`turn::extract_user_text`]. Assistant items are handled
+/// separately by [`assistant_text`] and [`Decoder`].
 ///
 /// A `UserMessage` carrying no text (an image-only input) still returns
 /// `Some("")` so it records a rollback boundary without opening a turn, exactly
 /// as the empty `user_message` event did.
 fn item_completed_user_text(v: &Value) -> Option<String> {
+    Some(message_text(completed_item(v, "UserMessage")?).unwrap_or_default())
+}
+
+fn completed_item<'a>(v: &'a Value, kind: &str) -> Option<&'a Value> {
     let payload = v.get("payload")?;
     if payload.get("type").and_then(Value::as_str) != Some("item_completed") {
         return None;
     }
     let item = payload.get("item")?;
-    if item.get("type").and_then(Value::as_str) != Some("UserMessage") {
+    if item.get("type").and_then(Value::as_str) != Some(kind) {
         return None;
     }
-    Some(message_text(item).unwrap_or_default())
+    Some(item)
 }
 
 fn codex_completed_at_ms(v: &Value) -> Option<i64> {
@@ -235,6 +308,9 @@ fn rolled_back_turns(v: &Value) -> Option<usize> {
 /// downstream `push_entry`/`set_last_assistant` already dropped empty text, so
 /// this only makes the shared rule explicit).
 fn assistant_text(v: &Value) -> Option<String> {
+    if let Some(item) = completed_item(v, "AgentMessage") {
+        return message_text(item);
+    }
     let payload = v.get("payload").unwrap_or(v);
     match payload.get("type").and_then(Value::as_str) {
         Some("agent_message") => payload
@@ -338,11 +414,8 @@ mod tests {
     }
 
     #[test]
-    fn item_completed_non_user_items_contribute_nothing() {
-        // AgentMessage stays unread: `response_item` role=assistant already
-        // carries every answer, so decoding both would duplicate it.
+    fn item_completed_non_message_items_contribute_nothing() {
         for json in [
-            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"답변"}],"phase":"final_answer"}}}"#,
             r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"Reasoning","summary_text":[]}}}"#,
             r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":"ls"}}}"#,
         ] {
@@ -383,15 +456,98 @@ mod tests {
     #[test]
     fn decode_classifies_assistant_forms() {
         let agent =
-            val(r#"{"type":"event_msg","payload":{"type":"agent_message","message":"답변"}}"#);
+            val(r#"{"type":"event_msg","payload":{"type":"agent_message","message":"answer"}}"#);
         let item = val(
-            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"답변"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}"#,
         );
-        for v in [&agent, &item] {
+        let completed = val(
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"answer"}]}}}"#,
+        );
+        for v in [&agent, &item, &completed] {
             let CodexRecord::Assistant { text, .. } = decode(v) else {
                 panic!("expected assistant");
             };
-            assert_eq!(text, "답변");
+            assert_eq!(text, "answer");
+        }
+    }
+
+    #[test]
+    fn assistant_mirrors_are_paired_once_and_scoped_to_boundaries() {
+        let response = serde_json::json!({"type": "response_item", "payload": {
+            "type": "message", "role": "assistant", "content": "repeated answer"
+        }});
+        let item = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "item_completed", "item": {"type": "AgentMessage",
+                "content": [{"type": "Text", "text": "repeated answer"}]}
+        }});
+        let user = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "user_message", "message": "next question"
+        }});
+        let rollback = serde_json::json!({"type": "event_msg", "payload": {
+            "type": "thread_rolled_back", "num_turns": 1
+        }});
+        let qa = serde_json::json!({"type": "response_item", "payload": {
+            "toolUseResult": {"questions": [{"question": "Continue?"}],
+                "answers": {"Continue?": "Yes"}}
+        }});
+        let count = |records: &[&Value]| {
+            let content = records
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let decoder = Decoder::new(&content);
+            records
+                .iter()
+                .enumerate()
+                .filter(|(i, v)| matches!(decoder.decode(*i, v), CodexRecord::Assistant { .. }))
+                .count()
+        };
+        assert_eq!(count(&[&item, &item, &response]), 2);
+        assert_eq!(count(&[&response, &item, &response]), 2);
+        let other = serde_json::json!({"type": "response_item", "payload": {
+            "type": "function_call", "name": "test", "arguments": "{}"
+        }});
+        let records = [&item, &other, &other, &item, &response];
+        let content = records
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let decoder = Decoder::new(&content);
+        assert!(matches!(
+            decoder.decode(0, &item),
+            CodexRecord::Assistant { .. }
+        ));
+        assert!(matches!(decoder.decode(3, &item), CodexRecord::Other));
+        for boundary in [&user, &rollback, &qa] {
+            assert_eq!(count(&[&response, boundary, &item]), 2);
+            assert_eq!(count(&[&item, boundary, &response]), 2);
+        }
+    }
+
+    #[test]
+    fn completed_assistant_text_parts_and_empty_items() {
+        let v = serde_json::json!({"timestamp": "2026-07-23T01:03:04.567Z",
+        "type": "event_msg", "payload": {"type": "item_completed",
+            "item": {"type": "AgentMessage", "content": [
+                {"type": "Text", "text": "first"},
+                {"type": "Text", "text": " "},
+                {"type": "Text", "text": "second"}
+            ]}}});
+        assert!(
+            matches!(decode(&v), CodexRecord::Assistant { text, emitted_at_ms }
+            if text == "first\n\nsecond" && emitted_at_ms == Some(1_784_768_584_567))
+        );
+        for content in [
+            serde_json::json!([]),
+            serde_json::json!([{"text": "  "}]),
+            Value::Null,
+        ] {
+            let v = serde_json::json!({"type": "event_msg", "payload": {
+                "type": "item_completed", "item": {"type": "AgentMessage", "content": content}
+            }});
+            assert!(matches!(decode(&v), CodexRecord::Other));
         }
     }
 

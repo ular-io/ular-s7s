@@ -171,7 +171,8 @@ pub fn parse_file(
     let mut title_hint: Option<String> = None;
     let mut context_source: Option<crate::model::ContextSource> = None;
 
-    for line in content.lines() {
+    let decoder = events::Decoder::new(&content);
+    for (line_no, line) in content.lines().enumerate() {
         if line.is_empty() {
             continue;
         }
@@ -179,7 +180,7 @@ pub fn parse_file(
             Ok(v) => v,
             Err(_) => continue,
         };
-        match events::decode(&v) {
+        match decoder.decode(line_no, &v) {
             CodexRecord::Meta { id: i, cwd: c } => {
                 if id.is_none() {
                     id = i.map(str::to_string);
