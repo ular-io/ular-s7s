@@ -99,22 +99,27 @@ unknown `--agent`).
 
 ### Claude
 
-- Run `claude --resume <id> --name <title> -p --output-format json`
+- Run `claude --resume <id> --name <title> -p --output-format json`. On 2.1.263 it **exits with an error** (`No deferred tool marker found in the resumed session`) and writes the events anyway — judge by the file, never the exit code
 - Check if `custom-title` / `agent-name` events appear in the JSONL
-- Check `name`, `nameSource` in `~/.claude/sessions/*.json`
+- Check that no `~/.claude/sessions/<sessionId>.json` was created. That directory is keyed by process id (`<pid>.json`); a session-id file would be one only s7s reads
 - Verify that the `/rename ...` prompt is still blocked in non-interactive environments
 
 ### Codex
 
-- Check `thread_name` in `~/.codex/session_index.jsonl`
-- Check `threads.title` in `~/.codex/state_*.sqlite`
-- Check `display_title` in `local_thread_catalog` of `~/.codex/sqlite/codex-*.db` — a store 0.147 added. An s7s rename does **not** write it (verified 2026-09-08), so the three stores disagree afterwards; rename inside the codex CLI to find out which one it reads
+- Check `threads.name` in `~/.codex/state_*.sqlite` — this is the column the codex CLI displays, so it is the one that decides success
+- Check `thread_name` in `~/.codex/session_index.jsonl` (append-only: read the **last** record for the id)
+- Confirm the CLI agrees, without opening the TUI: `codex app-server` over stdio, `initialize` then `thread/list`, and compare the thread's `name`
+- Exercise the fallback too: `ULAR_RENAME_CODEX_BIN=/nonexistent s7s session rename <id> "<title>"` must still land in both stores
+- Re-derive the app-server contract after a codex upgrade: `codex app-server generate-ts --out <dir>`, then grep `ClientRequest` for the rename method (`thread/name/set` on 0.153.4)
+- `local_thread_catalog.display_title` in `~/.codex/sqlite/codex-*.db` is **not** a rename target — that database has no `threads` table and codex leaves the row stale itself
 - Verify any changes in the behavior of non-interactive `codex exec resume <id> "/rename ..."`
 
 ### Antigravity
 
-- `title:"..."` in `annotations/<id>.pbtxt`
-- `summary.Title` in `conversation_metadata.json`
+- `title:"..."` in `annotations/<id>.pbtxt` — the live store; a rename must land here
+- `cache/conversation_metadata.json` must not grow: rename a session that has no entry there and confirm both the entry count and the file mtime are unchanged
+- `summary.Title` for a session that *does* have an entry must still be refreshed
+- Re-check whether `conversation_summaries.db` has become the live store (as of 1.1.27 it has not: 3 of 124 rows carry a title and none are recent)
 - Reverify if `agy --print "/rename ..."` leaves actual rename traces
 - Reverify if `--conversation <id>` actually uses the target session
 

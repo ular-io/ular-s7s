@@ -4,12 +4,11 @@ use crate::model::{one_line, Agent, Session};
 use crate::profile::Profile;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
-use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 /// Persists the display title of a session to the storage location of the corresponding agent.
 ///
@@ -21,7 +20,7 @@ pub fn rename_session(profile: &Profile, session: &Session, title: &str) -> Resu
     let title = normalize_title(title)?;
     match session.agent {
         Agent::Claude => rename_claude(profile, session, &title),
-        Agent::Codex => rename_codex(&profile.path, session, &title),
+        Agent::Codex => rename_codex(profile, session, &title),
         Agent::Antigravity => rename_antigravity(&profile.path, session, &title),
     }
 }
@@ -77,16 +76,12 @@ fn rename_claude(profile: &Profile, session: &Session, title: &str) -> Result<()
         }
     }
 
-    if !matched {
-        let path = sessions_dir.join(format!("{}.json", session.id));
-        let json = serde_json::json!({
-            "sessionId": session.id.clone(),
-            "name": title,
-            "nameSource": "custom",
-        });
-        fs::write(&path, serde_json::to_vec_pretty(&json)?)
-            .with_context(|| format!("write {}", path.display()))?;
-    }
+    // No `<sessionId>.json` is created when nothing matched. Claude 2.1.263 keys
+    // this directory by process id (`<pid>.json`, alongside `<pid>.<hash>.key`)
+    // and treats it as a registry of live sessions, so a file named after a
+    // session id is one only s7s would ever read. The title itself lives in the
+    // transcript events written below, which are authoritative.
+    let _ = matched;
 
     if !cli_renamed {
         append_claude_title_event(session, title)?;
@@ -95,7 +90,16 @@ fn rename_claude(profile: &Profile, session: &Session, title: &str) -> Result<()
     Ok(())
 }
 
-fn rename_codex(profile_root: &Path, session: &Session, title: &str) -> Result<()> {
+fn rename_codex(profile: &Profile, session: &Session, title: &str) -> Result<()> {
+    let profile_root = profile.path.as_path();
+
+    // The codex CLI renames through its app server, so try that first: it is the
+    // only path that keeps every store codex maintains in step, and it survives a
+    // schema change in the files written below.
+    if try_rename_codex_via_app_server(profile, session, title).unwrap_or(false) {
+        return Ok(());
+    }
+
     let path = profile_root.join("session_index.jsonl");
     let mut lines: Vec<String> = Vec::new();
     let mut matched = false;
@@ -168,28 +172,26 @@ fn rename_antigravity(profile_root: &Path, session: &Session, title: &str) -> Re
     }
     write_lines(&pbtxt_path, &lines).with_context(|| format!("write {}", pbtxt_path.display()))?;
 
+    // `cache/conversation_metadata.json` is refreshed only for entries agy still
+    // keeps there: it stopped gaining entries for new conversations, so inserting
+    // one would grow a cache nothing reads back. A missing file or a session with
+    // no entry is not a failure — the pbtxt annotation above is the live store.
     let metadata_path = profile_root.join("cache/conversation_metadata.json");
     if let Ok(data) = fs::read_to_string(&metadata_path) {
         if let Ok(mut root) = serde_json::from_str::<Value>(&data) {
-            if let Some(conversations) =
-                root.get_mut("conversations").and_then(Value::as_object_mut)
+            if let Some(entry) = root
+                .get_mut("conversations")
+                .and_then(Value::as_object_mut)
+                .and_then(|conversations| conversations.get_mut(&session.id))
+                .and_then(Value::as_object_mut)
             {
-                let entry = conversations.entry(session.id.clone()).or_insert_with(|| {
-                    serde_json::json!({
-                        "summary": {}
-                    })
-                });
-                if let Some(entry_obj) = entry.as_object_mut() {
-                    let summary = entry_obj
-                        .entry("summary".to_string())
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let Some(summary_obj) = summary.as_object_mut() {
-                        summary_obj.insert("Title".to_string(), Value::String(title.to_string()));
-                    } else {
-                        *summary = serde_json::json!({
-                            "Title": title
-                        });
-                    }
+                let summary = entry
+                    .entry("summary".to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(summary_obj) = summary.as_object_mut() {
+                    summary_obj.insert("Title".to_string(), Value::String(title.to_string()));
+                } else {
+                    *summary = serde_json::json!({ "Title": title });
                 }
                 fs::write(&metadata_path, serde_json::to_vec_pretty(&root)?)
                     .with_context(|| format!("write {}", metadata_path.display()))?;
@@ -200,8 +202,16 @@ fn rename_antigravity(profile_root: &Path, session: &Session, title: &str) -> Re
     Ok(())
 }
 
+/// Writes the title into every `state_*.sqlite` row for this session.
+///
+/// `threads.name` is the column the codex CLI reads for display, so it is the one
+/// that must land; `threads.title` is the older column and is kept in step so a
+/// downgrade still shows the new title. `name` is absent on codex builds before
+/// 0.153, in which case only `title` is written.
 fn update_codex_thread_title(profile_root: &Path, id: &str, title: &str) -> Result<()> {
-    for db_path in codex_state_db_paths(profile_root) {
+    let mut wrote_name = false;
+
+    for db_path in crate::parser::codex::state_db_paths(profile_root) {
         let conn = match rusqlite::Connection::open_with_flags(
             &db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
@@ -210,56 +220,172 @@ fn update_codex_thread_title(profile_root: &Path, id: &str, title: &str) -> Resu
             Err(_) => continue,
         };
 
-        let updated = conn.execute(
+        let _ = conn.execute(
             "UPDATE threads SET title = ?1, updated_at = COALESCE(updated_at, strftime('%s','now')) WHERE id = ?2",
             rusqlite::params![title, id],
         );
-        if let Ok(count) = updated {
+
+        if let Ok(count) = conn.execute(
+            "UPDATE threads SET name = ?1 WHERE id = ?2",
+            rusqlite::params![title, id],
+        ) {
             if count > 0 {
-                return Ok(());
+                wrote_name = true;
             }
         }
     }
 
+    let _ = wrote_name;
     Ok(())
 }
 
-fn codex_state_db_paths(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-
-    let candidates = [
-        root.join("state_1.sqlite"),
-        root.join("state_2.sqlite"),
-        root.join("state_3.sqlite"),
-        root.join("state_4.sqlite"),
-        root.join("state_5.sqlite"),
-        root.join("sqlite").join("codex-dev.db"),
-    ];
-    for path in candidates {
-        if path.exists() {
-            out.push(path);
-        }
+/// Renames a codex session through the app server (`thread/name/set`), the same
+/// request the codex CLI issues for `/rename`.
+///
+/// Returns `true` only when `threads.name` afterwards holds the requested title:
+/// a JSON-RPC result is not proof, for the same reason a CLI exit code is not.
+/// Every failure — no binary, a handshake that stalls, an error reply — returns
+/// `false` so the caller falls back to writing the stores directly.
+fn try_rename_codex_via_app_server(
+    profile: &Profile,
+    session: &Session,
+    title: &str,
+) -> Result<bool> {
+    #[cfg(test)]
+    if std::env::var_os("ULAR_RENAME_TEST_ENABLE_CODEX_APP_SERVER").is_none() {
+        return Ok(false);
     }
 
-    if let Ok(entries) = fs::read_dir(root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
+    // One budget for the whole exchange: the app server starts a runtime and
+    // opens its databases, and a rename must never hold the UI for longer.
+    const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    let bin = std::env::var_os("ULAR_RENAME_CODEX_BIN").unwrap_or_else(|| "codex".into());
+    let mut cmd = Command::new(bin);
+    cmd.arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::resume::sanitize_agent_env(&mut cmd);
+    if let Some((key, value)) = profile.env_var() {
+        cmd.env(key, value);
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+
+    let result = codex_app_server_set_name(&mut child, &session.id, title, REPLY_TIMEOUT);
+    let _ = child.kill();
+    let _ = child.wait();
+    result?;
+
+    Ok(codex_thread_name(profile.path.as_path(), &session.id).as_deref() == Some(title))
+}
+
+/// Drives the two-request exchange on an already spawned app server: `initialize`,
+/// then `thread/name/set`. Replies arrive interleaved with notifications, so the
+/// reader keys on the request id.
+fn codex_app_server_set_name(
+    child: &mut std::process::Child,
+    session_id: &str,
+    title: &str,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("app server stdout unavailable"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                return;
             }
-            let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+        }
+    });
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("app server stdin unavailable"))?;
+
+    let await_reply = |id: i64, deadline: std::time::Instant| -> Result<()> {
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(anyhow!("app server did not answer request {id}"));
+            }
+            let line = rx
+                .recv_timeout(left)
+                .map_err(|_| anyhow!("app server did not answer request {id}"))?;
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
-            if !name.starts_with("state_") || !name.ends_with(".sqlite") {
+            if msg.get("id").and_then(Value::as_i64) != Some(id) {
                 continue;
             }
-            if !out.iter().any(|p| p == &path) {
-                out.push(path);
+            if let Some(err) = msg.get("error") {
+                return Err(anyhow!("app server rejected request {id}: {err}"));
+            }
+            return Ok(());
+        }
+    };
+
+    let deadline = std::time::Instant::now() + timeout;
+
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": { "name": "s7s", "title": null, "version": env!("CARGO_PKG_VERSION") },
+            "capabilities": null,
+        }
+    });
+    writeln!(stdin, "{init}").context("write initialize")?;
+    stdin.flush().context("flush initialize")?;
+    await_reply(1, deadline)?;
+
+    let set_name = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/name/set",
+        "params": { "threadId": session_id, "name": title }
+    });
+    writeln!(stdin, "{set_name}").context("write thread/name/set")?;
+    stdin.flush().context("flush thread/name/set")?;
+    await_reply(2, deadline)
+}
+
+/// Reads back `threads.name` for one session, so a rename can be checked against
+/// the store the codex CLI actually displays instead of an exit code.
+fn codex_thread_name(profile_root: &Path, id: &str) -> Option<String> {
+    for db_path in crate::parser::codex::state_db_paths(profile_root) {
+        let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
+            continue;
+        };
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT name FROM threads WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten();
+        if let Some(name) = found {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                return Some(name);
             }
         }
     }
-
-    out
+    None
 }
 
 fn write_lines(path: &Path, lines: &[String]) -> Result<()> {
@@ -425,6 +551,7 @@ fn try_rename_claude_via_cli(profile: &Profile, session: &Session, title: &str) 
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
 
     /// Mutex for serializing Claude rename path tests.
     ///
@@ -694,5 +821,137 @@ mod tests {
         assert!(pbtxt.contains(r#"title:"새 제목""#));
 
         let _ = fs::remove_dir_all(&root);
+    }
+    /// Minimal session record for rename tests; fields the rename paths ignore
+    /// stay empty so each test only sets what it exercises.
+    fn codex_session(id: &str) -> Session {
+        Session {
+            agent: Agent::Codex,
+            profile_id: String::new(),
+            id: id.to_string(),
+            source_path: None,
+            cwd: PathBuf::new(),
+            folder: String::new(),
+            updated_at_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec![],
+            user_turn_timestamps_ms: Vec::new(),
+            search_blob: String::new(),
+            assistant_blob: String::new(),
+            title_hint: None,
+            title_fixed: false,
+            context_source: None,
+        }
+    }
+
+    #[test]
+    fn writes_codex_thread_name_when_the_column_exists() {
+        let root = temp_root("ular-s7s-rename-codex-name");
+        fs::create_dir_all(&root).expect("create dir");
+        let db_path = root.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&db_path).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, name TEXT, updated_at INTEGER NOT NULL DEFAULT 0)",
+            [],
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (id, title, name, updated_at) VALUES ('abc-123', 'auto text', NULL, 1)",
+            [],
+        )
+        .expect("insert thread");
+
+        let session = codex_session("abc-123");
+        rename_session(&test_profile(Agent::Codex, &root), &session, "새 제목").expect("rename");
+
+        let reopened = rusqlite::Connection::open(&db_path).expect("reopen sqlite");
+        let (name, title): (Option<String>, String) = reopened
+            .query_row(
+                "SELECT name, title FROM threads WHERE id = 'abc-123'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read row");
+        // `name` is the column the codex CLI displays, so it must carry the title;
+        // `title` is kept in step for older codex builds.
+        assert_eq!(name.as_deref(), Some("새 제목"));
+        assert_eq!(title, "새 제목");
+    }
+
+    #[test]
+    fn claude_rename_does_not_create_a_session_id_meta_file() {
+        let _guard = CLAUDE_ENV_LOCK.lock().expect("claude env lock");
+        let root = temp_root("ular-s7s-rename-claude-nofile");
+        let sessions_dir = root.join("sessions");
+        let project_dir = root.join("projects").join("-tmp-demo");
+        fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        fs::create_dir_all(&project_dir).expect("create project dir");
+        // A live-session registry entry for a different session: nothing matches
+        // the renamed id, which is the case that used to create a stray file.
+        fs::write(
+            sessions_dir.join("4242.json"),
+            r#"{"pid":4242,"sessionId":"other-id","name":"demo-7a","nameSource":"derived"}"#,
+        )
+        .expect("write registry entry");
+        let jsonl = project_dir.join("abc-123.jsonl");
+        fs::write(
+            &jsonl,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"첫 질문\"}}",
+        )
+        .expect("write jsonl");
+
+        let mut session = codex_session("abc-123");
+        session.agent = Agent::Claude;
+        session.source_path = Some(jsonl.clone());
+        session.user_turns = vec!["첫 질문".to_string()];
+
+        rename_session(&test_profile(Agent::Claude, &root), &session, "새 제목").expect("rename");
+
+        assert!(
+            !sessions_dir.join("abc-123.json").exists(),
+            "claude keys this directory by pid; a session-id file is one only s7s reads"
+        );
+        let transcript = fs::read_to_string(&jsonl).expect("read jsonl");
+        assert!(transcript.contains(r#""customTitle":"새 제목""#));
+        // The unrelated registry entry must be left alone.
+        let other = fs::read_to_string(sessions_dir.join("4242.json")).expect("read registry");
+        assert!(other.contains(r#""name":"demo-7a""#));
+    }
+
+    #[test]
+    fn antigravity_rename_does_not_insert_a_missing_metadata_entry() {
+        let root = temp_root("ular-s7s-rename-agy-metadata");
+        fs::create_dir_all(root.join("cache")).expect("create cache dir");
+        let metadata_path = root.join("cache/conversation_metadata.json");
+        fs::write(
+            &metadata_path,
+            r#"{"conversations":{"kept-id":{"summary":{"Title":"unchanged"}}}}"#,
+        )
+        .expect("write metadata");
+
+        let mut session = codex_session("abc-123");
+        session.agent = Agent::Antigravity;
+
+        rename_session(
+            &test_profile(Agent::Antigravity, &root),
+            &session,
+            "새 제목",
+        )
+        .expect("rename");
+
+        // The annotation is the live store and must carry the title.
+        let pbtxt = fs::read_to_string(root.join("annotations/abc-123.pbtxt")).expect("read pbtxt");
+        assert!(pbtxt.contains(r#"title:"새 제목""#));
+
+        // agy stopped adding entries here, so s7s must not add one either.
+        let data = fs::read_to_string(&metadata_path).expect("read metadata");
+        let json: Value = serde_json::from_str(&data).expect("parse metadata");
+        let conversations = json
+            .get("conversations")
+            .and_then(Value::as_object)
+            .expect("conversations object");
+        assert!(!conversations.contains_key("abc-123"));
+        assert_eq!(conversations.len(), 1);
     }
 }

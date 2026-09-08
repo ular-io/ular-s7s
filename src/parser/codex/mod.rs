@@ -5,6 +5,12 @@
 //! where `payload.type=="item_completed"` carries an `item.type=="UserMessage"` (codex 0.147+), where
 //! `payload.type=="user_message"` (pre-0.147), or in user messages within `response_item`.
 //!
+//! Title stores (codex 0.153): `threads.name` in `<root>/state_*.sqlite` is what the
+//! codex CLI itself reads and writes; `session_index.jsonl` is an append-only log
+//! codex also writes on rename (last record for an id wins). `threads.title` holds
+//! codex's own auto-derived text, not a user title, so it is never read here — s7s
+//! derives its own fallback title from the first user turn.
+//!
 //! Backtrack (esc-esc "edit previous message") handling: the rollout is append-only; editing
 //! a past message appends `event_msg` `payload.type=="thread_rolled_back"` with `num_turns` =
 //! the number of most recent turns discarded, then the replacement turn follows. Turns dropped
@@ -18,7 +24,7 @@ use crate::model::{Agent, Session};
 use events::{CodexRecord, UserTextKind};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 struct TurnIndex {
     indexable: bool,
@@ -31,51 +37,116 @@ pub struct TitleMeta {
     pub title: Option<String>,
 }
 
-/// Loads thread names (session_id -> thread_name) from `~/.codex/session_index.jsonl`.
+/// Config roots to look for codex storage in. The caller may pass `~/.codex` or
+/// `~/.codex/sessions`, so both the directory and its parent are tried.
+fn config_roots(cli_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![cli_dir.to_path_buf()];
+    if let Some(parent) = cli_dir.parent() {
+        roots.push(parent.to_path_buf());
+    }
+    roots
+}
+
+/// `state_*.sqlite` files under a codex config root, newest suffix last so a
+/// later file's row wins. `sqlite/codex-*.db` is deliberately excluded: it holds
+/// `local_thread_catalog`, an observation cache with no `threads` table, and it
+/// takes no part in renames.
+pub(crate) fn state_db_paths(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.starts_with("state_") && name.ends_with(".sqlite") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Loads explicit thread names (session_id -> name).
 ///
-/// Tries both the provided directory and its parent directory, as the caller might
-/// pass `~/.codex/sessions` instead of `~/.codex`.
+/// `threads.name` in `state_*.sqlite` wins, because that is the column the codex
+/// CLI reads for its own display. `session_index.jsonl` is read first as the
+/// broader/legacy source; within it the last record for an id wins, since codex
+/// appends rather than rewriting.
 pub fn load_title_meta(cli_dir: &Path) -> HashMap<String, TitleMeta> {
     let mut out = HashMap::new();
-    let candidates = [
-        cli_dir.join("session_index.jsonl"),
-        cli_dir
-            .parent()
-            .map(|p| p.join("session_index.jsonl"))
-            .unwrap_or_default(),
-    ];
+    let roots = config_roots(cli_dir);
 
-    for path in candidates.iter().filter(|p| !p.as_os_str().is_empty()) {
-        let data = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-
-        for line in data.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let v: Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let id = match v.get("id").and_then(Value::as_str) {
-                Some(id) => id.to_string(),
-                None => continue,
-            };
-            let title = v
-                .get("thread_name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            if title.is_some() || !out.contains_key(&id) {
-                out.insert(id, TitleMeta { title });
-            }
+    for root in &roots {
+        load_index_titles(&root.join("session_index.jsonl"), &mut out);
+    }
+    for root in &roots {
+        for db in state_db_paths(root) {
+            load_state_names(&db, &mut out);
         }
     }
 
     out
+}
+
+/// Merges `session_index.jsonl` records. A record with no usable name still
+/// registers the id so a later empty record cannot erase an earlier name.
+fn load_index_titles(path: &Path, out: &mut HashMap<String, TitleMeta>) {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for line in data.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let title = v
+            .get("thread_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if title.is_some() || !out.contains_key(id) {
+            out.insert(id.to_string(), TitleMeta { title });
+        }
+    }
+}
+
+/// Overlays `threads.name` from one state database. A missing table or column
+/// (older codex) leaves the map untouched.
+fn load_state_names(db_path: &Path, out: &mut HashMap<String, TitleMeta>) {
+    let Ok(conn) =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return;
+    };
+    let Ok(mut stmt) =
+        conn.prepare("SELECT id, name FROM threads WHERE name IS NOT NULL AND name <> ''")
+    else {
+        return;
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return;
+    };
+    for (id, name) in rows.flatten() {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        out.insert(id, TitleMeta { title: Some(name) });
+    }
 }
 
 /// Parses a single Codex rollout JSONL file. Returns None if there are no valid user turns.
@@ -284,6 +355,84 @@ mod tests {
         assert_eq!(title, Some("26-07 세션 타이틀 개선"));
 
         let _ = std::fs::remove_file(root.join("session_index.jsonl"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn thread_name_column_wins_over_the_session_index() {
+        let root = std::env::temp_dir().join(format!(
+            "ular-s7s-codex-name-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        // Two records for one id: codex appends on rename, so the last one wins.
+        std::fs::write(
+            root.join("session_index.jsonl"),
+            "{\"id\":\"abc-123\",\"thread_name\":\"첫 기록\"}\n\
+             {\"id\":\"abc-123\",\"thread_name\":\"index 기록\"}\n\
+             {\"id\":\"only-index\",\"thread_name\":\"index 전용\"}\n",
+        )
+        .expect("write session index");
+
+        let conn = rusqlite::Connection::open(root.join("state_5.sqlite")).expect("open sqlite");
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, name TEXT)",
+            [],
+        )
+        .expect("create table");
+        conn.execute(
+            "INSERT INTO threads (id, title, name) VALUES \
+             ('abc-123', 'auto text', 'state 기록'), \
+             ('no-name', 'auto text', NULL), \
+             ('blank-name', 'auto text', '  ')",
+            [],
+        )
+        .expect("insert threads");
+        drop(conn);
+
+        let meta = load_title_meta(&root);
+        let title = |id: &str| meta.get(id).and_then(|m| m.title.as_deref());
+
+        // The column codex itself displays overrides the index record.
+        assert_eq!(title("abc-123"), Some("state 기록"));
+        // A session only the index knows about keeps its index name.
+        assert_eq!(title("only-index"), Some("index 전용"));
+        // A NULL or blank name is not a title, and must not mask anything.
+        assert_eq!(title("no-name"), None);
+        assert_eq!(title("blank-name"), None);
+        // `threads.title` is codex's auto text, never a title source here.
+        assert!(!meta
+            .values()
+            .any(|m| m.title.as_deref() == Some("auto text")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_db_paths_skips_the_observation_catalog() {
+        let root = std::env::temp_dir().join(format!(
+            "ular-s7s-codex-dbs-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("sqlite")).expect("create temp dir");
+        for name in ["state_5.sqlite", "state_1.sqlite", "queue_1.sqlite"] {
+            std::fs::write(root.join(name), "").expect("write file");
+        }
+        // `local_thread_catalog` lives here and holds no `threads` table.
+        std::fs::write(root.join("sqlite/codex-dev.db"), "").expect("write catalog");
+
+        let names: Vec<String> = state_db_paths(&root)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["state_1.sqlite", "state_5.sqlite"]);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -75,15 +75,17 @@ authoritative matrix; the essentials:
   real-kitty `ctrl+shift+n`). Current gaps are tracked in
   [backlog.md](./docs/backlog.md); the detailed procedures live in
   [testing.md](./docs/testing.md).
-- **Codex 0.147 rewrote its rollout event stream** and two consequences remain
-  open, because neither can be settled from the sessions on disk alone:
-  - Whether the `thread_rolled_back` marker survived the move to the
-    `item_completed` item stream. If it was renamed, rolled-back turns reappear
-    in both the list and the detail view. Verify with a real esc-esc rewind
-    ([testing.md](./docs/testing.md) rewind row).
-  - Which store the codex CLI reads for a session title. An s7s rename writes
-    `session_index.jsonl` and `state_*.sqlite` but leaves
-    `local_thread_catalog.display_title` (added in 0.147, in
-    `~/.codex/sqlite/codex-*.db`) holding the old title, so the three stores
-    disagree after every rename. Rename **inside the codex CLI** and diff all
-    three ([session-title-compat.md](./docs/session-title-compat.md)).
+- **Codex rewrote its rollout event stream in 0.147** and one consequence is still
+  open: whether the `thread_rolled_back` marker survived the move to the
+  `item_completed` item stream. If it was renamed, rolled-back turns reappear in
+  both the list and the detail view. Verify with a real esc-esc rewind
+  ([testing.md](./docs/testing.md) rewind row) — it could not be reproduced from
+  the sessions on disk.
+- **Codex 0.153 is migrating session history into `thread_history_*.sqlite`.**
+  That database is a projection of the rollout JSONL (it stores
+  `rollout_byte_offset`/`rollout_ordinal`), and the JSONL is still complete for
+  already-paginated sessions — `real_data_turn_parity` passes over 833 sessions.
+  The open risk is `codex migrate-rollouts --apply`, which s7s has never been run
+  against: 443 sessions are reported eligible, and if migration truncates or
+  removes a rollout the parser loses its source. Re-run the parity check after any
+  migration.
