@@ -210,9 +210,14 @@ link. The origin is repeated as plain text because the envelope is filtered out 
 **Not acting on it.** The body reads like a work order, so two defenses combine:
 the trailing instruction (`config.toml` `handoff_instruction`, English by default
 because committed sources are English — override it to hand off in another
-language) and the agent's own restriction flags. Both were measured against a body
-that deliberately invited action, on claude with tools fully allowed and a
-competing "run it immediately" project directive; neither agent acted.
+language) and the agent's own restriction flags.
+
+The instruction was measured **without** the flags, against a body that
+deliberately asked for a file to be written: on agy, which has no restriction
+flag at all, and on claude with tools fully allowed and a project directive
+telling it to run requests immediately. Neither wrote the file. The flags are
+kept anyway where they exist — they cost one argument, while one instruction
+failure can be an irreversible command.
 
 **Per-agent differences** the module absorbs:
 
@@ -230,9 +235,10 @@ profile into a codex handoff would write into another account's config root. A
 `--profile` naming another agent's profile is refused for the same reason.
 
 **Source resolution.** `--from`, else `$CLAUDE_CODE_SESSION_ID`, else the most
-recent session in the folder. A named `--from` that cannot be found is an error;
-the heuristic simply yields no link. `--no-source` omits both the origin block and
-the envelope.
+recently active session whose working directory is the current one. A named
+`--from` that cannot be found is an error; the last resort is a guess and simply
+yields no link when it misses. `--no-source` omits both the origin block and the
+envelope.
 
 **After creation** the index is rescanned rather than the exit code trusted: the
 handoff counts only once the session is on disk, and the scan supplies the record

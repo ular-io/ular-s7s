@@ -252,8 +252,9 @@ DEFAULTS:
   directory.
 
 SOURCE:
-  --from, else $CLAUDE_CODE_SESSION_ID, else the most recent session in --folder
-  for that agent. --no-source skips the link entirely.
+  --from, else $CLAUDE_CODE_SESSION_ID, else the most recently active session whose
+  working directory is the current one. The last of those is a guess and yields no
+  link when it misses; --no-source skips the link entirely.
 
 NOT DONE HERE:
   Nothing is tracked or reminded. The parked session sits in the list with a
@@ -686,11 +687,18 @@ fn run_handoff(args: &HandoffArgs) -> i32 {
     let after = crate::scan::scan(&profiles.profiles, false);
     let parked = after.sessions.iter().find(|s| s.id == outcome.id);
 
+    // claude names the session as it starts; the others are renamed here, where
+    // the scan above has already made the new session addressable.
     let mut titled = outcome.titled;
     if !titled {
-        match crate::session_handoff::apply_title(&profile, &after.sessions, &outcome.id, &title) {
-            Ok(()) => titled = true,
-            Err(err) => eprintln!("warning: the title could not be applied: {err}"),
+        match parked {
+            Some(session) => match crate::rename::rename_session(&profile, session, &title) {
+                Ok(()) => titled = true,
+                Err(err) => eprintln!("warning: the title could not be applied: {err}"),
+            },
+            None => eprintln!(
+                "warning: the title could not be applied: the new session is not in the index yet"
+            ),
         }
     }
 
@@ -831,12 +839,14 @@ fn handoff_profile(
 /// Folder the new session runs in: the flag, else the source's cwd, else the
 /// current directory. It must exist, because it becomes the session's cwd.
 fn handoff_folder(args: &HandoffArgs, source: Option<&Session>) -> Result<PathBuf, String> {
-    let folder = match args.folder.clone() {
-        Some(folder) => folder,
-        None => source
+    let inherited = args.folder.clone().or_else(|| {
+        source
             .map(|s| s.cwd.clone())
             .filter(|cwd| !cwd.as_os_str().is_empty())
-            .unwrap_or(std::env::current_dir().map_err(|err| format!("cannot read cwd: {err}"))?),
+    });
+    let folder = match inherited {
+        Some(folder) => folder,
+        None => std::env::current_dir().map_err(|err| format!("cannot read cwd: {err}"))?,
     };
     if !folder.is_dir() {
         return Err(format!("folder does not exist: {}", folder.display()));

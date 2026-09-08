@@ -20,6 +20,7 @@
 use crate::model::{Agent, Session};
 #[cfg(test)]
 use crate::parser;
+use crate::parser::BOOTSTRAP_MARKER;
 use crate::profile::Profile;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
@@ -28,9 +29,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Marker opening the s7s context envelope. Shared with the parser so a handoff
-/// links back to its origin exactly like a "New Session with Context" launch.
-const BOOTSTRAP_OPEN: &str = "<s7s-context-bootstrap>";
+/// Closing tag of the s7s context envelope. The opening one is the parser's own
+/// [`parser::BOOTSTRAP_MARKER`], reused so a handoff cannot drift out of the
+/// shape "New Session with Context" launches produce.
 const BOOTSTRAP_CLOSE: &str = "</s7s-context-bootstrap>";
 
 /// How long one agent may take to record the handoff before it is abandoned.
@@ -141,7 +142,7 @@ pub fn compose_prompt(
 
     if let Some(src) = source {
         out.push_str(&format!(
-            "\n\n{BOOTSTRAP_OPEN}\nRun `{}`.\n{BOOTSTRAP_CLOSE}",
+            "\n\n{BOOTSTRAP_MARKER}\nRun `{}`.\n{BOOTSTRAP_CLOSE}",
             show_command(s7s, src, true)
         ));
     }
@@ -305,26 +306,6 @@ fn run_bounded(mut cmd: Command, label: &str) -> Result<String> {
     Ok(reader.join().unwrap_or_default())
 }
 
-/// Applies the title to a session the agent could not name at creation.
-///
-/// Needs the new session to be visible to a scan, so it runs after creation and
-/// reports failure instead of retrying: an untitled handoff is still findable by
-/// its body, and a wrong retry could rename another session.
-pub fn apply_title(profile: &Profile, sessions: &[Session], id: &str, title: &str) -> Result<()> {
-    let session = sessions
-        .iter()
-        .find(|s| s.id == id)
-        .ok_or_else(|| anyhow!("the new session is not in the index yet"))?;
-    crate::rename::rename_session(profile, session, title)
-}
-
-/// True when `text` would be recognized as a context envelope turn — used by
-/// tests to pin the placement contract the composition depends on.
-#[cfg(test)]
-fn is_envelope_turn(text: &str) -> bool {
-    parser::is_noise_turn(text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,8 +329,8 @@ mod tests {
 
         // The envelope must not open the turn, or the whole turn becomes noise
         // and the handoff disappears from the session list.
-        assert!(!out.trim_start().starts_with(BOOTSTRAP_OPEN));
-        assert!(!is_envelope_turn(&out));
+        assert!(!out.trim_start().starts_with(BOOTSTRAP_MARKER));
+        assert!(!parser::is_noise_turn(&out));
         // The link is still recovered, because capture matches anywhere.
         let src = parser::parse_context_bootstrap(&out).expect("expected a source ref");
         assert_eq!(src.id, "543feee5-7900-4949-973c-abbd6e8a1bd8");
@@ -360,7 +341,7 @@ mod tests {
         let body_at = out.find("HAND-OVER").expect("body");
         let origin_at = out.find("## Handoff source").expect("origin");
         let instr_at = out.find("DO NOT ACT ON THIS").expect("instruction");
-        let envelope_at = out.find(BOOTSTRAP_OPEN).expect("envelope");
+        let envelope_at = out.find(BOOTSTRAP_MARKER).expect("envelope");
         assert!(body_at < origin_at);
         assert!(origin_at < instr_at);
         assert!(instr_at < envelope_at);
@@ -375,7 +356,7 @@ mod tests {
             Path::new("/opt/s7s"),
         );
 
-        assert!(!out.contains(BOOTSTRAP_OPEN));
+        assert!(!out.contains(BOOTSTRAP_MARKER));
         assert!(!out.contains("## Handoff source"));
         assert!(parser::parse_context_bootstrap(&out).is_none());
         assert!(out.contains("Reply with one line and stop."));
