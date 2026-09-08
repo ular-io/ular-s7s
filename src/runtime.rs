@@ -3,8 +3,8 @@
 
 use crate::ui::{App, Screen, UiMode};
 use crate::{
-    config, demo, handoff, model, models, profile, resume, scan, session_cli, session_context, ui,
-    usage,
+    config, demo, handoff, model, models, profile, resume, scan, scratch, session_cli,
+    session_context, ui, usage,
 };
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -513,6 +513,18 @@ fn handover_new_session(
         app.status_msg = Some("Profile no longer exists".to_string());
         return Ok(());
     };
+
+    // Scratch launch: empty the shared workspace and rewrite its policy files
+    // immediately before handing over, so the agent starts on a folder holding
+    // nothing but the policy. A failure here would leave an earlier session's
+    // files in place, so the launch is abandoned rather than run on stale state.
+    if scratch::is_scratch(&req.cwd) {
+        if let Err(e) = scratch::prepare(&req.cwd) {
+            tui.resume()?;
+            app.status_msg = Some(format!("Failed to prepare scratch folder: {e}"));
+            return Ok(());
+        }
+    }
 
     let model = req.model.as_deref();
     // Contextual launch: inject the short English bootstrap prompt derived from the

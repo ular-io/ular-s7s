@@ -38,16 +38,65 @@ pub(crate) struct PasteOutcome {
     pub dropped_lines: bool,
 }
 
-/// A single-line text input: the current value plus a byte-offset cursor.
+/// A single-line text input: the current value, a byte-offset cursor, and whether
+/// the whole value is selected.
 pub struct TextInput {
     pub value: String,
     pub cursor: usize,
+    /// Whole-value selection: the value was filled in by the app rather than
+    /// typed, so the next edit replaces all of it and one `Backspace` clears it —
+    /// the convention every graphical prefilled field follows. A cursor move
+    /// drops the selection and keeps the text, so editing the existing value
+    /// costs one key instead of being blocked. See [`TextInput::selected`].
+    pub select_all: bool,
 }
 
 impl TextInput {
     pub(crate) fn new(value: String) -> Self {
         let cursor = value.len();
-        TextInput { value, cursor }
+        TextInput {
+            value,
+            cursor,
+            select_all: false,
+        }
+    }
+
+    /// Prefilled value in the whole-value selection state, for a field the user
+    /// is as likely to replace as to edit: the New Session folder prefill and the
+    /// paths its dropdown writes back. A long absolute path would otherwise have
+    /// to be erased one grapheme at a time before a different folder can be typed.
+    pub(crate) fn selected(value: String) -> Self {
+        let cursor = value.len();
+        TextInput {
+            value,
+            cursor,
+            select_all: true,
+        }
+    }
+
+    /// Consumes a whole-value selection ahead of an edit, emptying the field so
+    /// the edit applies to nothing. Returns whether a selection was consumed, so
+    /// a deletion can stop there instead of deleting twice.
+    fn take_selection(&mut self) -> bool {
+        if !self.select_all {
+            return false;
+        }
+        self.select_all = false;
+        self.value.clear();
+        self.cursor = 0;
+        true
+    }
+
+    /// Drops a whole-value selection without changing the value, leaving the
+    /// cursor at the requested edge of it (the graphical convention: ← collapses
+    /// to the start, → to the end). Returns whether a selection was dropped.
+    fn collapse_selection(&mut self, to_end: bool) -> bool {
+        if !self.select_all {
+            return false;
+        }
+        self.select_all = false;
+        self.cursor = if to_end { self.value.len() } else { 0 };
+        true
     }
 
     /// Inserts one typed scalar. The cursor lands directly after the inserted
@@ -55,6 +104,7 @@ impl TextInput {
     /// boundary: snapping would step over a following combining mark and make
     /// that mark unreachable for editing.
     pub(crate) fn insert_char(&mut self, c: char) {
+        self.take_selection();
         self.cursor = clamp_char_boundary(&self.value, self.cursor);
         self.value.insert(self.cursor, c);
         self.cursor += c.len_utf8();
@@ -63,6 +113,7 @@ impl TextInput {
     /// Inserts one bracketed paste as a single edit, line breaks and tabs becoming
     /// spaces (see [`insert_paste_at`]).
     pub(crate) fn insert_paste(&mut self, text: &str) -> PasteOutcome {
+        self.take_selection();
         insert_paste_at(&mut self.value, &mut self.cursor, text)
     }
 
@@ -71,6 +122,7 @@ impl TextInput {
     /// terminal command, where a trailing `#` comment would swallow whatever a
     /// space-joined next line contained.
     pub(crate) fn insert_paste_first_line(&mut self, text: &str) -> PasteOutcome {
+        self.take_selection();
         insert_paste_into(
             &mut self.value,
             &mut self.cursor,
@@ -80,6 +132,9 @@ impl TextInput {
     }
 
     pub(crate) fn backspace(&mut self) {
+        if self.take_selection() {
+            return;
+        }
         self.cursor = clamp_char_boundary(&self.value, self.cursor);
         if self.cursor == 0 {
             return;
@@ -90,6 +145,9 @@ impl TextInput {
     }
 
     pub(crate) fn delete(&mut self) {
+        if self.take_selection() {
+            return;
+        }
         self.cursor = clamp_char_boundary(&self.value, self.cursor);
         if self.cursor >= self.value.len() {
             return;
@@ -99,18 +157,26 @@ impl TextInput {
     }
 
     pub(crate) fn move_left(&mut self) {
+        if self.collapse_selection(false) {
+            return;
+        }
         self.cursor = prev_grapheme_boundary(&self.value, self.cursor);
     }
 
     pub(crate) fn move_right(&mut self) {
+        if self.collapse_selection(true) {
+            return;
+        }
         self.cursor = next_grapheme_boundary(&self.value, self.cursor);
     }
 
     pub(crate) fn home(&mut self) {
+        self.select_all = false;
         self.cursor = 0;
     }
 
     pub(crate) fn end(&mut self) {
+        self.select_all = false;
         self.cursor = self.value.len();
     }
 }
@@ -246,6 +312,89 @@ mod tests {
 
     fn input(value: &str) -> TextInput {
         TextInput::new(value.to_string())
+    }
+
+    /// A prefilled path is selected, so one key replaces or clears all of it.
+    #[test]
+    fn a_selected_value_is_replaced_by_the_first_edit() {
+        let mut i = TextInput::selected("/Users/dev/projects/demo".to_string());
+        assert!(i.select_all);
+
+        i.insert_char('u');
+
+        assert_eq!(i.value, "u");
+        assert_eq!(i.cursor, 1);
+        assert!(!i.select_all);
+    }
+
+    #[test]
+    fn backspace_on_a_selected_value_clears_it_once() {
+        let mut i = TextInput::selected("/Users/dev/projects/demo".to_string());
+
+        i.backspace();
+
+        assert_eq!(i.value, "");
+        assert_eq!(i.cursor, 0);
+        assert!(!i.select_all);
+        // A second Backspace has nothing left to take, so the field stays empty.
+        i.backspace();
+        assert_eq!(i.value, "");
+    }
+
+    #[test]
+    fn delete_on_a_selected_value_clears_it() {
+        let mut i = TextInput::selected("demo".to_string());
+        i.delete();
+        assert_eq!(i.value, "");
+        assert!(!i.select_all);
+    }
+
+    #[test]
+    fn paste_replaces_a_selected_value_instead_of_appending() {
+        let mut i = TextInput::selected("/old/path".to_string());
+
+        let outcome = i.insert_paste("/new/path");
+
+        assert_eq!(i.value, "/new/path");
+        assert_eq!(outcome.inserted, "/new/path".len());
+    }
+
+    /// The edit flow: a cursor move drops the selection and keeps the text, so an
+    /// existing path can be corrected without retyping it.
+    #[test]
+    fn a_cursor_move_collapses_the_selection_to_that_edge() {
+        let value = "/Users/dev/projects/demo";
+
+        let mut right = TextInput::selected(value.to_string());
+        right.move_right();
+        assert_eq!(right.value, value);
+        assert_eq!(right.cursor, value.len());
+        assert!(!right.select_all);
+
+        let mut left = TextInput::selected(value.to_string());
+        left.move_left();
+        assert_eq!(left.value, value);
+        assert_eq!(left.cursor, 0);
+        assert!(!left.select_all);
+
+        let mut home = TextInput::selected(value.to_string());
+        home.home();
+        assert_eq!(home.value, value);
+        assert_eq!(home.cursor, 0);
+        assert!(!home.select_all);
+
+        let mut end = TextInput::selected(value.to_string());
+        end.end();
+        assert_eq!(end.value, value);
+        assert_eq!(end.cursor, value.len());
+        assert!(!end.select_all);
+    }
+
+    #[test]
+    fn a_typed_value_is_never_selected() {
+        let mut i = input("");
+        i.insert_char('a');
+        assert!(!i.select_all);
     }
 
     #[test]

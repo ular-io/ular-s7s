@@ -194,6 +194,16 @@ pub(crate) fn probe_dir() -> PathBuf {
     config_base_dir().join("probe")
 }
 
+/// Shared scratch workspace for sessions started without a project:
+/// `~/.config/s7s/scratch`.
+///
+/// Dedicated (never `config_base_dir()` or `projects_dir()`) because
+/// [`crate::scratch`] empties this folder on every launch: the purge must not be
+/// able to reach a user project folder or app state. See `scratch::prepare`.
+pub(crate) fn scratch_dir() -> PathBuf {
+    config_base_dir().join("scratch")
+}
+
 /// Seed template written by `Edit Config` when config.toml is missing or blank.
 /// Every key is commented out showing its built-in default, so the file documents
 /// itself without pinning any value (commented keys never override defaults).
@@ -253,6 +263,20 @@ fn load_file_config() -> Option<FileConfig> {
     let path = config_file_path();
     let data = std::fs::read_to_string(path).ok()?;
     toml::from_str(&data).ok()
+}
+
+/// Inverse of [`expand`]: renders a path with the home directory written back as
+/// `~`, for display where the full absolute path would waste width.
+pub(crate) fn collapse_home(path: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            if rest.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", rest.to_string_lossy());
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
 
 /// Expands the `~` prefix to the home directory.

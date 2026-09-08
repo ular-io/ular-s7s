@@ -133,7 +133,10 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
             };
             Row::new(vec![
                 Cell::from(Span::styled(tag, tag_style)),
-                Cell::from(Span::styled(truncate_w(&s.folder, 18), text_style)),
+                Cell::from(Span::styled(
+                    truncate_w(crate::scratch::folder_label(&s.cwd, &s.folder), 18),
+                    text_style,
+                )),
                 Cell::from(Span::styled(s.date_str(), text_style)),
                 Cell::from(Span::styled(truncate_w(&s.title(), title_w), text_style)),
                 Cell::from(Span::styled(

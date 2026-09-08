@@ -126,6 +126,35 @@ terminal ownership changes.
 Validate both clients when changing shared probe behavior. Agent-specific rules
 live in [usage-display.md](./usage-display.md) and [models.md](./models.md).
 
+## Scratch workspace
+
+`scratch.rs` owns `~/.config/s7s/scratch`, the working directory behind the fixed
+`[SCRATCH]` row of the New Session folder dropdown. Sessions started there run
+without a project.
+
+- `runtime::handover_new_session` calls `scratch::prepare` immediately before the
+  handover: it deletes every direct entry except `AGENTS.md`/`CLAUDE.md`, then
+  rewrites both from the source constants. An earlier session's leftovers must
+  never become the next session's context — a stale `CLAUDE.md` in the working
+  directory would be loaded by the agent CLI on startup.
+- `prepare` deletes without a confirmation prompt, so it verifies the target is
+  the scratch workspace instead of trusting the caller, touches direct entries
+  only, and unlinks symlinks rather than following them.
+- The policy text is the redirect mechanism, not the folder permissions: the
+  agent runs as the same user and could restore any write bit. `AGENTS.md` holds
+  the policy and `CLAUDE.md` imports it, so both agent families read one source.
+  It must keep telling the agent to ask the user for a target directory —
+  blocking writes without naming an alternative only moves the file somewhere
+  unpredictable.
+- `scratch::folder_label` renames the workspace to `[SCRATCH]` in the session
+  list, the metadata grids, and clipboard projections; those keep the full path
+  where they already showed one. `Session.folder` stays the raw basename, so the
+  cached index, the folder filter identity, and the search blob are untouched.
+- The dialog offers the workspace as a row outside `folders`/`ordered` and fills
+  the input with its real path on selection, so confirming runs the ordinary
+  validation and launch path. `folders` excludes the workspace so it cannot also
+  appear as an ordinary folder once sessions exist there.
+
 ## Persistence ownership
 
 | Path | Owner | Format |
@@ -137,6 +166,7 @@ live in [usage-display.md](./usage-display.md) and [models.md](./models.md).
 | `~/.config/s7s/theme.json` | app | JSON |
 | `~/.config/s7s/{quick,terminal}_history.json` | app | JSON |
 | `~/.config/s7s/projects/` | app/user | directories |
+| `~/.config/s7s/scratch/` | app | shared working directory, emptied on every launch |
 | `<OS cache>/s7s/index.bin` | app | versioned bincode, mode `0600` |
 | `<OS cache>/s7s/demo/` | app | disposable demo data |
 
@@ -153,6 +183,7 @@ index is a disposable cache.
 | Usage/model probes | `usage.rs`, `models.rs`, `probe/*` | `usage-display.md`, `models.md` |
 | Profiles/env injection | `profile.rs`, `resume.rs`, `ui/profile/*` | `profiles.md` |
 | TUI/input/terminal | `ui/*`, `runtime.rs` | `ui-style-guide.md`, `terminal-input-hardening.md` |
+| Scratch workspace / its policy text | `scratch.rs`, `ui/new_session/*`, `runtime.rs` | §Scratch workspace above, `testing.md` |
 | Release | `scripts/release.sh` | `releasing.md` |
 
 [testing.md](./testing.md) is the authoritative verification matrix.

@@ -74,7 +74,8 @@ pub struct NewSessionState {
     pub ordered: Vec<usize>,
     /// Number of matching items at the head of `ordered` (used to distinguish colors in render).
     pub match_count: usize,
-    /// Folder dropdown list cursor (index in `ordered`). None indicates highlight remains in the input field
+    /// Folder dropdown row cursor. Row 0 is the fixed `[SCRATCH]` workspace option;
+    /// row `n` indexes `ordered[n - 1]`. None indicates highlight remains in the input field
     /// (e.g. immediately after typing auto-opens it), requiring ↓ key press to focus the list.
     pub folder_cursor: Option<usize>,
     /// Focused button in the button row: OK (true) or Cancel (false). OK and Cancel act as separate
@@ -108,8 +109,8 @@ impl NewSessionState {
                 NewSessionFocus::Profile => self.profile_idx = self.profile_cursor,
                 NewSessionFocus::Model => self.model_idx = self.model_cursor,
                 NewSessionFocus::Folder => {
-                    if let Some(i) = self.folder_cursor {
-                        self.apply_folder_to_input(i);
+                    if let Some(row) = self.folder_cursor {
+                        self.apply_folder_row(row);
                     }
                 }
                 NewSessionFocus::Buttons => {}
@@ -209,11 +210,38 @@ impl NewSessionState {
         matched.extend(rest);
         self.ordered = matched;
         if let Some(c) = self.folder_cursor {
-            self.folder_cursor = if self.ordered.is_empty() {
-                None
-            } else {
-                Some(c.min(self.ordered.len() - 1))
-            };
+            // The scratch row always exists, so a cursor never falls off the list.
+            self.folder_cursor = Some(c.min(self.folder_rows() - 1));
+        }
+    }
+
+    /// Where the highlight lands when the folder dropdown opens: the input itself
+    /// (`None`) while a prefilled value is still selected, so the value stays the
+    /// subject and typing replaces it; the first row otherwise.
+    pub(crate) fn opening_cursor(&self) -> Option<usize> {
+        (!self.input.select_all).then_some(0)
+    }
+
+    /// Dropdown row count: the fixed `[SCRATCH]` row plus every entry in `ordered`.
+    pub(crate) fn folder_rows(&self) -> usize {
+        1 + self.ordered.len()
+    }
+
+    /// Selects a dropdown row (see `folder_cursor` for the row numbering).
+    ///
+    /// The scratch row fills the input with the real workspace path, so confirming
+    /// runs the same validation and launch path as any other folder instead of
+    /// carrying a sentinel value through the dialog state.
+    pub(crate) fn apply_folder_row(&mut self, row: usize) {
+        match row.checked_sub(1) {
+            Some(ordered_pos) => self.apply_folder_to_input(ordered_pos),
+            None => {
+                self.input =
+                    TextInput::selected(crate::scratch::dir().to_string_lossy().into_owned());
+                self.error = None;
+                self.reorder_folders();
+                self.folder_cursor = Some(0);
+            }
         }
     }
 
@@ -226,10 +254,16 @@ impl NewSessionState {
         let Some(path) = self.folders.get(folder_i) else {
             return;
         };
-        self.input = TextInput::new(path.to_string_lossy().into_owned());
+        // Selected, like the dialog's prefill: a path written back from the list is
+        // still a value the user may want to replace rather than edit.
+        self.input = TextInput::selected(path.to_string_lossy().into_owned());
         self.error = None;
         self.reorder_folders();
-        self.folder_cursor = self.ordered.iter().position(|&i| i == folder_i);
+        self.folder_cursor = self
+            .ordered
+            .iter()
+            .position(|&i| i == folder_i)
+            .map(|pos| pos + 1);
     }
 }
 

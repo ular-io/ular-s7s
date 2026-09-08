@@ -99,7 +99,7 @@ fn agent_label(agent: Agent) -> &'static str {
 pub(crate) fn session_info_text(s: &Session) -> String {
     format!(
         "● Session\n- Project: {} ({})\n- Name: {}\n- Created at: {}\n- Updated at: {}\n- Id: [{}] {}",
-        s.folder,
+        crate::scratch::folder_label(&s.cwd, &s.folder),
         s.cwd.to_string_lossy(),
         s.title(),
         s.created_str(),
@@ -116,7 +116,7 @@ pub(crate) fn context_source_text(src: &ContextSource, resolved: Option<&Session
     match resolved {
         Some(s) => format!(
             "● Context Source\n- Project: {} ({})\n- Name: {}\n- Id: [{}] {} · {}",
-            s.folder,
+            crate::scratch::folder_label(&s.cwd, &s.folder),
             s.cwd.to_string_lossy(),
             s.title(),
             tag,
@@ -215,6 +215,23 @@ mod tests {
             title_fixed: true,
             context_source: None,
         }
+    }
+
+    /// A scratch session has no project, so lists and metadata name it by label.
+    /// The full path stays in parentheses: it is still where the session ran.
+    #[test]
+    fn session_info_names_the_scratch_workspace_by_label() {
+        let mut session = sample_session();
+        session.cwd = crate::scratch::dir();
+        session.folder = "scratch".to_string();
+
+        let text = session_info_text(&session);
+
+        assert!(text.contains(&format!(
+            "- Project: {} ({})",
+            crate::scratch::LABEL,
+            crate::scratch::dir().to_string_lossy()
+        )));
     }
 
     #[test]

@@ -36,6 +36,26 @@ but movement and deletion step over complete grapheme clusters using
 - Never slice display text by byte count or `char` count.
 - An over-wide cluster gets its own line; do not split it to satisfy width.
 
+## Whole-value selection
+
+`TextInput::selected` marks a value the app filled in rather than the user typed
+(`select_all`). It exists because the New Session folder prefill is a long
+absolute path, and erasing one grapheme at a time to type a different folder is
+the slowest possible way to reach the common case.
+
+- Typing, pasting, `Backspace`, and `Delete` replace or clear the whole value.
+  A deletion consumes the selection and stops there — it must not also delete a
+  cluster.
+- `←`/`Home` collapse to the start, `→`/`End` to the end, keeping the value. The
+  edit flow therefore costs one key instead of being blocked.
+- Only `TextInput::selected` arms the state; `TextInput::new` never does, so
+  fields that add it opt in deliberately.
+- Every entry point that mutates the value has to consume the selection first.
+  Adding an editing method without that check silently appends to a value the
+  user believes is about to be replaced.
+- The state must be visible before the first key: the renderer paints a selected
+  value with the selection colors ([ui-style-guide.md](./ui-style-guide.md)).
+
 ## Paste contract
 
 `runtime` enables bracketed paste and forwards each `Event::Paste(String)` once
@@ -130,6 +150,7 @@ restored only when s7s regains terminal ownership.
 | Behavior | Automated coverage |
 | --- | --- |
 | Grapheme movement/deletion/insertion | `ui/components/input.rs` tests |
+| Whole-value selection: replace, clear, collapse to either edge | `ui/components/input.rs` tests + `ui/new_session/tests.rs` |
 | Grapheme wrapping/truncation/sanitization | `ui/components/text.rs` tests |
 | Exhaustive paste routing and no-submit behavior | `ui/paste.rs` and feature tests |
 | Partial setup, cleanup ordering, retry, panic-mask restoration | `runtime::terminal_lifecycle_tests` |

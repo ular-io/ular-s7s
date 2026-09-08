@@ -51,7 +51,8 @@ fn new_session_folder_dropdown_selects_then_ok_starts() {
     app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert_eq!(app.mode, UiMode::NewSession);
     {
-        // Profile screen: starts with Folder focused (empty path) and dropdown open.
+        // Profile screen: starts with Folder focused (empty path) and dropdown open
+        // on row 0, the fixed Scratch workspace row.
         let state = app.new_session.as_ref().expect("new session dialog");
         assert_eq!(state.focus, NewSessionFocus::Folder);
         assert!(state.dropdown_open);
@@ -60,7 +61,8 @@ fn new_session_folder_dropdown_selects_then_ok_starts() {
         assert!(state.folders.contains(&PathBuf::from("/")));
     }
 
-    // Down key navigates to "/tmp" option.
+    // Down twice: row 1 is the first folder ("/"), row 2 is "/tmp".
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
     app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
 
     // Enter key (dropdown open): commits selection and closes dropdown; does not trigger session launch yet.
@@ -93,13 +95,141 @@ fn new_session_folder_dropdown_selects_then_ok_starts() {
     assert!(app.new_session.is_none());
 }
 
+/// A prefilled folder arrives selected: replacing it costs one key instead of
+/// erasing a long absolute path one grapheme at a time.
+#[test]
+fn new_session_prefilled_folder_is_selected_and_typing_replaces_it() {
+    let mut app = app_with_profiles();
+    app.selected = 1; // Session view Ctrl+N prefills that session's cwd.
+    open_new_session_at_profile_focus(&mut app);
+    {
+        let state = app.new_session.as_ref().expect("new session dialog");
+        assert_eq!(state.input.value, "/tmp");
+        assert!(state.input.select_all);
+    }
+
+    app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+    app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
+    app.on_key_new_session(key(KeyCode::Char('u'), KeyModifiers::NONE));
+
+    let state = app.new_session.as_ref().unwrap();
+    assert_eq!(state.input.value, "u");
+    assert!(!state.input.select_all);
+}
+
+/// The edit flow out of the same state: an arrow drops the selection and keeps the
+/// path, so a folder can be corrected without retyping it.
+#[test]
+fn new_session_arrow_keeps_a_selected_prefill_for_editing() {
+    let mut app = app_with_profiles();
+    app.selected = 1;
+    open_new_session_at_profile_focus(&mut app);
+    app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+    app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
+
+    // Enter opens the list with the highlight left in the input, because the value
+    // is still selected and remains the subject.
+    app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE));
+    {
+        let state = app.new_session.as_ref().unwrap();
+        assert!(state.dropdown_open);
+        assert_eq!(state.folder_cursor, None);
+    }
+
+    app.on_key_new_session(key(KeyCode::Right, KeyModifiers::NONE));
+
+    let state = app.new_session.as_ref().unwrap();
+    assert_eq!(state.input.value, "/tmp");
+    assert_eq!(state.input.cursor, "/tmp".len());
+    assert!(!state.input.select_all);
+}
+
+/// A path written back from the list is app-filled too, so it arms the same
+/// replace state as the prefill.
+#[test]
+fn new_session_row_selection_arms_the_replace_state() {
+    let mut app = app_with_profiles();
+    app.screen = Screen::Profile;
+    app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // row 1: first folder
+    app.on_key_new_session(key(KeyCode::Char(' '), KeyModifiers::NONE));
+
+    let state = app.new_session.as_ref().expect("new session dialog");
+    assert_eq!(state.input.value, "/");
+    assert!(state.input.select_all);
+}
+
+/// The scratch workspace is offered as a fixed first row rather than an entry in
+/// `folders`, so it stays reachable with one key regardless of the typed query.
+#[test]
+fn new_session_scratch_row_is_first_and_fills_the_workspace_path() {
+    let mut app = app_with_profiles();
+    app.screen = Screen::Profile;
+    app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+    // Space commits the focused row without closing the dropdown.
+    app.on_key_new_session(key(KeyCode::Char(' '), KeyModifiers::NONE));
+
+    let state = app.new_session.as_ref().expect("new session dialog");
+    assert_eq!(state.folder_cursor, Some(0));
+    assert!(state.dropdown_open);
+    // The real path lands in the input, so confirming runs the ordinary validation path.
+    assert_eq!(
+        state.input.value,
+        crate::scratch::dir().to_string_lossy().into_owned()
+    );
+    assert!(!state.folders.contains(&crate::scratch::dir()));
+}
+
+/// Typing reorders `folders` (matches first) but must never move or hide the
+/// scratch row, which lives outside `ordered`.
+#[test]
+fn new_session_scratch_row_survives_a_folder_query() {
+    let mut app = app_with_profiles();
+    app.screen = Screen::Profile;
+    app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+    app.on_key_new_session(key(KeyCode::Char('t'), KeyModifiers::NONE));
+    app.on_key_new_session(key(KeyCode::Char('m'), KeyModifiers::NONE));
+    // Typing returns the highlight to the input; Down re-enters the list at row 0.
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
+    app.on_key_new_session(key(KeyCode::Char(' '), KeyModifiers::NONE));
+
+    let state = app.new_session.as_ref().expect("new session dialog");
+    assert_eq!(state.folder_rows(), 1 + state.ordered.len());
+    assert_eq!(
+        state.input.value,
+        crate::scratch::dir().to_string_lossy().into_owned()
+    );
+}
+
+/// Sessions started in the scratch workspace must not add it to the folder list:
+/// it would then appear twice, as the fixed row and as an ordinary folder.
+#[test]
+fn new_session_folder_list_excludes_the_scratch_workspace() {
+    let mut app = app_with_profiles();
+    let mut scratch_session = app.sessions[0].clone();
+    scratch_session.id = "s3".to_string();
+    scratch_session.cwd = crate::scratch::dir();
+    scratch_session.folder = "scratch".to_string();
+    app.sessions.push(scratch_session);
+    app.screen = Screen::Profile;
+
+    app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+    let state = app.new_session.as_ref().expect("new session dialog");
+    assert!(!state.folders.contains(&crate::scratch::dir()));
+    assert_eq!(state.folders.len(), 2);
+}
+
 #[test]
 fn new_session_space_selects_folder_and_keeps_dropdown_open() {
     let mut app = app_with_profiles();
     app.screen = Screen::Profile;
 
     app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
-    // Profile screen: starts with Folder focused (dropdown open at cursor 0). Down key moves cursor to 1 (/tmp).
+    // Profile screen: dropdown opens on row 0 (Scratch). Two Downs reach row 2 (/tmp).
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
     app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE));
     app.on_key_new_session(key(KeyCode::Char(' '), KeyModifiers::NONE));
 
@@ -109,7 +239,8 @@ fn new_session_space_selects_folder_and_keeps_dropdown_open() {
                                            // Reordering post-selection must keep the cursor tracking same folder.
     let cursor_folder = state
         .folder_cursor
-        .and_then(|c| state.ordered.get(c))
+        .and_then(|c| c.checked_sub(1))
+        .and_then(|pos| state.ordered.get(pos))
         .and_then(|&i| state.folders.get(i));
     assert_eq!(cursor_folder, Some(&PathBuf::from("/tmp")));
 }
@@ -156,12 +287,13 @@ fn new_session_right_opens_both_dropdowns_when_closed() {
     app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
     assert!(!app.new_session.as_ref().unwrap().dropdown_open);
 
-    // → key (Folder closed): opens dropdown and highlights the first option.
+    // → key (Folder closed): opens the dropdown. The prefilled path is still
+    // selected, so the highlight stays in the input rather than jumping to a row.
     app.on_key_new_session(key(KeyCode::Right, KeyModifiers::NONE));
     let state = app.new_session.as_ref().unwrap();
     assert_eq!(state.focus, NewSessionFocus::Folder);
     assert!(state.dropdown_open);
-    assert_eq!(state.folder_cursor, Some(0));
+    assert_eq!(state.folder_cursor, None);
 }
 
 #[test]
@@ -230,10 +362,12 @@ fn new_session_tab_commits_dropdown_selection_before_moving_focus() {
     }
 
     // Folder dropdown: committed selection reflects on text box, shifting focus back via Shift+Tab.
-    // Sort order by input "/tmp": ["/tmp" (match), "/"] - second item is "/".
+    // Sort order by input "/tmp": ["/tmp" (match), "/"], one row below the [SCRATCH] row.
     app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Model -> Folder
-    app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (cursor 0=/tmp)
-    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // cursor 1=/
+    app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open (highlight in input)
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // row 0=Scratch
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // row 1=/tmp
+    app.on_key_new_session(key(KeyCode::Down, KeyModifiers::NONE)); // row 2=/
     app.on_key_new_session(key(KeyCode::BackTab, KeyModifiers::SHIFT));
     let state = app.new_session.as_ref().unwrap();
     assert_eq!(state.input.value, "/");
@@ -368,13 +502,13 @@ fn new_session_folder_updown_wraps_around() {
     app.screen = Screen::Profile; // initially focused on Folder (empty folders).
     app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
 
-    // Profile screen: starts dropdown open (cursor 0). Up key cycles from top to bottom.
+    // Profile screen: starts dropdown open on the [SCRATCH] row (0). Up cycles to the last folder row.
     assert_eq!(app.new_session.as_ref().unwrap().folder_cursor, Some(0));
     app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE));
     let last = {
         let state = app.new_session.as_ref().unwrap();
         assert!(state.dropdown_open);
-        state.ordered.len() - 1
+        state.folder_rows() - 1
     };
     assert_eq!(app.new_session.as_ref().unwrap().folder_cursor, Some(last));
 

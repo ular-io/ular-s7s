@@ -19,6 +19,7 @@ planning; backlog entries are not implementation authorization.
 | Usage display / parsing | [usage-display.md](./docs/usage-display.md) |
 | Profiles / env injection (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) | [profiles.md](./docs/profiles.md) |
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
+| Scratch workspace (`src/scratch.rs`, folder dropdown `[SCRATCH]` row) | [architecture.md](./docs/architecture.md) §Scratch workspace + [testing.md](./docs/testing.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |

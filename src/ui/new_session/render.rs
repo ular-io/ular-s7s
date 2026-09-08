@@ -176,7 +176,17 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         }
     } else {
         let (visible, cursor_x) = input_view(&state.input, input_inner.width as usize);
-        f.render_widget(Paragraph::new(visible), input_inner);
+        // A whole-value selection is painted like a selected list row, so "typing
+        // replaces this" is visible before the first key.
+        let value_style = if state.input.select_all {
+            Style::default().fg(th.selection_fg).bg(th.selection_bg)
+        } else {
+            Style::default()
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(visible, value_style))),
+            input_inner,
+        );
         if folder_focused {
             f.set_cursor_position((input_inner.x.saturating_add(cursor_x), input_inner.y));
         }
@@ -248,9 +258,14 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         } else if model_open {
             state.model_options.len().max(1)
         } else {
-            state.ordered.len().max(1)
+            state.folder_rows()
         };
-        let popup_h = (total + 2).min(avail); // Includes 2 rows for popup borders
+        // Folder dropdown footer: a thin divider plus the focused row's full path,
+        // since the list shows basenames only. Dropped when the terminal is too
+        // short to leave a usable list — the list matters more than the preview.
+        let folder_open = !profile_open && !model_open;
+        let footer_h = if folder_open && avail >= 5 { 2 } else { 0 };
+        let popup_h = (total + 2 + footer_h).min(avail); // Includes 2 rows for popup borders
         if popup_h < 3 {
             // Suppress popup rendering if terminal height is extremely constrained.
             return;
@@ -304,7 +319,7 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
             },
         );
 
-        let list_h = popup_inner.height as usize;
+        let list_h = (popup_inner.height as usize).saturating_sub(footer_h);
         let inner_w = popup_inner.width as usize;
         let cursor = if profile_open {
             state.profile_cursor
@@ -409,20 +424,19 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 })
                 .collect()
         } else {
-            // Folder list: query-matched (top, normal color) / unmatched (bottom, soft dim color).
-            state
-                .ordered
+            // Folder list: the fixed scratch row first, then query-matched entries
+            // (normal color) and unmatched entries (soft dim). Rows carry the folder
+            // basename alone; the footer resolves the focused row's full path.
+            folder_dropdown_rows(state)
                 .iter()
                 .enumerate()
                 .skip(offset)
                 .take(list_h)
-                .filter_map(|(pos, &folder_i)| state.folders.get(folder_i).map(|p| (pos, p)))
-                .map(|(pos, path)| {
-                    let label = folder_name_only(path);
-                    let text = format!(" {} ", truncate_w(&label, inner_w.saturating_sub(2)));
+                .map(|(pos, row)| {
+                    let text = format!(" {} ", truncate_w(&row.label, inner_w.saturating_sub(2)));
                     let style = if state.folder_cursor == Some(pos) {
                         Style::default().fg(th.selection_fg).bg(th.selection_bg)
-                    } else if pos < state.match_count {
+                    } else if row.matched {
                         Style::default()
                     } else {
                         th.soft_dim()
@@ -431,8 +445,113 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 })
                 .collect()
         };
-        f.render_widget(List::new(items), popup_inner);
+        f.render_widget(
+            List::new(items),
+            Rect {
+                height: list_h as u16,
+                ..popup_inner
+            },
+        );
+
+        if footer_h > 0 {
+            // Thin divider joined to the thick side borders with `┠`/`┨`, matching
+            // the folder filter modal; the top border uses the same technique.
+            let divider_y = popup_inner.y + list_h as u16;
+            let divider = if join_w > 2 {
+                format!("┠{}┨", "─".repeat(join_w - 2))
+            } else {
+                "──".to_string()
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    divider,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x: popup_rect.x,
+                    y: divider_y,
+                    width: popup_rect.width,
+                    height: 1,
+                },
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    // Leading space aligns the footer with the list rows above it.
+                    format!(
+                        " {}",
+                        truncate_w(&folder_footer(state), inner_w.saturating_sub(1))
+                    ),
+                    th.soft_dim(),
+                ))),
+                Rect {
+                    x: popup_inner.x,
+                    y: divider_y + 1,
+                    width: popup_inner.width,
+                    height: 1,
+                },
+            );
+        }
     }
+}
+
+/// Folder dropdown footer: the focused row's full path, so a row of basenames can
+/// still be told apart before it is selected. The scratch row adds the purge
+/// notice, stating the folder is wiped before the session starts rather than only
+/// inside its policy file. Empty while the highlight sits in the input field.
+fn folder_footer(state: &crate::ui::NewSessionState) -> String {
+    let Some(row) = state.folder_cursor else {
+        // Highlight is in the input. While a prefilled value is selected, name both
+        // ways out of it: typing replaces the whole path, an arrow key keeps it for
+        // editing. Nothing to say once the selection is gone.
+        return if state.input.select_all && !state.input.value.is_empty() {
+            "type to replace · → to edit".to_string()
+        } else {
+            String::new()
+        };
+    };
+    match row.checked_sub(1) {
+        None => format!(
+            "{} · shared, cleared on each start",
+            crate::config::collapse_home(&crate::scratch::dir())
+        ),
+        Some(pos) => state
+            .ordered
+            .get(pos)
+            .and_then(|&i| state.folders.get(i))
+            .map(|p| crate::config::collapse_home(p))
+            .unwrap_or_default(),
+    }
+}
+
+/// One rendered row of the folder dropdown.
+struct FolderRow {
+    label: String,
+    /// Drawn in normal color. Unmatched folders render dim; the scratch row never does.
+    matched: bool,
+}
+
+/// Dropdown rows in display order: the fixed `[SCRATCH]` workspace followed by
+/// `ordered` (matches first). Mirrors `NewSessionState::folder_rows`, which owns
+/// the row count the cursor is bounded by.
+fn folder_dropdown_rows(state: &crate::ui::NewSessionState) -> Vec<FolderRow> {
+    // Bracketed and upper case: folder rows are bare basenames, so the label itself
+    // has to say this row is not one of them.
+    let mut rows = vec![FolderRow {
+        label: crate::scratch::LABEL.to_string(),
+        matched: true,
+    }];
+    rows.extend(
+        state
+            .ordered
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &folder_i)| state.folders.get(folder_i).map(|p| (pos, p)))
+            .map(|(pos, path)| FolderRow {
+                label: folder_name_only(path),
+                matched: pos < state.match_count,
+            }),
+    );
+    rows
 }
 
 fn folder_name_only(path: &std::path::Path) -> String {
@@ -461,6 +580,7 @@ mod tests {
             input: TextInput {
                 value: String::new(),
                 cursor: 0,
+                select_all: false,
             },
             folders: Vec::new(),
             ordered: Vec::new(),

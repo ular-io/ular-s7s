@@ -57,11 +57,13 @@ impl App {
             return;
         }
         let profile_idx = profile_idx.min(self.profiles.profiles.len() - 1);
+        // The scratch workspace is the fixed first dropdown row, so it must not also
+        // appear as an ordinary folder once sessions have been started there.
         let mut folders: Vec<PathBuf> = self
             .sessions
             .iter()
             .map(|s| s.cwd.clone())
-            .filter(|p| !p.as_os_str().is_empty())
+            .filter(|p| !p.as_os_str().is_empty() && !crate::scratch::is_scratch(p))
             .collect();
         folders.sort_unstable();
         folders.dedup();
@@ -84,7 +86,12 @@ impl App {
             model_options,
             model_idx,
             model_cursor: model_idx,
-            input: TextInput::new(initial_dir.unwrap_or_default()),
+            // A prefilled path arrives selected: the caller filled it in, so typing
+            // replaces it and one Backspace clears it (see `TextInput::selected`).
+            input: match initial_dir {
+                Some(dir) if !dir.is_empty() => TextInput::selected(dir),
+                _ => TextInput::new(String::new()),
+            },
             folders,
             ordered: Vec::new(),
             match_count: 0,
@@ -97,7 +104,7 @@ impl App {
         // If starting with Folder focused due to empty inputs, pre-open the dropdown list.
         if state.focus == NewSessionFocus::Folder {
             state.dropdown_open = true;
-            state.folder_cursor = (!state.ordered.is_empty()).then_some(0);
+            state.folder_cursor = Some(0);
         }
         self.new_session = Some(state);
         self.mode = UiMode::NewSession;
@@ -298,6 +305,14 @@ impl App {
         } else {
             resolve_input_path(raw)
         };
+        // The scratch workspace is created on demand so its dropdown row works on a
+        // first run. Emptying it belongs to the launch (`scratch::prepare`), not here.
+        if crate::scratch::is_scratch(&path) {
+            if let Err(err) = crate::scratch::ensure() {
+                state.error = Some(format!("Cannot create scratch folder: {err}"));
+                return;
+            }
+        }
         if bare && !path.exists() {
             self.project_dir_pending = Some(path);
             self.dir_create_ok_focused = true; // Default focus to Create (creation is the natural workflow).
@@ -473,9 +488,9 @@ impl App {
                             state.close_dropdown();
                         }
                         NewSessionFocus::Folder => {
-                            // If cursor is on a listed item, select it; otherwise, commit the text input directly.
-                            if let Some(i) = state.folder_cursor {
-                                state.apply_folder_to_input(i);
+                            // If cursor is on a listed row, select it; otherwise, commit the text input directly.
+                            if let Some(row) = state.folder_cursor {
+                                state.apply_folder_row(row);
                             }
                             state.close_dropdown();
                         }
@@ -500,7 +515,7 @@ impl App {
                         }
                         NewSessionFocus::Folder => {
                             state.dropdown_open = true;
-                            state.folder_cursor = (!state.ordered.is_empty()).then_some(0);
+                            state.folder_cursor = state.opening_cursor();
                         }
                         // Buttons: executes button action.
                         NewSessionFocus::Buttons => {
@@ -590,33 +605,34 @@ impl App {
                 NewSessionFocus::Folder => match key.code {
                     // Arrow keys ↑/↓ reach here only when the dropdown is open (moves cursor in list).
                     KeyCode::Down => {
-                        // Cycle from bottom to top index on Down arrow.
+                        // Cycle from bottom to top row on Down arrow.
+                        let rows = state.folder_rows();
                         state.folder_cursor = match state.folder_cursor {
-                            None => (!state.ordered.is_empty()).then_some(0),
-                            Some(i) if i + 1 >= state.ordered.len() => Some(0),
+                            None => Some(0),
+                            Some(i) if i + 1 >= rows => Some(0),
                             Some(i) => Some(i + 1),
                         };
                     }
                     KeyCode::Up => {
-                        // Cycle from top (first item / text highlight) to bottom index on Up arrow (keeps dropdown open).
-                        let last = state.ordered.len().saturating_sub(1);
+                        // Cycle from top (first row / text highlight) to bottom row on Up arrow (keeps dropdown open).
+                        let last = state.folder_rows() - 1;
                         state.folder_cursor = match state.folder_cursor {
                             Some(i) if i > 0 => Some(i - 1),
-                            _ => (!state.ordered.is_empty()).then_some(last),
+                            _ => Some(last),
                         };
                     }
                     // Space key: updates text inputs immediately while keeping the dropdown list open.
                     // (handled as literal space character input if the list cursor is not set)
                     KeyCode::Char(' ') if state.dropdown_open && state.folder_cursor.is_some() => {
-                        if let Some(i) = state.folder_cursor {
-                            state.apply_folder_to_input(i);
+                        if let Some(row) = state.folder_cursor {
+                            state.apply_folder_row(row);
                         }
                     }
                     // → key: opens dropdown list if closed; moves text cursor right if open.
                     KeyCode::Right => {
                         if !state.dropdown_open {
                             state.dropdown_open = true;
-                            state.folder_cursor = (!state.ordered.is_empty()).then_some(0);
+                            state.folder_cursor = state.opening_cursor();
                         } else {
                             state.input.move_right();
                         }

@@ -20,6 +20,7 @@ pub mod profile;
 pub mod rename;
 pub mod resume;
 pub mod scan;
+pub mod scratch;
 pub mod session_cli;
 pub mod session_context;
 pub mod theme;

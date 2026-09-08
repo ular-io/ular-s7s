@@ -125,6 +125,31 @@ Additional rules:
 - Theme selection does not dim its backdrop because the background is the live
   preview.
 
+### Dropdown rows
+
+- The profile and model lists carry a `soft_dim()` note beside each label. The
+  folder list does not: a note on every row doubles the ink without raising the
+  density of the value being scanned. Its labels stay bare basenames.
+- The folder dropdown resolves the focused row instead, in a footer inside the
+  popup: a `┠─┨` divider joined to the thick side borders, then the full path in
+  `soft_dim()`. The footer is what makes basename rows distinguishable before
+  selection, so keep it aligned with the list rows.
+- Reserve the footer rows out of the popup height, and drop the footer when the
+  available height leaves no usable list. A preview never costs the list its last
+  rows.
+- A text-input combo box paints a whole-value selection
+  ([terminal-input-hardening.md](./terminal-input-hardening.md)) with the
+  selection colors, and its dropdown opens with the highlight left in the input
+  instead of on a row: while the selection is live the value is the subject, and
+  the footer names both ways out of it (replace by typing, edit with `→`).
+- A fixed option (the folder dropdown's `[SCRATCH]` row) renders outside the
+  query-ordered list and always first. With no note column, its label carries the
+  distinction: bracketed and upper case against bare basenames.
+- Do not encode a fixed option as an entry of the data list: query reordering
+  moves it, and the cursor then addresses the wrong row.
+- The selected-row style is applied over span styles, so a note or footer stays
+  dim on the cursor row. Never make one the only signal a row is selected.
+
 ## Preview omission and expansion
 
 - A user turn of at most eight original lines is shown in full. Longer turns

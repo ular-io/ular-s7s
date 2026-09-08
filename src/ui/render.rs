@@ -621,7 +621,7 @@ pub(crate) fn session_meta_lines(
         MetaGrid {
             heading: "Session",
             heading_hint: None,
-            folder: &s.folder,
+            folder: crate::scratch::folder_label(&s.cwd, &s.folder),
             full_path: &s.cwd.to_string_lossy(),
             title: &s.title(),
             extra_rows: &[
@@ -666,7 +666,7 @@ pub(crate) fn context_source_lines(
                 // a context-derived session, and the hint only when the source is
                 // actually reachable (the unresolved arm below passes None).
                 heading_hint: Some(CONTEXT_SOURCE_JUMP_HINT),
-                folder: &s.folder,
+                folder: crate::scratch::folder_label(&s.cwd, &s.folder),
                 full_path: &s.cwd.to_string_lossy(),
                 title: &s.title(),
                 extra_rows: &[],
@@ -1388,6 +1388,7 @@ mod tests {
         let state = TextInput {
             value: "앞뒤".to_string(),
             cursor: "앞".len(),
+            select_all: false,
         };
 
         assert_eq!(input_view(&state, 10), ("앞뒤".to_string(), 2));
@@ -1398,6 +1399,7 @@ mod tests {
         let state = TextInput {
             value: "가나다라마바사".to_string(),
             cursor: "가나다라마바사".len(),
+            select_all: false,
         };
 
         assert_eq!(input_view(&state, 5), ("바사".to_string(), 4));
@@ -1801,6 +1803,7 @@ mod tests {
             input: TextInput {
                 value: String::new(),
                 cursor: 0,
+                select_all: false,
             },
             folders: Vec::new(),
             ordered: Vec::new(),
@@ -1810,6 +1813,88 @@ mod tests {
             error: None,
             context,
         }
+    }
+
+    /// Folder rows are bare basenames, so two things must hold: the scratch row is
+    /// marked in its own label, and the footer resolves the focused row's full path
+    /// before it is selected.
+    #[test]
+    fn folder_dropdown_marks_the_scratch_row_and_shows_a_path_footer() {
+        let mut app = session_app();
+        app.theme = crate::theme::default_theme();
+        app.mode = crate::ui::UiMode::NewSession;
+        let mut state = new_session_state(None);
+        state.focus = crate::ui::NewSessionFocus::Folder;
+        state.dropdown_open = true;
+        state.folders = vec![std::path::PathBuf::from("/tmp/work/web")];
+        state.reorder_folders();
+        state.folder_cursor = Some(1); // The folder row, so the footer resolves its path.
+        app.new_session = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 34)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        let text = buffer_text(&terminal);
+        assert!(text.contains("[SCRATCH]"));
+        // Rows carry the basename alone; the full path belongs to the footer.
+        assert!(text.contains("web"));
+        assert!(text.contains("/tmp/work/web"));
+        // Divider ends are joined to the popup's thick side borders.
+        assert!(text.contains("┠"));
+        assert!(text.contains("┨"));
+
+        let (footer_x, footer_y) = find_cell(&terminal, "/tmp/work/web");
+        let (label_x, label_y) = find_cell(&terminal, "[SCRATCH]");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(footer_x, footer_y)].fg, app.theme.muted);
+        assert_ne!(buffer[(label_x, label_y)].fg, app.theme.muted);
+    }
+
+    /// A whole-value selection has to be visible before the first key: the value is
+    /// painted like a selected row, and the footer names both ways out of it.
+    #[test]
+    fn folder_input_paints_a_selected_prefill_and_hints_both_flows() {
+        let mut app = session_app();
+        app.theme = crate::theme::default_theme();
+        app.mode = crate::ui::UiMode::NewSession;
+        let mut state = new_session_state(None);
+        state.focus = crate::ui::NewSessionFocus::Folder;
+        state.input = TextInput::selected("/tmp/work/web".to_string());
+        state.folders = vec![std::path::PathBuf::from("/tmp/work/web")];
+        state.reorder_folders();
+        state.dropdown_open = true;
+        state.folder_cursor = state.opening_cursor();
+        app.new_session = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 34)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        assert!(buffer_text(&terminal).contains("type to replace · → to edit"));
+
+        let (value_x, value_y) = find_cell(&terminal, "/tmp/work/web");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(value_x, value_y)].bg, app.theme.selection_bg);
+        assert_eq!(buffer[(value_x, value_y)].fg, app.theme.selection_fg);
+    }
+
+    /// The scratch row's footer must state the purge before the session starts,
+    /// not only inside the policy file the agent reads afterwards.
+    #[test]
+    fn folder_dropdown_footer_warns_the_scratch_folder_is_cleared() {
+        let mut app = session_app();
+        app.theme = crate::theme::default_theme();
+        app.mode = crate::ui::UiMode::NewSession;
+        let mut state = new_session_state(None);
+        state.focus = crate::ui::NewSessionFocus::Folder;
+        state.dropdown_open = true;
+        state.folders = vec![std::path::PathBuf::from("/tmp/work/web")];
+        state.reorder_folders();
+        state.folder_cursor = Some(0); // The scratch row, where the dropdown opens.
+        app.new_session = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 34)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        let text = buffer_text(&terminal);
+        assert!(text.contains("shared, cleared on each start"));
+        assert!(text.contains("s7s/scratch"));
     }
 
     #[test]
