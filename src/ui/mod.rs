@@ -30,13 +30,11 @@ pub use session::state::Focus;
 
 use crate::config::Config;
 use crate::filter::{self, Filter};
-use crate::model::{Agent, Session};
+use crate::model::Session;
 use crate::models::{self, ModelCatalog};
 use crate::profile::ProfileStore;
 use crate::usage::{self, UsagePhase, UsageState};
-use anyhow::{anyhow, Context, Result};
 use background::BackgroundState;
-use std::fs;
 use std::path::PathBuf;
 
 /// Main screen variants. Cycled/switched via Quick Command (`:`) window commands or ←/→ arrows.
@@ -661,77 +659,6 @@ impl App {
     pub fn begin_quit_grace(&mut self) {
         const QUIT_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
         self.quit_grace_until = Some(std::time::Instant::now() + QUIT_GRACE);
-    }
-
-    fn delete_session_artifacts(&self, session: &Session) -> Result<()> {
-        let Some(source_path) = session.source_path.as_ref() else {
-            return Err(anyhow!("source path is missing"));
-        };
-
-        self.remove_file_best_effort(source_path)
-            .with_context(|| format!("remove {}", source_path.display()))?;
-
-        if session.agent == Agent::Antigravity {
-            // Best-effort cache cleanup; skipped when the owning profile is gone
-            // (never touch another profile's metadata store).
-            if let Some(root) = self.session_profile_root(session) {
-                let _ = self.remove_antigravity_metadata(&root, session.id.as_str());
-            }
-            self.remove_sqlite_sidecars(source_path);
-        }
-
-        Ok(())
-    }
-
-    /// Config root (`Profile.path`) of the profile a session belongs to.
-    /// Sessions are re-stamped with live profile ids on every scan, so a miss
-    /// means a stale list — callers must not fall back to the default root.
-    fn session_profile_root(&self, session: &Session) -> Option<std::path::PathBuf> {
-        self.profiles
-            .find(&session.profile_id)
-            .map(|p| p.path.clone())
-    }
-
-    fn remove_file_best_effort(&self, path: &std::path::Path) -> Result<()> {
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(err.into()),
-        }
-    }
-
-    fn remove_sqlite_sidecars(&self, db_path: &std::path::Path) {
-        for suffix in ["-wal", "-shm", "-journal"] {
-            let mut sidecar = db_path.to_path_buf();
-            let name = match db_path.file_name().and_then(|s| s.to_str()) {
-                Some(name) => format!("{name}{suffix}"),
-                None => continue,
-            };
-            sidecar.set_file_name(name);
-            let _ = fs::remove_file(sidecar);
-        }
-    }
-
-    fn remove_antigravity_metadata(&self, profile_root: &std::path::Path, id: &str) -> Result<()> {
-        let path = profile_root.join("cache/conversation_metadata.json");
-        let data = match fs::read_to_string(&path) {
-            Ok(data) => data,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => return Err(err.into()),
-        };
-        let mut root: serde_json::Value = match serde_json::from_str(&data) {
-            Ok(v) => v,
-            Err(_) => return Ok(()),
-        };
-        if let Some(conversations) = root
-            .get_mut("conversations")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            conversations.remove(id);
-            let bytes = serde_json::to_vec_pretty(&root)?;
-            fs::write(&path, bytes)?;
-        }
-        Ok(())
     }
 }
 

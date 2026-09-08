@@ -23,6 +23,7 @@ pub mod scan;
 pub mod scratch;
 pub mod session_cli;
 pub mod session_context;
+pub mod session_delete;
 pub mod theme;
 pub mod title;
 pub mod ui;

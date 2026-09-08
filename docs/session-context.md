@@ -134,6 +134,56 @@ s7s session search <QUERY...> [--folder <NAME>]... [--agent <AGENT>]...
 - Primary output goes to stdout; diagnostics go to stderr. Exit codes are 0 for
   success, 2 for argument errors, and 1 for lookup/parsing failure.
 
+### List
+
+```text
+s7s session list [--folder <NAME>]... [--agent <AGENT>]...
+                 [--profile <ID>]... [--limit <N>]
+```
+
+- Same filters, order, and row shape as `search`, with no keyword. `search`
+  cannot express "the recent sessions of this folder" because its query is
+  mandatory; that gap is the reason `list` exists.
+- An empty `Filter.keyword` matches every session, so a bare `list` enumerates
+  the whole index capped by `--limit`.
+- An unknown `--profile` warns and is kept as a filter value (matching nothing),
+  mirroring `search`: for a discovery command an up-front notice beats an
+  unexplained empty result.
+
+### Rename
+
+```text
+s7s session rename <SESSION_ID> <TITLE> [--agent <AGENT>] [--profile <ID>]
+```
+
+- Resolves the ID exactly like `show`, then calls the same `rename::rename_session`
+  the TUI uses, so both paths write through one implementation.
+- Metadata paths derive from the owning profile. A session whose profile is gone
+  is an error, never a write against the default root.
+- The stored title is re-read after the write and printed as `before:`/`after:`.
+  A write that reports success while the stored title is unchanged exits 1: an
+  agent CLI exit code is never trusted on its own.
+- The re-read confirms what **s7s** parses, which is not the same as what the
+  owning agent CLI displays — see
+  [session-title-compat.md](./session-title-compat.md) for the per-agent stores
+  and their verification state.
+
+### Delete
+
+```text
+s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
+```
+
+- Irreversible: the transcript file is removed, not archived, and s7s keeps no
+  copy.
+- Without `--yes` nothing is removed. The resolved target is printed with its
+  source path and the command exits 1, so a script cannot read the refusal as
+  success.
+- Deletion runs through `session_delete::delete_session_artifacts`, shared with
+  the TUI delete action, so both obey the same profile scoping: auxiliary stores
+  (Antigravity metadata, sqlite sidecars) are only touched under the owning
+  profile's root, and are skipped entirely when that profile is gone.
+
 ## Excerpts and redaction
 
 - Redact before rendering or caching searchable assistant text.

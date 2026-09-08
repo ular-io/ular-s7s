@@ -13,7 +13,7 @@ verification details belong to the domain documents routed from `AGENTS.md`.
 | --- | --- |
 | `s7s` | `runtime::run_loop` driving `ui::App` |
 | `s7s <dir>` | `runtime::resolve_startup_dir` then the New Session dialog |
-| `s7s session show/search` | `session_cli::run` |
+| `s7s session show/search/list/rename/delete` | `session_cli::run` |
 | `s7s --print`, `--rebuild-cache` | `runtime`, `scan`, `cache` |
 | `s7s --usage-probe`, `--model-probe` | `usage`, `models`, `probe` |
 | `s7s demo` | `demo` |
@@ -179,6 +179,7 @@ index is a disposable cache.
 | --- | --- | --- |
 | Scan, list, filter | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | `session-context.md` when turn selection changes |
 | Rename/title | `rename.rs`, `title.rs`, parser title paths | `session-title-compat.md` |
+| Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli.rs`) | `session-context.md` §Delete |
 | Detailed context/CLI | `session_context/*`, `session_cli.rs` | `session-context.md` |
 | Usage/model probes | `usage.rs`, `models.rs`, `probe/*` | `usage-display.md`, `models.md` |
 | Profiles/env injection | `profile.rs`, `resume.rs`, `ui/profile/*` | `profiles.md` |

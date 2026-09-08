@@ -21,6 +21,7 @@ planning; backlog entries are not implementation authorization.
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
 | Scratch workspace (`src/scratch.rs`, folder dropdown `[SCRATCH]` row) | [architecture.md](./docs/architecture.md) §Scratch workspace + [testing.md](./docs/testing.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
+| Session deletion (`src/session_delete.rs`, shared by the TUI action and `s7s session delete`) | [session-context.md](./docs/session-context.md) §Delete + [testing.md](./docs/testing.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |
@@ -74,13 +75,15 @@ authoritative matrix; the essentials:
   real-kitty `ctrl+shift+n`). Current gaps are tracked in
   [backlog.md](./docs/backlog.md); the detailed procedures live in
   [testing.md](./docs/testing.md).
-- **Codex 0.147 rewrote its rollout event stream** and two consequences are still
-  unverified, because neither could be reproduced from the sessions on disk:
+- **Codex 0.147 rewrote its rollout event stream** and two consequences remain
+  open, because neither can be settled from the sessions on disk alone:
   - Whether the `thread_rolled_back` marker survived the move to the
     `item_completed` item stream. If it was renamed, rolled-back turns reappear
     in both the list and the detail view. Verify with a real esc-esc rewind
     ([testing.md](./docs/testing.md) rewind row).
-  - Whether renames still land in `~/.codex/session_index.jsonl`. It has not been
-    written since the upgrade, and 0.147 added a `local_thread_catalog`
-    (`display_title`) table in `~/.codex/sqlite/codex-*.db` that may have replaced
-    it. Verify with a real rename ([session-title-compat.md](./docs/session-title-compat.md)).
+  - Which store the codex CLI reads for a session title. An s7s rename writes
+    `session_index.jsonl` and `state_*.sqlite` but leaves
+    `local_thread_catalog.display_title` (added in 0.147, in
+    `~/.codex/sqlite/codex-*.db`) holding the old title, so the three stores
+    disagree after every rename. Rename **inside the codex CLI** and diff all
+    three ([session-title-compat.md](./docs/session-title-compat.md)).

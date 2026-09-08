@@ -5,9 +5,8 @@
 //! `App` open/cancel/confirm and key handling for both dialogs, and their
 //! rendering. The rename state types are re-exported from `ui` so the existing
 //! `crate::ui::{RenameFocus, RenameModalState}` paths stay stable. The
-//! session-deletion filesystem work (`delete_session_artifacts` and its
-//! helpers) stays in `ui::mod` as session manipulation, not overlay logic;
-//! `confirm_delete` reaches it descendant-to-ancestor without widening.
+//! session-deletion filesystem work lives in `crate::session_delete`, shared
+//! with `s7s session delete`, so the overlay only enqueues the effect.
 
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
 use crate::ui::components::text::truncate_w;

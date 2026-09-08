@@ -2,7 +2,8 @@
 
 > Status: Current and version-sensitive
 > Read when: Changing title parsing, rename behavior, or agent storage paths.
-> Entry points: `src/rename.rs`, `src/title.rs`, agent list parsers
+> Entry points: `src/rename.rs`, `src/title.rs`, agent list parsers,
+> `s7s session rename` (`src/session_cli.rs`)
 
 The session title processing logic of `s7s` strongly depends on the internal storage structures of external agent CLIs.
 These storage structures and rename behaviors can change at any time during agent upgrades.
@@ -96,12 +97,19 @@ in `title::resolve`.
 - title index: `~/.codex/session_index.jsonl`
 - title DB: `threads.title` in `~/.codex/state_*.sqlite`
 
-> **Unverified since codex 0.147.** `session_index.jsonl` has not been written
-> since the upgrade, and 0.147 added a `local_thread_catalog` table
-> (`thread_id`, `display_title`) in `~/.codex/sqlite/codex-*.db` that may have
-> replaced it as the rename target. Neither store can be ruled out from the files
-> on disk alone — perform a real rename in the CLI and observe which file
-> actually changes before adjusting the write paths below.
+> **Third store confirmed on codex 0.147, and s7s does not write it.**
+> A real rename through `s7s session rename` (2026-09-08) showed the write
+> landing in `session_index.jsonl` (`thread_name`) and `state_5.sqlite`
+> (`threads.title`), while `local_thread_catalog.display_title` in
+> `~/.codex/sqlite/codex-dev.db` kept the old title. The catalog row exists and
+> is populated for the same `thread_id`, so codex 0.147 maintains it
+> independently. The three stores therefore disagree after any s7s rename.
+>
+> Still unverified: which store the codex CLI reads for display, and whether
+> codex itself still writes `session_index.jsonl` (it has not been written by
+> codex since the upgrade — only by s7s). Perform a rename **inside the codex
+> CLI** and diff all three stores before choosing the write set. Until then a
+> reported rename success only means s7s's own parse sees the new title.
 
 ### Title fields
 
@@ -118,6 +126,8 @@ in `title::resolve`.
 
 - Update `thread_name` in `session_index.jsonl`
 - Update `threads.title` in `state_*.sqlite`
+- `local_thread_catalog.display_title` in `~/.codex/sqlite/codex-*.db` is **not**
+  written — see the warning above
 
 ### Verified behavior
 
@@ -170,6 +180,10 @@ in `title::resolve`.
 - All meta paths written to by rename are derived from the **config root of the profile the session belongs to** (`Profile.path`) (`rename_session(&Profile, ...)`). The default path notations like `~/.claude` in the sections above are examples based on the builtin profile; sessions of additional profiles are recorded in their respective profile roots. If the profile is not found, it aborts the rename without falling back to the default path (prevents cross-account recording).
 - External CLI renames are only considered successful when an "actual file change" is verified.
 - Do not trust the exit code before confirming success.
+- `s7s session rename` re-reads the stored title after writing and fails when it
+  does not match the requested one. This proves the store s7s parses changed; it
+  does not prove the owning agent CLI displays the new title (see the Codex
+  warning above).
 - For agents where external CLI renaming is unverified, maintain the direct storage update method.
 - Metadata must also be reapplied even in cache reuse paths.
 - If the storage structure changes, consider bumping the cache version.

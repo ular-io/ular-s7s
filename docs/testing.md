@@ -21,6 +21,7 @@ the change area below and run every check listed for it.
 | Probe working directory / trust handling | `--usage-probe` **and** `--model-probe` from a folder whose `.claude/settings.json` pre-approves permissions (the case that used to fail): every profile must come back `Ready`. To cover auto-confirm, first drop the probe folder from agy's `trustedWorkspaces` so the dialog is actually raised — agy must re-add it on its own | [usage-display.md](./usage-display.md) |
 | Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
 | Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
+| `s7s session` mutating subcommands (`rename`, `delete`) | Run both against a disposable session and confirm the on-disk effect, not just the exit code | §Session CLI mutation checks below |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
 | Session activity time / Updated ordering | `cargo test real_data_index_snapshot -- --ignored --nocapture`; compare Updated against the real CLI record, then resume and exit without input and verify it is unchanged | §Session activity checks below |
 | Scratch workspace (`scratch.rs`, the folder dropdown `[SCRATCH]` row) | Start a session on the `[SCRATCH]` row, write a file into the folder from inside the session, exit, and start again: the file must be gone and both policy files present with their current text. Confirm the agent asks for a target directory instead of writing there or picking its own path | [architecture.md](./architecture.md) §Scratch workspace |
@@ -71,6 +72,29 @@ If rename/session-title logic has been changed or an external CLI has upgraded, 
 6. Rescan the list after restarting the app
 7. Verify the title is retained even after `--rebuild-cache`
 
+## Session CLI mutation checks
+
+`rename` and `delete` change storage from outside the TUI, so an exit code is
+not evidence. Use a disposable session rather than a real one.
+
+1. Write a minimal transcript into a throwaway project folder of a real profile
+   — for Claude, `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` with one `user`
+   record carrying `cwd` and `sessionId`.
+2. `s7s session list --folder <name>` must show it with its ID.
+3. `s7s session rename <id> "<title>"` must print `before:`/`after:`, and the
+   storage file must actually carry the new title (for Claude: `custom-title` and
+   `agent-name` events appended, plus `name`/`nameSource` in
+   `~/.claude/sessions/<id>.json`).
+4. `s7s session delete <id>` **without** `--yes` must remove nothing, print the
+   resolved target with its source path, and exit 1.
+5. `s7s session delete <id> --yes` must remove the transcript; a following
+   `session list` must no longer find it.
+6. Remove the throwaway folder and any meta file the rename created.
+
+Exit codes to confirm: 0 on success, 1 for an unresolved ID, a missing profile,
+or a declined delete, and 2 for argument errors (a missing rename title, an
+unknown `--agent`).
+
 ## Agent-specific manual checks
 
 ### Claude
@@ -84,7 +108,7 @@ If rename/session-title logic has been changed or an external CLI has upgraded, 
 
 - Check `thread_name` in `~/.codex/session_index.jsonl`
 - Check `threads.title` in `~/.codex/state_*.sqlite`
-- Check `display_title` in `local_thread_catalog` of `~/.codex/sqlite/codex-*.db` — a store 0.147 added; confirm whether a rename now lands here instead of `session_index.jsonl`
+- Check `display_title` in `local_thread_catalog` of `~/.codex/sqlite/codex-*.db` — a store 0.147 added. An s7s rename does **not** write it (verified 2026-09-08), so the three stores disagree afterwards; rename inside the codex CLI to find out which one it reads
 - Verify any changes in the behavior of non-interactive `codex exec resume <id> "/rename ..."`
 
 ### Antigravity

@@ -1,21 +1,25 @@
-//! `s7s session` subcommand group: query previous sessions without the TUI.
+//! `s7s session` subcommand group: query and manage previous sessions without the TUI.
 //!
 //! Subcommands:
 //!   show <id>       Render one session's context (reference / --turn / --bootstrap).
 //!   search <query>  List sessions matching a keyword (+ folder/agent/profile filters).
+//!   list            List sessions by filter only, with no keyword.
+//!   rename <id> <t> Set one session's display title.
+//!   delete <id>     Remove one session's on-disk artifacts (irreversible).
 //!
 //! Output discipline: primary output goes to stdout, errors/diagnostics to
 //! stderr, no ANSI styling, no scan spinner. Exit codes: 0 success, 2 invalid
-//! arguments (clap), 1 for lookup/parse failures.
+//! arguments (clap), 1 for lookup/parse failures. `delete` without `--yes` also
+//! exits 1: nothing was removed, so it must not read as success in a script.
 
 use crate::filter::Filter;
-use crate::model::Agent;
+use crate::model::{Agent, Session};
 use crate::profile::ProfileStore;
 use crate::session_context::{self, render, resolve, ContextCompleteness};
 use clap::{Args, Subcommand};
 use std::collections::HashSet;
 
-/// Query previous sessions (context and search).
+/// Query and manage previous sessions (search/list, show, rename, delete).
 #[derive(Args, Debug)]
 pub struct SessionArgs {
     #[command(subcommand)]
@@ -28,6 +32,12 @@ pub enum SessionCommand {
     Show(ShowArgs),
     /// Search sessions by keyword (optionally filtered by folder/agent/profile)
     Search(SearchArgs),
+    /// List sessions by filter only, without a keyword
+    List(ListArgs),
+    /// Set one session's display title
+    Rename(RenameArgs),
+    /// Delete one session's on-disk artifacts (irreversible)
+    Delete(DeleteArgs),
 }
 
 /// Render one previous session's context.
@@ -116,70 +126,165 @@ pub struct SearchArgs {
     pub limit: usize,
 }
 
+/// List sessions with no keyword, narrowed by filters only.
+#[derive(Args, Debug)]
+#[command(after_help = "\
+FILTERS:
+  All filters are AND'd; repeating an option OR's its values. Folder matches the
+  cwd basename exactly. With no filter at all every session is listed, so
+  --limit applies (0 = no cap). Results are most-recent first.
+
+USE search INSTEAD WHEN:
+  A keyword is known. `list` exists for \"the recent sessions of this folder\",
+  which `search` cannot express because its query is mandatory.
+
+EXAMPLES:
+  s7s session list --folder ular-s7s --limit 10
+  s7s session list --agent codex --agent claude
+  s7s session list --profile builtin-claude --limit 0")]
+pub struct ListArgs {
+    /// Restrict to folder name(s) (cwd basename, exact match; repeatable → OR)
+    #[arg(long, value_name = "NAME")]
+    pub folder: Vec<String>,
+    /// Restrict to agent(s) (repeatable → OR)
+    #[arg(long, value_parser = ["claude", "codex", "antigravity"])]
+    pub agent: Vec<String>,
+    /// Restrict to profile ID(s) (repeatable → OR)
+    #[arg(long, value_name = "ID")]
+    pub profile: Vec<String>,
+    /// Maximum number of results, most recent first (0 = no limit)
+    #[arg(long, default_value_t = 20, value_name = "N")]
+    pub limit: usize,
+}
+
+/// Set the display title of one session.
+#[derive(Args, Debug)]
+#[command(after_help = "\
+STORAGE:
+  The title is written to the storage of the agent that owns the session, under
+  the config root of the session's own profile. Claude is renamed through its
+  CLI first and verified against the transcript; Codex and Antigravity are
+  written directly because their CLI rename paths are unverified.
+
+VERIFICATION:
+  The stored title is re-read after the write and printed. A rename that reports
+  success but leaves the stored title unchanged exits non-zero — an exit code
+  from the agent CLI is never trusted on its own.
+
+EXAMPLES:
+  s7s session rename 019f36e8-9157-7c63-bee8-8937a6314982 \"cache rebuild bug\"
+  s7s session rename 019f36e8-9157-7c63-bee8-8937a6314982 \"rewind parity\" --agent codex")]
+pub struct RenameArgs {
+    /// Full session ID to rename
+    pub session_id: String,
+    /// New display title (single line; surrounding whitespace is trimmed)
+    pub title: String,
+    /// Restrict resolution to one agent
+    #[arg(long, value_parser = ["claude", "codex", "antigravity"])]
+    pub agent: Option<String>,
+    /// Restrict resolution to one profile ID (e.g. builtin-claude)
+    #[arg(long)]
+    pub profile: Option<String>,
+}
+
+/// Delete one session's on-disk artifacts.
+#[derive(Args, Debug)]
+#[command(after_help = "\
+IRREVERSIBLE:
+  The transcript file is removed, not archived, and s7s keeps no copy. For
+  Antigravity the conversation metadata entry and the sqlite sidecars go too.
+  There is no undo.
+
+CONFIRMATION:
+  Without --yes nothing is deleted: the target is printed and the command exits
+  non-zero. Pass --yes only after the printed target has been checked.
+
+EXAMPLES:
+  s7s session delete 019f36e8-9157-7c63-bee8-8937a6314982
+  s7s session delete 019f36e8-9157-7c63-bee8-8937a6314982 --yes")]
+pub struct DeleteArgs {
+    /// Full session ID to delete
+    pub session_id: String,
+    /// Restrict resolution to one agent
+    #[arg(long, value_parser = ["claude", "codex", "antigravity"])]
+    pub agent: Option<String>,
+    /// Restrict resolution to one profile ID (e.g. builtin-claude)
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Actually delete; without it the target is only printed
+    #[arg(long)]
+    pub yes: bool,
+}
+
 /// Executes the session subcommand. Returns the process exit code.
 pub fn run(args: &SessionArgs) -> i32 {
     match &args.command {
         SessionCommand::Show(a) => run_show(a),
         SessionCommand::Search(a) => run_search(a),
+        SessionCommand::List(a) => run_list(a),
+        SessionCommand::Rename(a) => run_rename(a),
+        SessionCommand::Delete(a) => run_delete(a),
     }
 }
 
-/// Renders one session's context (reference / --turn / --bootstrap).
-fn run_show(args: &ShowArgs) -> i32 {
+/// Shared resolution for the single-session subcommands (`show`, `rename`,
+/// `delete`): validates a requested profile, parses `--agent`, runs a quiet
+/// scan, then resolves the full session ID.
+///
+/// On failure the diagnostics are already printed and the returned value is the
+/// exit code the caller must propagate.
+fn resolve_target(
+    session_id: &str,
+    agent: Option<&str>,
+    profile: Option<&str>,
+) -> Result<(ProfileStore, Session), i32> {
     let profiles = ProfileStore::load();
 
     // A requested-but-missing profile must fail up front (account safety):
     // never scan and silently resolve against some other profile.
-    if let Some(profile_id) = args.profile.as_deref() {
+    if let Some(profile_id) = profile {
         if profiles.find(profile_id).is_none() {
             eprintln!("error: profile '{profile_id}' does not exist.");
             eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
-            return 1;
+            return Err(1);
         }
     }
 
-    let agent: Option<Agent> = match args.agent.as_deref() {
+    let agent: Option<Agent> = match agent {
         // Values are validated by clap; parse_agent stays as a defensive check.
         Some(raw) => match resolve::parse_agent(raw) {
             Some(a) => Some(a),
             None => {
                 eprintln!("error: unknown agent '{raw}' (claude|codex|antigravity)");
-                return 2;
+                return Err(2);
             }
         },
         None => None,
     };
-
-    if let Some(turn) = args.turn {
-        if turn == 0 {
-            eprintln!("error: --turn is 1-based; 0 is not a valid turn number");
-            return 2;
-        }
-    }
 
     // Quiet incremental scan (no TUI, no spinner). Uses the same mtime cache as
     // the TUI, so repeat queries are cheap.
     let result = crate::scan::scan(&profiles.profiles, false);
 
     let query = resolve::Query {
-        session_id: &args.session_id,
+        session_id,
         agent,
-        profile_id: args.profile.as_deref(),
+        profile_id: profile,
     };
-    let session = match resolve::resolve(&result.sessions, &query) {
-        Ok(s) => s,
+    match resolve::resolve(&result.sessions, &query) {
+        Ok(s) => Ok((profiles, s.clone())),
         Err(resolve::ResolveError::NotFound) => {
-            eprintln!("error: no session found for ID '{}'.", args.session_id);
+            eprintln!("error: no session found for ID '{session_id}'.");
             eprintln!(
                 "hint: use the full session ID; check constraints (--agent/--profile) or \
                  refresh with `s7s --rebuild-cache` if the session is brand new."
             );
-            return 1;
+            Err(1)
         }
         Err(resolve::ResolveError::Ambiguous(candidates)) => {
             eprintln!(
                 "error: session ID '{}' matches {} sessions; disambiguate with --agent/--profile:",
-                args.session_id,
+                session_id,
                 candidates.len()
             );
             for c in candidates {
@@ -190,11 +295,30 @@ fn run_show(args: &ShowArgs) -> i32 {
                     c.title
                 );
             }
-            return 1;
+            Err(1)
         }
+    }
+}
+
+/// Renders one session's context (reference / --turn / --bootstrap).
+fn run_show(args: &ShowArgs) -> i32 {
+    if let Some(turn) = args.turn {
+        if turn == 0 {
+            eprintln!("error: --turn is 1-based; 0 is not a valid turn number");
+            return 2;
+        }
+    }
+
+    let session = match resolve_target(
+        &args.session_id,
+        args.agent.as_deref(),
+        args.profile.as_deref(),
+    ) {
+        Ok((_, session)) => session,
+        Err(code) => return code,
     };
 
-    let ctx = session_context::load(session);
+    let ctx = session_context::load(&session);
 
     // Bootstrap must never claim success when the expected full context could
     // not be parsed; the bootstrap prompt tells the agent to report failures.
@@ -257,40 +381,198 @@ fn run_search(args: &SearchArgs) -> i32 {
     let result = crate::scan::scan(&profiles.profiles, false);
     let indices = crate::filter::apply(&result.sessions, &filter);
 
-    let total = indices.len();
-    let shown = if args.limit == 0 {
-        total
-    } else {
-        total.min(args.limit)
-    };
-
-    if total == 0 {
+    if indices.is_empty() {
         println!("No sessions matched.");
         return 0;
     }
 
+    print_session_rows(&result.sessions, &indices, args.limit, "match(es)");
+    0
+}
+
+/// Lists sessions narrowed by filters only, with no keyword.
+fn run_list(args: &ListArgs) -> i32 {
+    let profiles = ProfileStore::load();
+
+    // Warn (don't fail) on an unknown --profile, matching `search`: an empty
+    // result set from a typo is more confusing than an up-front notice.
+    for profile_id in &args.profile {
+        if profiles.find(profile_id).is_none() {
+            eprintln!("warning: profile '{profile_id}' does not exist (ignored).");
+            eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
+        }
+    }
+
+    let agents: HashSet<Agent> = args
+        .agent
+        .iter()
+        // clap validates the values; parse_agent stays as a defensive check.
+        .filter_map(|a| resolve::parse_agent(a))
+        .collect();
+
+    // An empty keyword matches every session, so this is the filter-only view.
+    let filter = Filter {
+        keyword: String::new(),
+        agents,
+        folders: args.folder.iter().cloned().collect(),
+        profile_ids: args.profile.iter().cloned().collect(),
+    };
+
+    let result = crate::scan::scan(&profiles.profiles, false);
+    let indices = crate::filter::apply(&result.sessions, &filter);
+
+    if indices.is_empty() {
+        println!("No sessions matched.");
+        return 0;
+    }
+
+    print_session_rows(&result.sessions, &indices, args.limit, "session(s)");
+    0
+}
+
+/// Sets one session's display title, then re-reads the stored title to confirm
+/// the write actually landed.
+fn run_rename(args: &RenameArgs) -> i32 {
+    let (profiles, session) = match resolve_target(
+        &args.session_id,
+        args.agent.as_deref(),
+        args.profile.as_deref(),
+    ) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    // Metadata paths and the Claude CLI env derive from the owning profile;
+    // never fall back to the default root (wrong account store for extra
+    // profiles).
+    let Some(profile) = profiles.find(&session.profile_id).cloned() else {
+        eprintln!(
+            "error: profile '{}' of this session no longer exists.",
+            session.profile_id
+        );
+        eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
+        return 1;
+    };
+
+    let before = session.title();
+    if let Err(err) = crate::rename::rename_session(&profile, &session, &args.title) {
+        eprintln!("error: rename failed: {err}");
+        return 1;
+    }
+
+    // An exit code is never trusted on its own: re-scan and compare the stored
+    // title against what was asked for.
+    let expected = crate::model::one_line(&args.title).trim().to_string();
+    match reread_title(&profiles, &session) {
+        Some(stored) if stored == expected => {
+            println!("Renamed [{}] {}", session.agent.key(), session.id);
+            println!("  before: {}", crate::model::one_line(&before));
+            println!("  after:  {stored}");
+            0
+        }
+        Some(stored) => {
+            eprintln!(
+                "error: rename reported success but the stored title is still '{}'.",
+                crate::model::one_line(&stored)
+            );
+            eprintln!(
+                "hint: the agent CLI may have changed its title storage; see \
+                 docs/session-title-compat.md."
+            );
+            1
+        }
+        None => {
+            eprintln!("error: the session could not be re-read after the rename.");
+            eprintln!("hint: verify the storage file directly before trusting the result.");
+            1
+        }
+    }
+}
+
+/// Re-reads one session's stored title after a write. Returns `None` when the
+/// session is no longer resolvable (a missing store, not an unchanged title).
+fn reread_title(profiles: &ProfileStore, session: &Session) -> Option<String> {
+    let result = crate::scan::scan(&profiles.profiles, false);
+    let query = resolve::Query {
+        session_id: &session.id,
+        agent: Some(session.agent),
+        profile_id: Some(&session.profile_id),
+    };
+    resolve::resolve(&result.sessions, &query)
+        .ok()
+        .map(|s| s.title())
+}
+
+/// Deletes one session's on-disk artifacts. Without `--yes` the target is only
+/// printed, because the removal cannot be undone.
+fn run_delete(args: &DeleteArgs) -> i32 {
+    let (profiles, session) = match resolve_target(
+        &args.session_id,
+        args.agent.as_deref(),
+        args.profile.as_deref(),
+    ) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+
+    let source = session
+        .source_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(source path missing)".to_string());
+
+    if !args.yes {
+        println!("Would delete this session (nothing was removed):");
+        print_session_row(&session);
+        println!("    file: {source}");
+        println!("\nRe-run with --yes to delete it. This cannot be undone.");
+        return 1;
+    }
+
+    if let Err(err) = crate::session_delete::delete_session_artifacts(&profiles, &session) {
+        eprintln!("error: delete failed: {err}");
+        return 1;
+    }
+
+    println!("Deleted this session:");
+    print_session_row(&session);
+    println!("    file: {source}");
+    0
+}
+
+/// Prints one session as an identity line plus its title. Every subcommand that
+/// names a session uses this, so a session looks the same in a list, in a delete
+/// preview, and in a delete report.
+fn print_session_row(session: &Session) {
+    println!(
+        "  {}  {}/{}  [{}]  {}  Q{}",
+        session.id,
+        session.agent.key(),
+        session.profile_id,
+        session.folder,
+        session.updated_str(),
+        session.user_turns.len(),
+    );
+    println!("    {}", crate::model::one_line(&session.title()));
+}
+
+/// Prints a capped, most-recent-first block of session rows with a count header.
+/// Shared by `list` and `search` so both emit the same shape.
+fn print_session_rows(sessions: &[Session], indices: &[usize], limit: usize, noun: &str) {
+    let total = indices.len();
+    let shown = if limit == 0 { total } else { total.min(limit) };
+
     if total == shown {
-        println!("{total} match(es), most recent first:\n");
+        println!("{total} {noun}, most recent first:\n");
     } else {
-        println!("{total} match(es), most recent first (showing {shown}):\n");
+        println!("{total} {noun}, most recent first (showing {shown}):\n");
     }
 
     for &idx in indices.iter().take(shown) {
-        let s = &result.sessions[idx];
-        println!(
-            "  {}  {}/{}  [{}]  {}  Q{}",
-            s.id,
-            s.agent.key(),
-            s.profile_id,
-            s.folder,
-            s.updated_str(),
-            s.user_turns.len(),
-        );
-        println!("    {}", crate::model::one_line(&s.title()));
+        print_session_row(&sessions[idx]);
     }
 
     println!("\nRead one:  s7s session show <ID> --agent <AGENT> --profile <PROFILE> [--turn N]");
-    0
 }
 
 /// Comma-separated list of configured profile IDs (for error/warning hints).
@@ -336,6 +618,27 @@ mod tests {
         parse(args).map(|s| match s.command {
             SessionCommand::Search(a) => a,
             _ => panic!("expected search subcommand"),
+        })
+    }
+
+    fn list(args: &[&str]) -> Result<ListArgs, clap::Error> {
+        parse(args).map(|s| match s.command {
+            SessionCommand::List(a) => a,
+            _ => panic!("expected list subcommand"),
+        })
+    }
+
+    fn rename(args: &[&str]) -> Result<RenameArgs, clap::Error> {
+        parse(args).map(|s| match s.command {
+            SessionCommand::Rename(a) => a,
+            _ => panic!("expected rename subcommand"),
+        })
+    }
+
+    fn delete(args: &[&str]) -> Result<DeleteArgs, clap::Error> {
+        parse(args).map(|s| match s.command {
+            SessionCommand::Delete(a) => a,
+            _ => panic!("expected delete subcommand"),
         })
     }
 
@@ -443,5 +746,86 @@ mod tests {
         assert!(search(&["s7s", "session", "search", "x", "--agent", "gpt"]).is_err());
         // Non-numeric limit fails.
         assert!(search(&["s7s", "session", "search", "x", "--limit", "many"]).is_err());
+    }
+
+    #[test]
+    fn list_takes_filters_without_a_query() {
+        let l = list(&[
+            "s7s",
+            "session",
+            "list",
+            "--folder",
+            "ular-s7s",
+            "--folder",
+            "ular-card",
+            "--agent",
+            "claude",
+            "--profile",
+            "builtin-claude",
+            "--limit",
+            "5",
+        ])
+        .expect("parse");
+        assert_eq!(l.folder, vec!["ular-s7s", "ular-card"]);
+        assert_eq!(l.agent, vec!["claude"]);
+        assert_eq!(l.profile, vec!["builtin-claude"]);
+        assert_eq!(l.limit, 5);
+
+        // No filter at all is valid: it lists everything, capped by --limit.
+        let bare = list(&["s7s", "session", "list"]).expect("parse");
+        assert!(bare.folder.is_empty());
+        assert_eq!(bare.limit, 20);
+
+        // A positional keyword belongs to `search`, not `list`.
+        assert!(list(&["s7s", "session", "list", "rename"]).is_err());
+        assert!(list(&["s7s", "session", "list", "--agent", "gpt"]).is_err());
+    }
+
+    #[test]
+    fn rename_requires_both_id_and_title() {
+        let r = rename(&[
+            "s7s",
+            "session",
+            "rename",
+            "abc-def",
+            "cache rebuild bug",
+            "--agent",
+            "codex",
+            "--profile",
+            "builtin-codex",
+        ])
+        .expect("parse");
+        assert_eq!(r.session_id, "abc-def");
+        assert_eq!(r.title, "cache rebuild bug");
+        assert_eq!(r.agent.as_deref(), Some("codex"));
+        assert_eq!(r.profile.as_deref(), Some("builtin-codex"));
+
+        // A missing title must fail rather than rename to an empty string.
+        assert!(parse(&["s7s", "session", "rename", "abc-def"]).is_err());
+        assert!(parse(&["s7s", "session", "rename"]).is_err());
+    }
+
+    #[test]
+    fn delete_defaults_to_no_confirmation() {
+        let d = delete(&["s7s", "session", "delete", "abc-def"]).expect("parse");
+        assert_eq!(d.session_id, "abc-def");
+        // The destructive flag must never default to on.
+        assert!(!d.yes);
+
+        let confirmed = delete(&[
+            "s7s",
+            "session",
+            "delete",
+            "abc-def",
+            "--agent",
+            "antigravity",
+            "--yes",
+        ])
+        .expect("parse");
+        assert!(confirmed.yes);
+        assert_eq!(confirmed.agent.as_deref(), Some("antigravity"));
+
+        assert!(parse(&["s7s", "session", "delete"]).is_err());
+        assert!(delete(&["s7s", "session", "delete", "abc", "--agent", "gpt"]).is_err());
     }
 }

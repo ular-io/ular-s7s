@@ -230,7 +230,8 @@ impl App {
             self.status_msg = Some("Delete target no longer exists".to_string());
             return;
         };
-        if let Err(err) = self.delete_session_artifacts(&session) {
+        if let Err(err) = crate::session_delete::delete_session_artifacts(&self.profiles, &session)
+        {
             self.status_msg = Some(format!("Delete failed: {err}"));
             return;
         }

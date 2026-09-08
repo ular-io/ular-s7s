@@ -25,14 +25,17 @@ fn session_profile_root_resolves_owning_profile_path() {
     app.sessions[0].profile_id = "profile-team".to_string();
 
     assert_eq!(
-        app.session_profile_root(&app.sessions[0]),
+        crate::session_delete::session_profile_root(&app.profiles, &app.sessions[0]),
         Some(PathBuf::from("/tmp/codex-team"))
     );
 
     // Unknown profile id must resolve to None (no default-root fallback:
     // that would write title metadata into the wrong account store).
     app.sessions[0].profile_id = "ghost".to_string();
-    assert_eq!(app.session_profile_root(&app.sessions[0]), None);
+    assert_eq!(
+        crate::session_delete::session_profile_root(&app.profiles, &app.sessions[0]),
+        None
+    );
 }
 
 #[test]
