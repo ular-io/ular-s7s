@@ -24,7 +24,6 @@ them, and move enduring behavior into the owning domain document.
 | Per-result keyword snippets in session search | `session_cli.rs`, list index | Index size and snippet source |
 | Configurable bootstrap response language | bootstrap rendering/config | Trust boundary and default behavior |
 | Cross-session reference graph/deduplication | parser/context model | Requires nested-reference recognition first |
-| Context source line in `session show` output | `session_context/render.rs` | `context_source` is rendered only in the TUI, so a CLI reader cannot see what a session was derived from; wording must match the Detail block |
 
 ## Verification debt
 

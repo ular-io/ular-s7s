@@ -288,6 +288,15 @@ pub struct HandoffArgs {
     pub body_file: Option<PathBuf>,
 }
 
+/// One resolved single-session target: the profile store, the whole scanned
+/// index (kept so a caller can resolve cross-session references without a second
+/// scan), and the session itself.
+struct Target {
+    profiles: ProfileStore,
+    index: Vec<Session>,
+    session: Session,
+}
+
 /// Shared resolution for the single-session subcommands (`show`, `rename`,
 /// `delete`): validates a requested profile, parses `--agent`, runs a quiet
 /// scan, then resolves the full session ID.
@@ -298,7 +307,7 @@ fn resolve_target(
     session_id: &str,
     agent: Option<&str>,
     profile: Option<&str>,
-) -> Result<(ProfileStore, Session), i32> {
+) -> Result<Target, i32> {
     let profiles = ProfileStore::load();
 
     // A requested-but-missing profile must fail up front (account safety):
@@ -333,7 +342,14 @@ fn resolve_target(
         profile_id: profile,
     };
     match resolve::resolve(&result.sessions, &query) {
-        Ok(s) => Ok((profiles, s.clone())),
+        Ok(s) => {
+            let session = s.clone();
+            Ok(Target {
+                profiles,
+                index: result.sessions,
+                session,
+            })
+        }
         Err(resolve::ResolveError::NotFound) => {
             eprintln!("error: no session found for ID '{session_id}'.");
             eprintln!(
@@ -370,16 +386,18 @@ fn run_show(args: &ShowArgs) -> i32 {
         }
     }
 
-    let session = match resolve_target(
+    let Target { index, session, .. } = match resolve_target(
         &args.session_id,
         args.agent.as_deref(),
         args.profile.as_deref(),
     ) {
-        Ok((_, session)) => session,
+        Ok(target) => target,
         Err(code) => return code,
     };
 
-    let ctx = session_context::load(&session);
+    // Resolved against the index so a context source that no longer exists is
+    // reported as unavailable instead of as a live reference.
+    let ctx = session_context::load_in_index(&session, &index);
 
     // Bootstrap must never claim success when the expected full context could
     // not be parsed; the bootstrap prompt tells the agent to report failures.
@@ -494,12 +512,14 @@ fn run_list(args: &ListArgs) -> i32 {
 /// Sets one session's display title, then re-reads the stored title to confirm
 /// the write actually landed.
 fn run_rename(args: &RenameArgs) -> i32 {
-    let (profiles, session) = match resolve_target(
+    let Target {
+        profiles, session, ..
+    } = match resolve_target(
         &args.session_id,
         args.agent.as_deref(),
         args.profile.as_deref(),
     ) {
-        Ok(pair) => pair,
+        Ok(target) => target,
         Err(code) => return code,
     };
 
@@ -569,12 +589,14 @@ fn reread_title(profiles: &ProfileStore, session: &Session) -> Option<String> {
 /// Deletes one session's on-disk artifacts. Without `--yes` the target is only
 /// printed, because the removal cannot be undone.
 fn run_delete(args: &DeleteArgs) -> i32 {
-    let (profiles, session) = match resolve_target(
+    let Target {
+        profiles, session, ..
+    } = match resolve_target(
         &args.session_id,
         args.agent.as_deref(),
         args.profile.as_deref(),
     ) {
-        Ok(pair) => pair,
+        Ok(target) => target,
         Err(code) => return code,
     };
 

@@ -131,6 +131,37 @@ s7s session show <SESSION_ID> [--agent claude|codex|antigravity] [--profile <ID>
   only for exactly one match. A requested missing profile is an error; never
   fall back to another account.
 
+#### Context source line
+
+A session launched from another session's context carries the origin in its
+header, so a CLI reader sees the same relation the TUI `Context Source` block
+shows. A session without an origin renders exactly as before.
+
+```text
+- Context source: <ID> (agent: <AGENT>, profile: <PROFILE>) [— source unavailable]
+```
+
+- The line is part of the shared header, so reference, `--turn`, and `--bootstrap`
+  output all carry it.
+- `session_cli` loads through `session_context::load_in_index`, which resolves the
+  origin against the scanned index by agent + id — the rule `ui/context_jump.rs`
+  uses, so CLI and TUI never disagree about reachability. A deleted or unscanned
+  origin appends `— source unavailable`; it is never an error.
+- `session_context::load` without an index states the origin without judging its
+  availability. No marker is printed in that case.
+- Reference output adds one retrieval hint after the per-turn hints, pinning the
+  origin's agent and profile:
+
+  ```text
+  Session this one was derived from:
+    <s7s> session show '<ID>' --agent <AGENT> --profile '<PROFILE>'
+  ```
+
+- The hint is omitted for an unavailable origin, and omitted in `--bootstrap`
+  output: that envelope already initializes a new session from this one, so
+  offering its predecessor would nest one context launch inside another. The
+  identity line still states where the shown session came from.
+
 ### Search
 
 ```text
@@ -292,10 +323,16 @@ which is what marks it as not started.
 - `<s7s-context-bootstrap>` is a noise turn: exclude it from Q count, preview,
   title, search, and detailed turn output.
 - Bootstrap-only sessions remain hidden.
-- `parser::parse_context_bootstrap` may recover the leading envelope's source ID,
-  agent, and profile into `Session.context_source`. Capture is allowed only
-  before the first real user turn so quoted envelopes do not create false links.
-- Session and Detail views render a `Context Source` block above Q1.
+- `parser::parse_context_bootstrap` may recover the envelope's source ID, agent,
+  and profile into `Session.context_source`. Capture is allowed only before the
+  first real user turn so quoted envelopes do not create false links.
+- Fields are read only between the envelope markers, and envelopes are tried from
+  the end of the turn backwards. A handoff turn carries a whole document plus the
+  envelope; such a document names the marker and quotes `session show` in prose,
+  while `session_handoff::compose_prompt` always appends the genuine envelope
+  last. Scanning the turn as a whole reads the prose instead.
+- Session and Detail views render a `Context Source` block above Q1, and
+  `session show` renders the matching header line (CLI §Show).
 - `ctrl+o` resolves and opens that source; filters clear only when they hide the
   target. `ctrl+b` returns through the in-memory navigation stack.
 - `ContextEntryKind::SessionReference` is reserved for future nested-reference

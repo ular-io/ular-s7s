@@ -7,8 +7,8 @@
 //! those instructions exist only in the bootstrap envelope.
 
 use super::excerpt;
-use super::model::{ContextCompleteness, SessionContext};
-use crate::model::Agent;
+use super::model::{ContextCompleteness, ContextSourceState, SessionContext};
+use crate::model::{Agent, ContextSource};
 use crate::resume::shell_quote;
 
 /// Trust boundary printed with every context output.
@@ -21,9 +21,26 @@ const DETAIL_TOTAL_MAX_CHARS: usize = 100_000;
 /// Per-entry cap inside a detailed turn.
 const DETAIL_ENTRY_MAX_CHARS: usize = 8_000;
 
+/// Whether the retrieval hints may offer the command that reads the shown
+/// session's own context source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceHint {
+    /// Reference mode: print the command, so a CLI reader can follow the chain.
+    Offer,
+    /// Bootstrap mode: the envelope initializes a new session from *this*
+    /// session, so an invitation to read its predecessor too would nest one
+    /// context launch inside another. The identity line in the header still
+    /// states where this session came from.
+    Omit,
+}
+
 /// Compact reference output: header, trust boundary, every active user turn with
 /// assistant excerpts (historical 500 / latest 2,000 chars), and retrieval hints.
 pub fn render_reference(ctx: &SessionContext, user_only: bool) -> String {
+    reference(ctx, user_only, SourceHint::Offer)
+}
+
+fn reference(ctx: &SessionContext, user_only: bool, source_hint: SourceHint) -> String {
     let mut out = String::new();
     push_header(&mut out, ctx);
     out.push('\n');
@@ -64,6 +81,16 @@ pub fn render_reference(ctx: &SessionContext, user_only: bool) -> String {
         base_command(ctx),
         base_command(ctx),
     ));
+    if source_hint == SourceHint::Offer {
+        if let Some(origin) = &ctx.source.context_source {
+            if origin.state != ContextSourceState::Missing {
+                out.push_str(&format!(
+                    "Session this one was derived from:\n  {}\n",
+                    show_command(&origin.source)
+                ));
+            }
+        }
+    }
     out
 }
 
@@ -80,7 +107,7 @@ pub fn render_bootstrap(ctx: &SessionContext, user_only: bool) -> String {
          - After reading successfully, reply only with the localized equivalent of:\n\
          \x20\x20\"I've reviewed the previous session context. How can I help?\"\n\n\
          Referenced session context:\n\n{}",
-        render_reference(ctx, user_only)
+        reference(ctx, user_only, SourceHint::Omit)
     )
 }
 
@@ -170,12 +197,25 @@ fn s7s_invocation() -> String {
 /// The `s7s session` command that resolves this exact source, with agent and
 /// profile pinned so resolution never silently selects the wrong account.
 fn base_command(ctx: &SessionContext) -> String {
+    show_command_parts(
+        &ctx.source.session_id,
+        ctx.source.agent,
+        &ctx.source.profile_id,
+    )
+}
+
+/// The same command for the session a context-derived session was launched from.
+fn show_command(source: &ContextSource) -> String {
+    show_command_parts(&source.id, source.agent, &source.profile)
+}
+
+fn show_command_parts(session_id: &str, agent: Agent, profile_id: &str) -> String {
     format!(
         "{} session show {} --agent {} --profile {}",
         s7s_invocation(),
-        shell_quote(&ctx.source.session_id),
-        ctx.source.agent.key(),
-        shell_quote(&ctx.source.profile_id)
+        shell_quote(session_id),
+        agent.key(),
+        shell_quote(profile_id)
     )
 }
 
@@ -191,6 +231,22 @@ fn push_header(out: &mut String, ctx: &SessionContext) {
     ));
     out.push_str(&format!("- Turns: {}\n", ctx.turns.len()));
     out.push_str(&format!("- Content: {}\n", ctx.completeness.label()));
+    // Only a context-derived session has this line; ordinary output is unchanged.
+    if let Some(origin) = &ctx.source.context_source {
+        let src = &origin.source;
+        // Same wording as the TUI `Context Source` block (`ui/render.rs`).
+        let marker = match origin.state {
+            ContextSourceState::Missing => " — source unavailable",
+            ContextSourceState::Present | ContextSourceState::Unverified => "",
+        };
+        out.push_str(&format!(
+            "- Context source: {} (agent: {}, profile: {}){}\n",
+            src.id,
+            src.agent.label(),
+            src.profile,
+            marker
+        ));
+    }
 }
 
 /// Short English bootstrap prompt stored as the new session's initial input.
@@ -216,6 +272,9 @@ mod tests {
     use crate::session_context::model::*;
     use std::path::PathBuf;
 
+    const SOURCE_LINE: &str = "- Context source: aaaa-bbbb (agent: codex, profile: builtin-codex)";
+    const RETRIEVAL_HINT: &str = "Session this one was derived from:";
+
     fn ctx(turns: Vec<ContextTurn>, completeness: ContextCompleteness) -> SessionContext {
         SessionContext {
             source: SessionContextSource {
@@ -224,10 +283,25 @@ mod tests {
                 session_id: "0000-1111".to_string(),
                 title: "테스트 세션".to_string(),
                 cwd: PathBuf::from("/tmp/demo"),
+                context_source: None,
             },
             completeness,
             turns,
         }
+    }
+
+    /// The same context, launched from another session.
+    fn derived(state: ContextSourceState) -> SessionContext {
+        let mut c = ctx(vec![turn("질문", Some("답변"))], ContextCompleteness::Full);
+        c.source.context_source = Some(ContextSourceRef {
+            source: ContextSource {
+                id: "aaaa-bbbb".to_string(),
+                agent: Agent::Codex,
+                profile: "builtin-codex".to_string(),
+            },
+            state,
+        });
+        c
     }
 
     fn turn(user: &str, answer: Option<&str>) -> ContextTurn {
@@ -319,6 +393,56 @@ mod tests {
         assert!(user_only.contains("아주 긴 질문"));
         assert!(!user_only.contains("cargo build"));
         assert!(!user_only.contains("최종 답"));
+    }
+
+    #[test]
+    fn a_session_without_a_context_source_renders_as_before() {
+        let c = ctx(vec![turn("질문", Some("답변"))], ContextCompleteness::Full);
+        let out = render_reference(&c, false);
+        assert!(!out.contains("Context source"));
+        assert!(!out.contains(RETRIEVAL_HINT));
+    }
+
+    #[test]
+    fn context_source_is_named_in_the_header_and_offered_for_retrieval() {
+        let out = render_reference(&derived(ContextSourceState::Present), false);
+        assert!(out.contains(SOURCE_LINE));
+        assert!(!out.contains("source unavailable"));
+        // The offered command pins agent and profile, so the source is re-readable.
+        assert!(out.contains(RETRIEVAL_HINT));
+        assert!(
+            out.contains("s7s session show 'aaaa-bbbb' --agent codex --profile 'builtin-codex'")
+        );
+    }
+
+    #[test]
+    fn an_unverified_context_source_is_reported_without_a_marker() {
+        // `load` without an index cannot know whether the source still exists;
+        // it must not claim either way.
+        let out = render_reference(&derived(ContextSourceState::Unverified), false);
+        assert!(out.contains(SOURCE_LINE));
+        assert!(!out.contains("source unavailable"));
+    }
+
+    #[test]
+    fn a_deleted_context_source_is_marked_instead_of_offered() {
+        let out = render_reference(&derived(ContextSourceState::Missing), false);
+        assert!(out.contains(&format!("{SOURCE_LINE} — source unavailable")));
+        assert!(!out.contains(RETRIEVAL_HINT));
+    }
+
+    #[test]
+    fn bootstrap_names_the_context_source_without_offering_to_read_it() {
+        let out = render_bootstrap(&derived(ContextSourceState::Present), false);
+        assert!(out.contains(SOURCE_LINE));
+        // Reading the predecessor too would nest one context launch inside another.
+        assert!(!out.contains(RETRIEVAL_HINT));
+    }
+
+    #[test]
+    fn turn_detail_carries_the_context_source_line() {
+        let out = render_turn(&derived(ContextSourceState::Present), 1, false).unwrap();
+        assert!(out.contains(SOURCE_LINE));
     }
 
     #[test]

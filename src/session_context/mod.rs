@@ -20,8 +20,8 @@ pub mod render;
 pub mod resolve;
 
 pub use model::{
-    ContextCompleteness, ContextEntry, ContextEntryKind, ContextTurn, SessionContext,
-    SessionContextSource,
+    ContextCompleteness, ContextEntry, ContextEntryKind, ContextSourceRef, ContextSourceState,
+    ContextTurn, SessionContext, SessionContextSource,
 };
 
 use crate::model::{Agent, Session};
@@ -33,13 +33,35 @@ use serde_json::Value;
 /// possible the turns fall back to the pre-extracted `Session::user_turns` and
 /// `completeness` records why, so consumers can state that assistant/work entries
 /// are unavailable instead of silently pretending the context is complete.
+///
+/// A recorded context source is carried through unverified. Use
+/// [`load_in_index`] where the scanned session set is at hand so the output can
+/// also say whether that source is still reachable.
 pub fn load(session: &Session) -> SessionContext {
+    build(session, None)
+}
+
+/// [`load`] plus resolution of the session's context source against `index`
+/// (matched by agent + id, the rule `ui::context_jump` uses), so a deleted or
+/// unscanned source is reported as unavailable instead of as a live reference.
+pub fn load_in_index(session: &Session, index: &[Session]) -> SessionContext {
+    build(session, Some(index))
+}
+
+fn build(session: &Session, index: Option<&[Session]>) -> SessionContext {
     let source = SessionContextSource {
         agent: session.agent,
         profile_id: session.profile_id.clone(),
         session_id: session.id.clone(),
         title: session.title(),
         cwd: session.cwd.clone(),
+        context_source: session
+            .context_source
+            .clone()
+            .map(|source| ContextSourceRef {
+                state: context_source_state(&source, index),
+                source,
+            }),
     };
 
     let (mut turns, completeness) = match parse_detailed(session) {
@@ -78,6 +100,26 @@ pub fn load(session: &Session) -> SessionContext {
         source,
         completeness,
         turns,
+    }
+}
+
+/// Resolves one recorded context source against the index it was loaded with.
+/// Without an index the state stays `Unverified`: the reference is reported, and
+/// nothing is claimed about whether it can still be read.
+fn context_source_state(
+    source: &crate::model::ContextSource,
+    index: Option<&[Session]>,
+) -> ContextSourceState {
+    match index {
+        None => ContextSourceState::Unverified,
+        Some(sessions)
+            if sessions
+                .iter()
+                .any(|s| s.agent == source.agent && s.id == source.id) =>
+        {
+            ContextSourceState::Present
+        }
+        Some(_) => ContextSourceState::Missing,
     }
 }
 
@@ -411,6 +453,79 @@ mod tests {
         };
         strip_final_answer_echo(&mut turn);
         assert_eq!(turn.entries.len(), 1);
+    }
+
+    fn derived_session(source_id: &str) -> Session {
+        Session {
+            agent: Agent::Claude,
+            profile_id: "builtin-claude".to_string(),
+            id: "derived-1".to_string(),
+            source_path: None,
+            cwd: std::path::PathBuf::from("/tmp/demo"),
+            folder: "demo".to_string(),
+            updated_at_ms: 0,
+            ctime_ms: 0,
+            size_bytes: 0,
+            user_turns: vec!["question".to_string()],
+            user_turn_timestamps_ms: Vec::new(),
+            search_blob: String::new(),
+            assistant_blob: String::new(),
+            title_hint: None,
+            title_fixed: false,
+            context_source: Some(crate::model::ContextSource {
+                id: source_id.to_string(),
+                agent: Agent::Codex,
+                profile: "builtin-codex".to_string(),
+            }),
+        }
+    }
+
+    fn indexed_source(id: &str) -> Session {
+        let mut s = derived_session("unused");
+        s.agent = Agent::Codex;
+        s.profile_id = "builtin-codex".to_string();
+        s.id = id.to_string();
+        s.context_source = None;
+        s
+    }
+
+    #[test]
+    fn context_source_state_follows_the_index() {
+        let session = derived_session("source-1");
+
+        // No index: the reference is carried, never judged.
+        let unverified = load(&session);
+        let reference = unverified.source.context_source.expect("source ref");
+        assert_eq!(reference.state, ContextSourceState::Unverified);
+        assert_eq!(reference.source.id, "source-1");
+
+        let index = vec![indexed_source("source-1"), session.clone()];
+        assert_eq!(
+            load_in_index(&session, &index)
+                .source
+                .context_source
+                .unwrap()
+                .state,
+            ContextSourceState::Present
+        );
+
+        // Source deleted (or in a profile that is not configured).
+        let index = vec![session.clone()];
+        assert_eq!(
+            load_in_index(&session, &index)
+                .source
+                .context_source
+                .unwrap()
+                .state,
+            ContextSourceState::Missing
+        );
+    }
+
+    #[test]
+    fn an_ordinary_session_has_no_context_source() {
+        let mut session = derived_session("source-1");
+        session.context_source = None;
+        assert!(load_in_index(&session, &[]).source.context_source.is_none());
     }
 
     /// Manual parity audit over the machine's real sessions: for every session

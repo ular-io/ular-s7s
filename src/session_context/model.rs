@@ -6,7 +6,7 @@
 //! - Last assistant text: last extracted assistant text for a turn; NOT guaranteed
 //!   to be a semantic final answer (hence not named `final_answer`).
 
-use crate::model::Agent;
+use crate::model::{Agent, ContextSource};
 use std::path::PathBuf;
 
 /// Full parsed context of one source session.
@@ -25,6 +25,33 @@ pub struct SessionContextSource {
     pub session_id: String,
     pub title: String,
     pub cwd: PathBuf,
+    /// Set when this session was itself launched from another session's context:
+    /// the reference recovered from its bootstrap envelope. `None` for an
+    /// ordinary session, which then renders exactly as before.
+    pub context_source: Option<ContextSourceRef>,
+}
+
+/// A session's recorded context source plus how it resolved against the index it
+/// was checked against.
+#[derive(Debug, Clone)]
+pub struct ContextSourceRef {
+    pub source: ContextSource,
+    pub state: ContextSourceState,
+}
+
+/// Whether the recorded context source can still be reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSourceState {
+    /// No index was supplied, so availability was never checked. Rendered
+    /// without a marker: the reference is reported, not judged.
+    Unverified,
+    /// The source session is present in the index (matched by agent + id, the
+    /// same rule the TUI `Context Source` block and `ctrl+o` resolve by).
+    Present,
+    /// The index was checked and the source is gone (deleted, or in a profile
+    /// that is not configured). Rendered with the shared `source unavailable`
+    /// marker; never an error.
+    Missing,
 }
 
 /// One user turn: the (redacted) user text, ordered work entries, and the last

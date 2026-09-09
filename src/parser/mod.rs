@@ -16,6 +16,8 @@ use serde_json::Value;
 
 /// Marker that opens the s7s "New Session with Context" bootstrap envelope.
 pub(crate) const BOOTSTRAP_MARKER: &str = "<s7s-context-bootstrap>";
+/// Marker that closes it.
+const BOOTSTRAP_END_MARKER: &str = "</s7s-context-bootstrap>";
 
 /// Extracts the source-session reference from a bootstrap envelope turn.
 ///
@@ -25,18 +27,39 @@ pub(crate) const BOOTSTRAP_MARKER: &str = "<s7s-context-bootstrap>";
 /// the source reference so the derivation can be surfaced without re-showing the
 /// envelope. Returns `None` for any turn that is not a bootstrap envelope or is
 /// missing a field. Tolerant of an outer `<USER_REQUEST>` wrapper (Antigravity).
+///
+/// Only the text between the markers is read, and envelopes are tried from the
+/// end of the turn backwards. A handoff body carries a whole document in the same
+/// turn as the envelope; that document routinely names the marker and quotes
+/// `session show` in prose, while s7s always appends the genuine envelope last
+/// ([`crate::session_handoff::compose_prompt`]).
 pub(crate) fn parse_context_bootstrap(text: &str) -> Option<ContextSource> {
-    if !text.contains(BOOTSTRAP_MARKER) {
-        return None;
+    let mut before = text.len();
+    while let Some(open) = text[..before].rfind(BOOTSTRAP_MARKER) {
+        let opened = &text[open + BOOTSTRAP_MARKER.len()..];
+        let envelope = match opened.find(BOOTSTRAP_END_MARKER) {
+            Some(end) => &opened[..end],
+            None => opened,
+        };
+        if let Some(src) = parse_bootstrap_command(envelope) {
+            return Some(src);
+        }
+        before = open;
     }
-    let id = single_quoted_after(text, "session show ")?;
-    let agent = match word_after(text, "--agent ")? {
+    None
+}
+
+/// Reads the `session show '<id>' --agent <agent> --profile '<profile>'` fields
+/// out of one envelope body. `None` when any field is missing or unrecognized.
+fn parse_bootstrap_command(envelope: &str) -> Option<ContextSource> {
+    let id = single_quoted_after(envelope, "session show ")?;
+    let agent = match word_after(envelope, "--agent ")? {
         "claude" => Agent::Claude,
         "codex" => Agent::Codex,
         "antigravity" => Agent::Antigravity,
         _ => return None,
     };
-    let profile = single_quoted_after(text, "--profile ")?;
+    let profile = single_quoted_after(envelope, "--profile ")?;
     Some(ContextSource { id, agent, profile })
 }
 
@@ -214,6 +237,22 @@ mod tests {
             --agent claude --profile 'builtin-claude' --bootstrap`.\n</s7s-context-bootstrap>\n</USER_REQUEST>";
         let src = parse_context_bootstrap(text).expect("expected source ref");
         assert_eq!(src.id, "abc-2");
+        assert_eq!(src.agent, Agent::Claude);
+        assert_eq!(src.profile, "builtin-claude");
+    }
+
+    #[test]
+    fn parse_context_bootstrap_reads_the_trailing_envelope_not_the_prose() {
+        // Real handoff shape: the document names the marker and quotes the
+        // command in prose, and the genuine envelope is appended last.
+        let text = "HAND-OVER: add a context source line\n\
+            A handoff session carries a `<s7s-context-bootstrap>` envelope.\n\
+            Check it with `s7s session show <ID>` once implemented.\n\
+            read it: 's7s' session show 'quoted-in-prose' --agent codex --profile 'wrong'\n\
+            <s7s-context-bootstrap>\nRun `'/p/s7s' session show 'real-id' --agent claude \
+            --profile 'builtin-claude' --bootstrap`.\n</s7s-context-bootstrap>";
+        let src = parse_context_bootstrap(text).expect("expected source ref");
+        assert_eq!(src.id, "real-id");
         assert_eq!(src.agent, Agent::Claude);
         assert_eq!(src.profile, "builtin-claude");
     }
