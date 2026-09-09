@@ -184,6 +184,12 @@ pub fn cache_path() -> PathBuf {
     }
 }
 
+/// Durable cwd facts captured while s7s creates Antigravity handoffs.
+/// Unlike `index.bin`, this is app-owned source data and survives a cache rebuild.
+pub(crate) fn session_workspaces_path() -> PathBuf {
+    config_base_dir().join("session_workspaces.json")
+}
+
 /// Configuration directory: `~/.config/s7s`.
 ///
 /// Hardcoded rather than resolved via `dirs::config_dir()` so all app state

@@ -35,6 +35,13 @@ pub fn delete_session_artifacts(profiles: &ProfileStore, session: &Session) -> R
             let _ = remove_antigravity_metadata(&root, session.id.as_str());
         }
         remove_sqlite_sidecars(source_path);
+        // This s7s-owned fallback is independent of the external profile root,
+        // so remove it even if that profile disappeared after the last scan.
+        let _ = crate::session_workspace::remove(
+            &crate::config::session_workspaces_path(),
+            &session.profile_id,
+            &session.id,
+        );
     }
 
     Ok(())

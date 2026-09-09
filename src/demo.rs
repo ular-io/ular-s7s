@@ -608,7 +608,13 @@ mod tests {
 
     fn scan_sandbox(base: &Path) -> Vec<crate::model::Session> {
         let profiles = demo_profiles(base);
-        crate::scan::scan_at(&profiles, true, &base.join("cache/index.bin")).sessions
+        crate::scan::scan_at(
+            &profiles,
+            true,
+            &base.join("cache/index.bin"),
+            &base.join("config/session_workspaces.json"),
+        )
+        .sessions
     }
 
     fn session_idx(id: &str) -> Option<usize> {

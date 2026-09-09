@@ -112,12 +112,17 @@ agent. Delete each one afterwards.
 4. `s7s session search HAND-OVER` must list it. A miss means the title never
    reached the search blob (see the claude registry note in
    [session-title-compat.md](./session-title-compat.md)).
-5. The new session must have acted on nothing: one turn, an acknowledgement only,
+5. For Antigravity, pass `--folder` with a project other than the source folder,
+   then confirm `s7s session list --folder <basename>` finds the new session and
+   its cwd survives a forced-cache-rebuild test. Create a second handoff in the
+   same folder and confirm both ids retain that folder.
+6. The new session must have acted on nothing: one turn, an acknowledgement only,
    and no file created in the folder.
-6. Re-measure the instruction when a CLI is upgraded: hand off a body that asks
+7. Re-measure the instruction when a CLI is upgraded: hand off a body that asks
    for a file to be written in a temp directory, with restriction flags removed,
    and confirm the file is absent.
-7. `s7s session delete <id> --yes` for each probe.
+8. `s7s session delete <id> --yes` for each probe, and confirm its entry is gone
+   from `~/.config/s7s/session_workspaces.json`.
 
 ## Agent-specific manual checks
 

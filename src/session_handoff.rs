@@ -15,6 +15,10 @@
 //! | codex | `--json` → `thread.started.thread_id` | `-s read-only` | none, renamed after |
 //! | antigravity | `cache/last_conversations.json`, keyed by cwd | none | none, renamed after |
 //!
+//! Antigravity omits cwd from `--print` conversation records. After obtaining
+//! its id, s7s persists the exact launch folder in its own workspace store so
+//! later scans can restore the list and folder-filter identity.
+//!
 //! [session-title-compat.md]: ../docs/session-title-compat.md
 
 use crate::model::{Agent, Session};
@@ -78,6 +82,9 @@ pub struct HandoffOutcome {
     /// others are renamed afterwards, which needs the new session to be visible
     /// to a scan first.
     pub titled: bool,
+    /// Set only when the external session exists but s7s could not persist
+    /// supplementary metadata needed to represent it completely.
+    pub warning: Option<String>,
 }
 
 /// Composes the prompt, starts the agent, and returns the recorded session.
@@ -91,6 +98,12 @@ pub fn create(req: &HandoffRequest) -> Result<HandoffOutcome> {
     if !req.folder.is_dir() {
         return Err(anyhow!("folder does not exist: {}", req.folder.display()));
     }
+    if !req.folder.is_absolute() {
+        return Err(anyhow!(
+            "handoff folder must be absolute: {}",
+            req.folder.display()
+        ));
+    }
 
     let prompt = compose_prompt(req.body, req.instruction, req.source.as_ref(), &s7s_path());
 
@@ -100,11 +113,29 @@ pub fn create(req: &HandoffRequest) -> Result<HandoffOutcome> {
         Agent::Antigravity => spawn_antigravity(req, &prompt)?,
     };
 
+    let warning = if req.agent == Agent::Antigravity {
+        crate::session_workspace::record(
+            &crate::config::session_workspaces_path(),
+            &req.profile.id,
+            &id,
+            req.folder,
+        )
+        .err()
+        .map(|err| {
+            format!(
+                "the Antigravity session was created, but its folder could not be recorded: {err}"
+            )
+        })
+    } else {
+        None
+    };
+
     Ok(HandoffOutcome {
         id,
         agent: req.agent,
         profile_id: req.profile.id.clone(),
         titled: matches!(req.agent, Agent::Claude),
+        warning,
     })
 }
 
@@ -237,6 +268,7 @@ fn spawn_codex(req: &HandoffRequest, prompt: &str) -> Result<String> {
 
 fn spawn_antigravity(req: &HandoffRequest, prompt: &str) -> Result<String> {
     let bin = std::env::var("ULAR_HANDOFF_AGY_BIN").unwrap_or_else(|_| "agy".to_string());
+    let previous = last_conversation_for(&req.profile.path, req.folder);
     let mut cmd = base_command(&bin, req);
     cmd.arg("--print")
         .arg(prompt)
@@ -246,8 +278,26 @@ fn spawn_antigravity(req: &HandoffRequest, prompt: &str) -> Result<String> {
     let _ = run_bounded(cmd, "agy")?;
     // agy prints no id. It records one conversation per working directory, so the
     // launch folder identifies what was just created.
-    last_conversation_for(&req.profile.path, req.folder)
-        .ok_or_else(|| anyhow!("agy recorded no conversation for {}", req.folder.display()))
+    let id = last_conversation_for(&req.profile.path, req.folder)
+        .ok_or_else(|| anyhow!("agy recorded no conversation for {}", req.folder.display()))?;
+    if previous.as_deref() == Some(id.as_str()) {
+        return Err(anyhow!(
+            "agy did not record a new conversation for {}",
+            req.folder.display()
+        ));
+    }
+    let db = req
+        .profile
+        .path
+        .join("conversations")
+        .join(format!("{id}.db"));
+    if !db.is_file() {
+        return Err(anyhow!(
+            "agy reported conversation {id}, but {} does not exist",
+            db.display()
+        ));
+    }
+    Ok(id)
 }
 
 /// Conversation id agy last used in `folder`, from its cwd-keyed cache.

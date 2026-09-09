@@ -165,6 +165,7 @@ without a project.
 | `~/.config/s7s/models.json` | app | JSON |
 | `~/.config/s7s/theme.json` | app | JSON |
 | `~/.config/s7s/{quick,terminal}_history.json` | app | JSON |
+| `~/.config/s7s/session_workspaces.json` | app | JSON; cwd captured for s7s-created sessions whose agent store omits it |
 | `~/.config/s7s/projects/` | app/user | directories |
 | `~/.config/s7s/scratch/` | app | shared working directory, emptied on every launch |
 | `<OS cache>/s7s/index.bin` | app | versioned bincode, mode `0600` |

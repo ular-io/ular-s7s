@@ -86,6 +86,10 @@ well as Q counts: turn parity alone missed an unmirrored `AgentMessage`.
 - Do not force these stores into a shared decoder.
 - The list may reuse `session_context::antigravity::parse_turns` for
   last-assistant-text search indexing because that text is absent from SQLite.
+- Working directory precedence is the user-step workspace, then
+  `conversation_metadata.json` `WorkspaceURIs`, then the s7s-owned
+  `session_workspaces.json` entry captured for an s7s-created handoff. The last
+  fallback applies only when the agent-owned values are empty.
 - When the transcript begins mid-session or is unavailable, detailed context may
   legitimately have less information than the list.
 
@@ -270,6 +274,15 @@ failure can be an irreversible command.
 | claude | `--output-format json` → `session_id` | `--allowedTools ""` + `--permission-mode plan` | `--name` |
 | codex | `--json` → `thread.started.thread_id` | `-s read-only` | none; renamed after |
 | antigravity | `cache/last_conversations.json`, keyed by cwd (exact match) | none | none; renamed after |
+
+Antigravity `--print` does not persist its cwd in the conversation DB. The
+handoff path already knows the target folder and uses the cwd-keyed cache to
+obtain the new conversation id, so it then records `(profile id, conversation
+id) -> cwd` in `~/.config/s7s/session_workspaces.json` before the verification
+scan. The scan applies this only to an empty cwd, including on cache hits, and
+reindexes the folder search text. Multiple handoffs from the same folder retain
+separate entries instead of inheriting the one-entry-per-cwd limit of
+`last_conversations.json`.
 
 **Defaults.** `--agent`/`--profile` follow the source session, `--folder` its
 working directory, so resuming lands in the project the work belongs to. The

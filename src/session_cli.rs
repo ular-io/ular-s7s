@@ -702,6 +702,9 @@ fn run_handoff(args: &HandoffArgs) -> i32 {
             return 1;
         }
     };
+    if let Some(warning) = &outcome.warning {
+        eprintln!("warning: {warning}");
+    }
 
     // Rescan rather than trust the agent's exit: the handoff counts only when the
     // session is actually on disk. It also supplies the record the rename and the
@@ -873,7 +876,8 @@ fn handoff_folder(args: &HandoffArgs, source: Option<&Session>) -> Result<PathBu
     if !folder.is_dir() {
         return Err(format!("folder does not exist: {}", folder.display()));
     }
-    Ok(folder)
+    std::fs::canonicalize(&folder)
+        .map_err(|err| format!("cannot resolve folder {}: {err}", folder.display()))
 }
 
 /// Prefixes the title so parked handoffs stand out in the session list, without

@@ -25,6 +25,7 @@ pub mod session_cli;
 pub mod session_context;
 pub mod session_delete;
 pub mod session_handoff;
+mod session_workspace;
 pub mod theme;
 pub mod title;
 pub mod ui;

@@ -200,6 +200,7 @@ the state database has no row for.
 - title annotation: `~/.gemini/antigravity-cli/annotations/<conversationId>.pbtxt`
 - metadata cache: `~/.gemini/antigravity-cli/cache/conversation_metadata.json`
 - last conversation map: `~/.gemini/antigravity-cli/cache/last_conversations.json`
+- s7s handoff workspace store: `~/.config/s7s/session_workspaces.json`
 
 > **The metadata cache has gone stale on agy 1.1.27 (verified 2026-09-08).** It
 > stopped gaining entries for new conversations, so a recent session has no entry
@@ -213,6 +214,13 @@ the state database has no row for.
 > predates the current sessions. Do not write it without re-checking. The new
 > `agent_name` column and the `AgentName` summary field are agent nicknames, not
 > titles.
+
+`agy --print` also omits the launch cwd from its conversation DB. For sessions
+created by `s7s session handoff`, s7s captures the exact target cwd after reading
+the new id from `last_conversations.json` and stores it in its own workspace
+file. This is a scan fallback only: DB workspace data and `WorkspaceURIs` retain
+precedence, and ordinary `agy --print` sessions are not inferred from the
+cwd-keyed last-conversation cache.
 
 ### Title fields
 
