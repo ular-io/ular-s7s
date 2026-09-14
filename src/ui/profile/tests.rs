@@ -138,7 +138,7 @@ fn profile_form_add_blocks_antigravity_agent() {
     let mut app = empty_app();
     app.open_profile_form(None);
     let form = app.profile_form.as_mut().unwrap();
-    assert!(!form.agy_allowed);
+    assert!(!form.locked(), "a new profile picks its agent type");
     // Agent enum order: [Claude, Codex, Antigravity] - cycling bypasses Antigravity option.
     form.cycle_agent(1);
     assert_eq!(Agent::all()[form.agent_idx], Agent::Codex);
@@ -161,4 +161,50 @@ fn profile_form_save_rejects_new_antigravity_profile() {
     let form = app.profile_form.as_ref().expect("form stays open");
     assert!(form.error.as_deref().unwrap().contains("Antigravity"));
     assert!(app.profiles.profiles.is_empty());
+}
+
+#[test]
+fn editing_a_profile_locks_the_agent_type() {
+    let mut app = app_with_profiles();
+    app.screen = Screen::Profile;
+    // Row 1 is the user-added profile seeded by the fixture.
+    app.profile_selected = 1;
+    let original = app.profiles.profiles[1].agent;
+    app.open_profile_form(Some(1));
+
+    let form = app.profile_form.as_mut().expect("form");
+    assert!(form.locked());
+    // The Agent row leaves the focus order, so stepping back from Name wraps
+    // straight to the button row.
+    form.focus = FormFocus::Name;
+    form.focus_move(-1);
+    assert_eq!(form.focus, FormFocus::Buttons);
+    // Cycling is inert even if the Agent row is somehow focused.
+    let before = form.agent_idx;
+    form.cycle_agent(1);
+    assert_eq!(form.agent_idx, before);
+
+    // A drifting radio index must not reach the stored profile.
+    form.agent_idx = Agent::all()
+        .iter()
+        .position(|a| *a != original)
+        .expect("another agent");
+    let dir = std::env::temp_dir().join(format!(
+        "s7s-test-lock-agent-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let form = app.profile_form.as_mut().expect("form");
+    form.name.value = "Renamed".to_string();
+    form.path.value = dir.to_string_lossy().into_owned();
+    app.confirm_profile_form();
+
+    assert_eq!(app.profiles.profiles[1].agent, original);
+    assert_eq!(app.profiles.profiles[1].name, "Renamed");
+    assert_eq!(app.profiles.profiles[1].path, dir);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

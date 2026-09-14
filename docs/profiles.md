@@ -24,7 +24,28 @@ Profile path = Agent **config root**. The session directory is obtained by deriv
 | Codex | `~/.codex` | `<path>/sessions` |
 | Antigravity | `~/.gemini/antigravity-cli` | `<path>` itself |
 
-The path of the default profile absorbs the directory overrides from `config.toml` and is seeded (if the basename of the session directory matches the derivation rule, the parent is used as the root).
+Built-in profiles are seeded at these default roots. `config.toml` does not affect
+this: the legacy directory keys were removed and `seed_builtin()` hardcodes
+`default_root()`.
+
+## Agent Type Lock
+
+The agent type is chosen once, while creating the profile. In the Edit Profile form
+the Agent row is dim, is skipped by focus rotation, and does not respond to
+`←`/`→`/`space`; the notice line reads `Agent type is fixed — delete and re-add to
+change it`. Only Name and Config Path stay editable.
+
+`(agent, path)` is the profile's real identity — it is the key both
+`duplicate_exists()` and the `load_from()` dedup use, and derived-session commands
+carry `--profile <source ID>` as plain text. If the pair behind an id could change,
+an already emitted command would silently resolve to a different account. The path
+half is still editable; locking it too is a separate, undecided change.
+
+`ProfileFormState::locked()` derives the lock from `editing_id` rather than storing a
+separate value, so the two can never disagree, and `App::form_agent()` reads the agent
+from the stored profile while editing — a drifting radio index cannot reach the store.
+Locking Config Path later means widening what `locked()` gates, not adding a second
+lock value.
 
 ## Env Injection Rules (Core Precautions)
 
@@ -36,7 +57,7 @@ During usage query, resume/new session execution, and Claude rename CLI attempts
 | Codex | `CODEX_HOME` | |
 | Antigravity | None | Additional profiles skip usage, and resume executes with the default account |
 
-It has been empirically confirmed that Antigravity does not have a dedicated variable (2026-07-14, agy 1.1.2 — exhaustive strings check on the binary + boot experiment specifying `ANTIGRAVITY_CONFIG_DIR`, "agy env injection verification" section in [Model Selection](models.md)). Accordingly, **in the Add/Edit Profile form, Antigravity is dim + unselectable** (only editing existing Antigravity profiles is allowed, `ProfileFormState::agy_allowed`) — you can create one, but the creation of an additional profile with no functionality is fundamentally blocked.
+It has been empirically confirmed that Antigravity does not have a dedicated variable (2026-07-14, agy 1.1.2 — exhaustive strings check on the binary + boot experiment specifying `ANTIGRAVITY_CONFIG_DIR`, "agy env injection verification" section in [Model Selection](models.md)). Accordingly, **Antigravity is dim and unselectable in the Add Profile form** — the creation of an additional profile with no functionality is blocked outright. Existing Antigravity profiles stay editable but keep their agent type (see [Agent Type Lock](#agent-type-lock)).
 
 **It is not injected for the default path profile** (`Profile::env_var()` returns None).
 Reasons confirmed empirically:

@@ -119,6 +119,12 @@ Additional rules:
   selects the focused item and confirms idempotently.
 - Keep at least one blank row above buttons. Expand modal height when an error or
   information row would collapse that spacing.
+- Prefer a notice line that every state fills over one that appears conditionally:
+  the profile form always fills it, so the dialog keeps a single height and the
+  buttons do not shift between its add and edit variants.
+- A locked control stays visible and dim rather than disappearing, and the notice
+  line says why it is locked. Keep the selected entry of a locked radio row readable
+  with `Modifier::BOLD` over `soft_dim()`; the marker alone is not enough signal.
 - Clamp dynamic list modals to a usable minimum height when there are no results.
 - A popup drawn over background text must clear enough adjacent cells to remove
   both halves of a clipped double-width glyph before painting its border.

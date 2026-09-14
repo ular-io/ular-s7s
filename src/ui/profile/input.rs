@@ -92,8 +92,6 @@ impl App {
                 };
                 ProfileFormState {
                     editing_id: Some(p.id.clone()),
-                    builtin: p.builtin,
-                    agy_allowed: p.agent == Agent::Antigravity,
                     agent_idx: Agent::all().iter().position(|a| *a == p.agent).unwrap_or(0),
                     name: TextInput::new(p.name.clone()),
                     path: TextInput::new(p.path.to_string_lossy().into_owned()),
@@ -104,8 +102,6 @@ impl App {
             }
             None => ProfileFormState {
                 editing_id: None,
-                builtin: false,
-                agy_allowed: false,
                 agent_idx: 0,
                 name: TextInput::new(String::new()),
                 path: TextInput::new(String::new()),
@@ -124,6 +120,23 @@ impl App {
         self.mode = UiMode::Table;
     }
 
+    /// Agent type the open form will save. An existing profile keeps the type it
+    /// was created with, so the radio index is consulted only while creating.
+    fn form_agent(&self) -> Agent {
+        let fallback = Agent::all()[0];
+        let Some(form) = self.profile_form.as_ref() else {
+            return fallback;
+        };
+        match form
+            .editing_id
+            .as_deref()
+            .and_then(|id| self.profiles.find(id))
+        {
+            Some(p) => p.agent,
+            None => Agent::all()[form.agent_idx.min(Agent::all().len() - 1)],
+        }
+    }
+
     /// Form submission: stays in the form and displays validation messages on error.
     pub(crate) fn confirm_profile_form(&mut self) {
         let Some(form) = self.profile_form.as_ref() else {
@@ -132,15 +145,15 @@ impl App {
         };
         let name = form.name.value.trim().to_string();
         let path_str = form.path.value.trim().to_string();
-        let agent = Agent::all()[form.agent_idx.min(Agent::all().len() - 1)];
         let editing_id = form.editing_id.clone();
+        let agent = self.form_agent();
         let exclude = editing_id.as_deref();
 
         let error = if name.is_empty() {
             Some("Name is required".to_string())
         } else if path_str.is_empty() {
             Some("Path is required".to_string())
-        } else if agent == Agent::Antigravity && !form.agy_allowed {
+        } else if editing_id.is_none() && agent == Agent::Antigravity {
             // Defensively check during saving, though already blocked in the radio UI selector.
             Some("Antigravity does not support custom config folders".to_string())
         } else if self.profiles.name_exists(&name, exclude) {
@@ -183,8 +196,8 @@ impl App {
         };
         let name = form.name.value.trim().to_string();
         let path_str = form.path.value.trim().to_string();
-        let agent = Agent::all()[form.agent_idx.min(Agent::all().len() - 1)];
         let editing_id = form.editing_id.clone();
+        let agent = self.form_agent();
         let path = crate::config::expand(&path_str);
         // Since OAuth Token input fields were removed, preserve tokens in existing profiles, default to None for new profiles.
         let oauth_token = match &editing_id {
@@ -199,9 +212,8 @@ impl App {
         let saved_id = match editing_id {
             Some(id) => {
                 if let Some(p) = self.profiles.profiles.iter_mut().find(|p| p.id == id) {
-                    if !p.builtin {
-                        p.agent = agent;
-                    }
+                    // The agent type is fixed once the profile exists, so only the
+                    // editable fields are written back.
                     p.name = name.clone();
                     p.path = path;
                     p.oauth_token = oauth_token;

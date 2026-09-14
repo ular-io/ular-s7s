@@ -374,49 +374,50 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
         " Add Profile "
     };
 
-    // Error notice (error color) or Antigravity limitation banner (muted).
-    let notice: Option<(String, Color)> = if let Some(err) = &form.error {
-        Some((err.clone(), th.error))
+    // One notice line, in descending order of urgency: a validation error, the
+    // Antigravity capability limit, why the locked agent row is dim, and finally
+    // why Antigravity cannot be picked while creating.
+    let (notice_text, notice_color): (String, Color) = if let Some(err) = &form.error {
+        (err.clone(), th.error)
     } else if Agent::all()[form.agent_idx] == Agent::Antigravity {
-        Some((
+        (
             "Antigravity: config env not supported — usage/resume runs on the default account"
                 .to_string(),
             th.muted,
-        ))
-    } else if !form.builtin && !form.agy_allowed {
-        // Since Antigravity cannot be selected during creation (or editing other agents),
-        // show this notice permanently to clarify the dim state.
-        Some((
+        )
+    } else if form.locked() {
+        (
+            "Agent type is fixed — delete and re-add to change it".to_string(),
+            th.muted,
+        )
+    } else {
+        // Antigravity cannot be selected while creating, so the dim state gets a
+        // standing explanation rather than a silent unreachable option.
+        (
             "Antigravity is not selectable — custom config folders are not supported".to_string(),
             th.muted,
-        ))
-    } else {
-        None
+        )
     };
 
-    // Allocates an extra row only if error/notice is present, maintaining a unified 1-row padding in dialog.
-    let h = if notice.is_some() { 13 } else { 12 };
-    let area = centered_fixed_rect(72, h, f.area());
+    // Every state fills the notice line, so the dialog keeps one height and the
+    // buttons do not shift between the add and edit forms.
+    let area = centered_fixed_rect(72, 13, f.area());
     let block = modal_block(title, th.accent).padding(Padding::new(1, 1, 1, 0));
     let inner = render_modal(f, area, block, th);
 
-    let mut constraints = vec![
-        Constraint::Length(1), // Agent radio buttons
-        Constraint::Length(3), // Name
-        Constraint::Length(3), // Config Path
-    ];
-    if notice.is_some() {
-        constraints.push(Constraint::Length(1)); // Error / Notice
-    }
-    constraints.push(Constraint::Length(1)); // Padding spacer
-    constraints.push(Constraint::Length(1)); // Buttons
-
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints([
+            Constraint::Length(1), // Agent radio buttons
+            Constraint::Length(3), // Name
+            Constraint::Length(3), // Config Path
+            Constraint::Length(1), // Error / Notice
+            Constraint::Length(1), // Padding spacer
+            Constraint::Length(1), // Buttons
+        ])
         .split(inner);
 
-    // Agent radio layout: (•) Claude   ( ) Antigravity   ( ) Codex
+    // Agent radio layout: (•) Claude   ( ) Codex   ( ) Antigravity
     let agent_focused = form.focus == FormFocus::Agent;
     let mut radio = vec![Span::styled(
         "Agent  ",
@@ -429,8 +430,16 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
     for (i, agent) in Agent::all().iter().enumerate() {
         let selected = i == form.agent_idx;
         let mark = if selected { "(•) " } else { "( ) " };
-        let style = if form.builtin || !form.agent_enabled(i) {
-            // Dim built-in agents (unchangeable type) or restricted selections (Antigravity).
+        let style = if form.locked() {
+            // The type cannot change, so the row is dim; the selected entry stays
+            // bold so the profile's agent is still readable at a glance.
+            if selected {
+                th.soft_dim().add_modifier(Modifier::BOLD)
+            } else {
+                th.soft_dim()
+            }
+        } else if !form.agent_enabled(i) {
+            // Antigravity cannot be picked while creating a profile.
             th.soft_dim()
         } else if selected && agent_focused {
             Style::default().fg(th.on_accent).bg(th.accent)
@@ -464,15 +473,13 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
         th,
     );
 
-    if let Some((text, color)) = &notice {
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                truncate_w(text, rows[3].width as usize),
-                Style::default().fg(*color),
-            ))),
-            rows[3],
-        );
-    }
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_w(&notice_text, rows[3].width as usize),
+            Style::default().fg(notice_color),
+        ))),
+        rows[3],
+    );
 
     // Buttons: highlighted only when focused on the button row.
     let buttons_focused = form.focus == FormFocus::Buttons;
@@ -489,10 +496,9 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
         Span::raw("     "),
         Span::styled("  Cancel  ", cancel_style),
     ]);
-    let button_row = if notice.is_some() { rows[5] } else { rows[4] };
     f.render_widget(
         Paragraph::new(buttons).alignment(Alignment::Center),
-        button_row,
+        rows[5],
     );
 }
 

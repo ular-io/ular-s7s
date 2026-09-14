@@ -17,14 +17,9 @@ pub enum FormFocus {
 
 /// Profile creation/edit form state.
 pub struct ProfileFormState {
-    /// Target profile ID (None for a new profile).
+    /// Target profile ID (None for a new profile). Also the single source of the
+    /// lock: an existing profile keeps the agent type it was created with.
     pub editing_id: Option<String>,
-    /// Whether editing a built-in profile (agent type cannot be changed).
-    pub builtin: bool,
-    /// Whether selecting Antigravity is allowed. Since agy does not support config directory overrides,
-    /// adding extra profiles is moot; thus, only allowed when editing pre-existing agy profiles
-    /// (dimmed and unselectable for new creations or conversion from other agents).
-    pub agy_allowed: bool,
     /// Radio selection index (referencing `Agent::all()`).
     pub agent_idx: usize,
     pub name: TextInput,
@@ -37,9 +32,16 @@ pub struct ProfileFormState {
 }
 
 impl ProfileFormState {
-    /// Focus rotation order. Bypasses the Agent field when editing a built-in profile, as the agent type is fixed.
+    /// Whether the identity fields are locked. Derived from `editing_id` rather
+    /// than stored so the two can never disagree: creation picks the agent type,
+    /// editing keeps it.
+    pub fn locked(&self) -> bool {
+        self.editing_id.is_some()
+    }
+
+    /// Focus rotation order. Bypasses the Agent field once locked, as the agent type is fixed.
     fn focus_order(&self) -> &'static [FormFocus] {
-        if self.builtin {
+        if self.locked() {
             &[FormFocus::Name, FormFocus::Path, FormFocus::Buttons]
         } else {
             &[
@@ -58,14 +60,15 @@ impl ProfileFormState {
         self.focus = order[next];
     }
 
-    /// Whether the radio item is enabled. Since Antigravity does not support config directory overrides,
-    /// adding extra profiles is moot; thus, disabled unless editing a pre-existing agy profile.
+    /// Whether the radio item can be picked while creating a profile. Antigravity
+    /// does not support config directory overrides, so an extra agy profile would
+    /// have no function; existing agy profiles stay editable but keep their type.
     pub fn agent_enabled(&self, idx: usize) -> bool {
-        Agent::all()[idx] != Agent::Antigravity || self.agy_allowed
+        Agent::all()[idx] != Agent::Antigravity
     }
 
     pub(crate) fn cycle_agent(&mut self, delta: isize) {
-        if self.builtin {
+        if self.locked() {
             return;
         }
         let n = Agent::all().len() as isize;
