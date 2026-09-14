@@ -1875,6 +1875,28 @@ mod tests {
         assert_eq!(buffer[(value_x, value_y)].fg, app.theme.selection_fg);
     }
 
+    /// The selection survives a focus move, so only the focused Folder field may
+    /// paint it: a highlight on an inactive control reads as a permanent state.
+    #[test]
+    fn folder_input_drops_the_selection_paint_when_focus_moves_away() {
+        let mut app = session_app();
+        app.theme = crate::theme::default_theme();
+        app.mode = crate::ui::UiMode::NewSession;
+        let mut state = new_session_state(None);
+        state.focus = crate::ui::NewSessionFocus::Buttons;
+        state.input = TextInput::selected("/tmp/work/web".to_string());
+        state.folders = vec![std::path::PathBuf::from("/tmp/work/web")];
+        state.reorder_folders();
+        app.new_session = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 34)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+
+        let (value_x, value_y) = find_cell(&terminal, "/tmp/work/web");
+        let buffer = terminal.backend().buffer();
+        assert_ne!(buffer[(value_x, value_y)].bg, app.theme.selection_bg);
+    }
+
     /// The scratch row's footer must state the purge before the session starts,
     /// not only inside the policy file the agent reads afterwards.
     #[test]

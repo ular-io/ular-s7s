@@ -177,8 +177,10 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
     } else {
         let (visible, cursor_x) = input_view(&state.input, input_inner.width as usize);
         // A whole-value selection is painted like a selected list row, so "typing
-        // replaces this" is visible before the first key.
-        let value_style = if state.input.select_all {
+        // replaces this" is visible before the first key. Only the focused field
+        // paints it: the selection survives a focus move, but a highlight on an
+        // inactive control reads as a permanent state rather than a pending edit.
+        let value_style = if folder_focused && state.input.select_all {
             Style::default().fg(th.selection_fg).bg(th.selection_bg)
         } else {
             Style::default()

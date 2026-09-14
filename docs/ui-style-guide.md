@@ -148,6 +148,10 @@ Additional rules:
   selection colors, and its dropdown opens with the highlight left in the input
   instead of on a row: while the selection is live the value is the subject, and
   the footer names both ways out of it (replace by typing, edit with `→`).
+- Paint that selection only while the field itself is focused. The selection
+  survives a focus move (the folder dialog opens with a prefill already selected
+  while focus sits on another control), so an ungated paint leaves an inactive
+  control permanently reversed instead of showing a pending edit.
 - A fixed option (the folder dropdown's `[SCRATCH]` row) renders outside the
   query-ordered list and always first. With no note column, its label carries the
   distinction: bracketed and upper case against bare basenames.
