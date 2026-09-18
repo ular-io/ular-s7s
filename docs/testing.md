@@ -138,14 +138,16 @@ agent. Delete each one afterwards.
 - Check `threads.name` in `~/.codex/state_*.sqlite` — this is the column the codex CLI displays, so it is the one that decides success
 - Check `thread_name` in `~/.codex/session_index.jsonl` (append-only: read the **last** record for the id)
 - Confirm the CLI agrees, without opening the TUI: `codex app-server` over stdio, `initialize` then `thread/list`, and compare the thread's `name`
-- Exercise the fallback too: `ULAR_RENAME_CODEX_BIN=/nonexistent s7s session rename <id> "<title>"` must still land in both stores
-- Re-derive the app-server contract after a codex upgrade: `codex app-server generate-ts --out <dir>`, then grep `ClientRequest` for the rename method (`thread/name/set` on 0.153.4)
-- `local_thread_catalog.display_title` in `~/.codex/sqlite/codex-*.db` is **not** a rename target — that database has no `threads` table and codex leaves the row stale itself
+- Exercise the fallback too: `ULAR_CODEX_BIN=/nonexistent s7s session rename <id> "<title>"` must still land in both stores
+- Re-derive the app-server contract after a codex upgrade: `codex app-server generate-json-schema --out <dir>`, then grep `ClientRequest` for the methods s7s sends (`thread/name/set` and `thread/delete` on 0.155.0)
+- `local_thread_catalog` in `~/.codex/sqlite/codex-*.db` is **not** an s7s target for either action — that database has no `threads` table, codex leaves a renamed row stale and marks a deleted one `missing_candidate` on its next scan
 - Verify any changes in the behavior of non-interactive `codex exec resume <id> "/rename ..."`
+- **Delete** must empty every store, not just the rollout file. After `s7s session delete <id> --yes`, confirm all four are clear: the rollout file, `threads` in `state_*.sqlite`, `thread_items` / `thread_turns` / `thread_realtime_items` / `thread_history_projection_state` in `thread_history_*.sqlite`, and the records for that id in `session_index.jsonl`
+- Exercise the delete fallback as well: `ULAR_CODEX_BIN=/nonexistent s7s session delete <id> --yes` must still clear the same four
 
 ### Antigravity
 
-- `title:"..."` in `annotations/<id>.pbtxt` — the live store; a rename must land here
+- `title:"..."` in `annotations/<id>.pbtxt` — the live store; a rename must land here, and a delete must take the file back
 - `cache/conversation_metadata.json` must not grow: rename a session that has no entry there and confirm both the entry count and the file mtime are unchanged
 - `summary.Title` for a session that *does* have an entry must still be refreshed
 - Re-check whether `conversation_summaries.db` has become the live store (as of 1.1.27 it has not: 3 of 124 rows carry a title and none are recent)

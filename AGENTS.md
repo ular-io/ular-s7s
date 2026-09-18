@@ -60,6 +60,8 @@ automated tests alone are insufficient. [testing.md](./docs/testing.md) is the
 authoritative matrix; the essentials:
 
 - **Rename / session-title**: manual CLI verification (do not stop at `cargo test -q`).
+- **Session deletion**: delete a disposable session and confirm every codex store
+  is empty afterwards, not just the rollout file ([testing.md](./docs/testing.md) Codex section).
 - **Usage parsing**: `--usage-probe` cross-check against the real CLI screen (do not misread absolute times vs. countdowns).
 - **Model list**: `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs accept invalid model names — agy silently falls back — so s7s owns list accuracy).
 - **Rewind/backtrack parsing** (claude `parentUuid`, codex `thread_rolled_back`): rewind in the real CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively and has no parser handling — expected).
@@ -80,13 +82,22 @@ authoritative matrix; the essentials:
   open: whether the `thread_rolled_back` marker survived the move to the
   `item_completed` item stream. If it was renamed, rolled-back turns reappear in
   both the list and the detail view. Verify with a real esc-esc rewind
-  ([testing.md](./docs/testing.md) rewind row) — it could not be reproduced from
-  the sessions on disk.
-- **Codex 0.153 is migrating session history into `thread_history_*.sqlite`.**
-  Version 0.153.4 `migrate-rollouts --apply` was checked on isolated copies of
-  443 eligible sessions. It retains JSONL but rewrites event representations;
-  byte sizes and line counts are not preservation invariants. Both formats use
-  the JSONL parser, including unmirrored completed `AgentMessage` items. On future
-  migrations, compare assistant/search/work content as well as session and Q
-  counts: turn parity alone cannot detect missing assistant text. See
+  ([testing.md](./docs/testing.md) rewind row) — as of 0.155.0 no rollout on disk
+  carries the marker, and the app-server protocol names the request
+  `thread/rollback`, so the stored form is still unconfirmed.
+- **Codex 0.153's migration into `thread_history_*.sqlite` has now run on a real
+  store** (0.155.0: 506 of 532 threads at `history_mode = paginated`). It is a
+  projection, not a replacement: each row keeps the rollout byte offset it was
+  built from, the JSONL rollouts stay complete, and list/detail parsing is
+  unchanged — the real-data parity run over 896 sessions reports 0 mismatches.
+  The migration retains JSONL but rewrites event representations; byte sizes and
+  line counts are not preservation invariants. On future migrations, compare
+  assistant/search/work content as well as session and Q counts: turn parity
+  alone cannot detect missing assistant text. See
   [session-context.md](./docs/session-context.md) for the decoder contract.
+- **A Codex session now lives in more stores than its rollout file**, and each
+  CLI version can add one. Deleting a session has to reach `threads` in
+  `state_*.sqlite` and the `thread_history_*.sqlite` tables as well, or the
+  deleted session's title and turns stay readable; this is why both rename and
+  delete ask the app server first (`src/codex_app_server.rs`). Re-derive the
+  method names from `codex app-server generate-json-schema` after an upgrade.

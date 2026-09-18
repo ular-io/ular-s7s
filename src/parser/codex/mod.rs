@@ -49,9 +49,23 @@ fn config_roots(cli_dir: &Path) -> Vec<PathBuf> {
 
 /// `state_*.sqlite` files under a codex config root, newest suffix last so a
 /// later file's row wins. `sqlite/codex-*.db` is deliberately excluded: it holds
-/// `local_thread_catalog`, an observation cache with no `threads` table, and it
-/// takes no part in renames.
+/// `local_thread_catalog`, an observation cache with no `threads` table, which
+/// codex rebuilds by scanning and s7s never writes.
 pub(crate) fn state_db_paths(root: &Path) -> Vec<PathBuf> {
+    numbered_db_paths(root, "state_")
+}
+
+/// `thread_history_*.sqlite` files under a codex config root. Codex 0.153
+/// started projecting each rollout into this database (`history_mode =
+/// paginated`), so a session's items survive here after its rollout file is
+/// gone; deletion has to reach it.
+pub(crate) fn history_db_paths(root: &Path) -> Vec<PathBuf> {
+    numbered_db_paths(root, "thread_history_")
+}
+
+/// Sqlite files whose name starts with `prefix` and ends with `.sqlite`, sorted
+/// so a later suffix comes last.
+fn numbered_db_paths(root: &Path, prefix: &str) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let Ok(entries) = std::fs::read_dir(root) else {
         return out;
@@ -64,7 +78,7 @@ pub(crate) fn state_db_paths(root: &Path) -> Vec<PathBuf> {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if name.starts_with("state_") && name.ends_with(".sqlite") {
+        if name.starts_with(prefix) && name.ends_with(".sqlite") {
             out.push(path);
         }
     }

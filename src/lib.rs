@@ -7,6 +7,7 @@
 //! `runtime`.
 
 pub mod cache;
+mod codex_app_server;
 pub mod config;
 pub mod demo;
 pub mod filter;

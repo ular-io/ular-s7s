@@ -6,9 +6,9 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// Persists the display title of a session to the storage location of the corresponding agent.
 ///
@@ -96,7 +96,7 @@ fn rename_codex(profile: &Profile, session: &Session, title: &str) -> Result<()>
     // The codex CLI renames through its app server, so try that first: it is the
     // only path that keeps every store codex maintains in step, and it survives a
     // schema change in the files written below.
-    if try_rename_codex_via_app_server(profile, session, title).unwrap_or(false) {
+    if try_rename_codex_via_app_server(profile, session, title) {
         return Ok(());
     }
 
@@ -244,120 +244,13 @@ fn update_codex_thread_title(profile_root: &Path, id: &str, title: &str) -> Resu
 ///
 /// Returns `true` only when `threads.name` afterwards holds the requested title:
 /// a JSON-RPC result is not proof, for the same reason a CLI exit code is not.
-/// Every failure — no binary, a handshake that stalls, an error reply — returns
-/// `false` so the caller falls back to writing the stores directly.
-fn try_rename_codex_via_app_server(
-    profile: &Profile,
-    session: &Session,
-    title: &str,
-) -> Result<bool> {
-    #[cfg(test)]
-    if std::env::var_os("ULAR_RENAME_TEST_ENABLE_CODEX_APP_SERVER").is_none() {
-        return Ok(false);
+/// Any other outcome returns `false`, and the caller writes the stores itself.
+fn try_rename_codex_via_app_server(profile: &Profile, session: &Session, title: &str) -> bool {
+    let params = serde_json::json!({ "threadId": session.id, "name": title });
+    if crate::codex_app_server::call(profile, "thread/name/set", params).is_err() {
+        return false;
     }
-
-    // One budget for the whole exchange: the app server starts a runtime and
-    // opens its databases, and a rename must never hold the UI for longer.
-    const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-
-    let bin = std::env::var_os("ULAR_RENAME_CODEX_BIN").unwrap_or_else(|| "codex".into());
-    let mut cmd = Command::new(bin);
-    cmd.arg("app-server")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::resume::sanitize_agent_env(&mut cmd);
-    if let Some((key, value)) = profile.env_var() {
-        cmd.env(key, value);
-    }
-
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err.into()),
-    };
-
-    let result = codex_app_server_set_name(&mut child, &session.id, title, REPLY_TIMEOUT);
-    let _ = child.kill();
-    let _ = child.wait();
-    result?;
-
-    Ok(codex_thread_name(profile.path.as_path(), &session.id).as_deref() == Some(title))
-}
-
-/// Drives the two-request exchange on an already spawned app server: `initialize`,
-/// then `thread/name/set`. Replies arrive interleaved with notifications, so the
-/// reader keys on the request id.
-fn codex_app_server_set_name(
-    child: &mut std::process::Child,
-    session_id: &str,
-    title: &str,
-    timeout: std::time::Duration,
-) -> Result<()> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("app server stdout unavailable"))?;
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("app server stdin unavailable"))?;
-
-    let await_reply = |id: i64, deadline: std::time::Instant| -> Result<()> {
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return Err(anyhow!("app server did not answer request {id}"));
-            }
-            let line = rx
-                .recv_timeout(left)
-                .map_err(|_| anyhow!("app server did not answer request {id}"))?;
-            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if msg.get("id").and_then(Value::as_i64) != Some(id) {
-                continue;
-            }
-            if let Some(err) = msg.get("error") {
-                return Err(anyhow!("app server rejected request {id}: {err}"));
-            }
-            return Ok(());
-        }
-    };
-
-    let deadline = std::time::Instant::now() + timeout;
-
-    let init = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "clientInfo": { "name": "s7s", "title": null, "version": env!("CARGO_PKG_VERSION") },
-            "capabilities": null,
-        }
-    });
-    writeln!(stdin, "{init}").context("write initialize")?;
-    stdin.flush().context("flush initialize")?;
-    await_reply(1, deadline)?;
-
-    let set_name = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "thread/name/set",
-        "params": { "threadId": session_id, "name": title }
-    });
-    writeln!(stdin, "{set_name}").context("write thread/name/set")?;
-    stdin.flush().context("flush thread/name/set")?;
-    await_reply(2, deadline)
+    codex_thread_name(profile.path.as_path(), &session.id).as_deref() == Some(title)
 }
 
 /// Reads back `threads.name` for one session, so a rename can be checked against

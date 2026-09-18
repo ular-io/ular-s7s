@@ -55,6 +55,11 @@ share `parser::{clean_turn, is_noise_turn}`.
   injection does not; later tool work and the final answer stay attached.
 - The shared decoder stays payload-light. `session_context/claude.rs` alone
   extracts detailed tool-call and tool-result payloads.
+- Unknown record types contribute only their chain link. Claude 2.1.x adds
+  `attachment`, `queue-operation`, `relocated`, `continued-in`, `bridge-session`,
+  `frame-link`, `worktree-state`, `history-suppression` and `cost-state`; of
+  these only `attachment` carries a `uuid`, and it always carries the matching
+  `parentUuid`, so the active-branch walk still reaches the root.
 
 ### Codex
 
@@ -229,8 +234,22 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
   success.
 - Deletion runs through `session_delete::delete_session_artifacts`, shared with
   the TUI delete action, so both obey the same profile scoping: auxiliary stores
-  (Antigravity metadata, sqlite sidecars) are only touched under the owning
-  profile's root, and are skipped entirely when that profile is gone.
+  are only touched under the owning profile's root, and are skipped entirely
+  when that profile is gone.
+- **Codex needs more than the rollout file.** Since 0.153 codex also keeps the
+  thread row (title, first user message) in `threads` in `state_*.sqlite` and
+  every turn in `thread_history_*.sqlite`, so removing the rollout alone left a
+  deleted session's text readable in both. The delete first asks the app server
+  (`thread/delete`, via `codex_app_server::call`) because that reaches stores no
+  s7s version knows about, then clears what it knows itself — the `threads`,
+  `thread_attachments` and `thread_dynamic_tools` rows, the four
+  `thread_history_*.sqlite` tables keyed by `thread_id`, and the id's records in
+  `session_index.jsonl`. The second pass is not conditional on the first: every
+  statement is a no-op on rows the app server already removed, and no failure
+  there may turn a completed delete into an error.
+- **Antigravity** additionally drops `annotations/<id>.pbtxt`, the file s7s
+  itself writes on rename, plus the `cache/conversation_metadata.json` entry and
+  the sqlite sidecars.
 
 ### Handoff
 
