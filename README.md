@@ -32,9 +32,10 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **Rust-Powered & Blazingly Fast**: Built with Rust combined with database-backed caching for instantaneous loading. The initial scan builds the database cache, enabling subsequent lookups to query the cache directly for near-instantaneous load times.
 - **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen. Keyword search spans user prompts, titles, folder names, and each turn's last assistant answer, so you can find a session by something the agent said.
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
-- **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, or delete redundant histories directly from the TUI.
+- **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
 - **Project-Free Scratch Sessions**: Pick `[SCRATCH]` at the top of the New Session folder list to start an agent with no project attached — for a question or a quick check. It runs in a shared folder (`~/.config/s7s/scratch`) that is emptied on every start and carries a policy file telling the agent to ask you for a target directory before writing anything, so nothing important is left in a throwaway location.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
+- **Work Handoff**: Park a task you are not doing now in a new session (`s7s session handoff`). The parked session records the work order and stops without acting on it, and keeps a link back to the session it came from, so `ctrl+o` walks to the origin when the work is picked up later.
 - **Dozens of Visual Themes**: Personalize your workspace with 40 built-in themes, including specialized dark/light variants (Nord, Dracula, Tokyo Night, Ular) and accessibility-focused CVD (Color Vision Deficiency) safe palettes.
 
 ### Core Capabilities
@@ -74,8 +75,12 @@ cp target/release/s7s ~/bin/   # Copy to your desired PATH location
 s7s                         # Run TUI
 s7s .                       # Run TUI with the New Session dialog open on that folder (OK focused)
 s7s demo                    # Run TUI in demo mode using mock English sessions (disposable sandbox under the OS cache dir, e.g. macOS ~/Library/Caches/s7s/demo)
-s7s session show <ID>       # View one past session's context (no TUI, see below)
 s7s session search <QUERY>  # List past sessions matching a keyword (no TUI, see below)
+s7s session list            # List past sessions by filter alone, without a keyword
+s7s session show <ID>       # View one past session's context
+s7s session rename <ID> <TITLE>   # Set one session's display title
+s7s session delete <ID> --yes     # Delete one session's files on disk (irreversible)
+s7s session handoff --title <T>   # Park a task in a new session to pick up later
 s7s --rebuild-cache         # Force rebuild the entire session cache
 s7s --print                 # Print the session list only, without TUI (debug)
 s7s --usage-probe           # Print usage probe results only, without TUI (debug)
@@ -108,7 +113,7 @@ leaves the ordinary session list behind the dialog.
 
 | Key | Action |
 | :-- | :-- |
-| `:` | Screen selection menu (`s` Session / `p` Profile) |
+| `:` | Quick Command palette. Typing filters every command by label, alias, or shortcut (`↑`/`↓` to pick, `enter` to run), so `profile` reaches **Open Profile Window** and `theme` reaches **Change Theme**. Commands with no key of their own — **Change Folder**, **Edit Config**, **Change Theme** — are reachable only here |
 | `!` | Terminal command in session folder (run shell command in the selected session's folder) |
 | `/` | Keyword search mode (real-time matching over body/title/folder + last assistant answers + session id, space=AND) |
 | `a` | Agents modal (`space` toggle, `enter` apply) |
@@ -116,6 +121,7 @@ leaves the ordinary session list behind the dialog.
 | `0` | Reset all filters |
 | `f` | Folder modal (typing=filter, `space` toggle, `enter` apply) |
 | `c` | Copy to clipboard by focus (Table=session info / Preview=all user turns, full content). On the Detail view: Prompt=selected user turn / Work=work log + final answer |
+| `.` | Toggle Tool Logs (show/hide tool calls and results in the Detail view) |
 | `ctrl+u` | Update Session (reflect session list additions/changes + recheck usage) |
 | `ctrl+n` | New Session (Profile/Model/Folder dialog; typing a bare name instead of a path offers to create a new project folder under `~/.config/s7s/projects`; the folder list starts with `[SCRATCH]` for a project-free session; a prefilled path starts selected, so typing replaces it and `→` keeps it for editing) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |
@@ -128,12 +134,13 @@ leaves the ordinary session list behind the dialog.
 | `g` / `G` (`home` / `end`) | Jump to start / end |
 | `pageup` / `pagedown` | Scroll preview body |
 | `enter` | Resume Session |
+| `?` | Open Help (shortcut overlay) |
 | `esc` | Cancel search/filter/selection state (reset keyword/filter, close modal) — **Not quit** |
 | `q` / `ctrl+c` | Press again to quit |
 
 All filters (Keyword · Agent · Folder · Profile) operate with an **AND combination**.
 
-### Shortcuts (Profile Screen, `:` → `p`)
+### Shortcuts (Profile Screen, `:` → **Open Profile Window**)
 
 | Key | Action |
 | :-- | :-- |
@@ -146,13 +153,22 @@ All filters (Keyword · Agent · Folder · Profile) operate with an **AND combin
 | `ctrl+u` | Refresh all profile usages (keeps showing previous value during refresh) |
 | `→` / `l` | Return to session screen |
 
+## Session Folder
+
+A session's folder is where s7s opens it: the list shows it, the folder filter groups by it, and resume runs the agent CLI there. It normally comes from the agent's own storage, and **Change Folder** in the `:` palette overrides it for one session — [Details](docs/session-folder.md).
+
+- It changes **only where the session opens next time**. No file is moved and the stored transcript is never rewritten, so every absolute path in the past conversation keeps working.
+- The folder must already exist. Creating a project folder belongs to New Session.
+- The override is kept in `~/.config/s7s/session_workspaces.json`; setting the original folder again restores it, since the agent's own record is never lost. Deleting the session clears the override as well.
+- Claude and Codex only. An Antigravity session resumes in the folder recorded when it was created, so an override would only make the list disagree with where the work happens — the command shows that reason instead of opening.
+
 ## Session Context
 
 You can view the conversation history of a past session as a reference context, or start a new session by attaching the selected session as context — [Details](docs/session-context.md).
 
-### `s7s session` — Context CLI
+### `s7s session` — Session CLI
 
-Two subcommands: `show` renders one session's context, `search` finds sessions by keyword. Both run without the TUI and share the same session index as the TUI (cheap incremental scan).
+Six subcommands, all running without the TUI and sharing the same session index as the TUI (cheap incremental scan): `search` and `list` find sessions, `show` renders one session's context, `rename` and `delete` manage them, and `handoff` parks a task in a new session.
 
 #### `s7s session show <ID>`
 
@@ -191,7 +207,55 @@ s7s session search rename --profile builtin-claude --limit 50
 - `--folder` matches the folder name (cwd basename) exactly; `--agent` accepts `claude`/`codex`/`antigravity`. Query and filters are AND'd; repeated values of one option are OR'd. `--limit 0` removes the cap.
 - Each result shows `ID  agent/profile  [folder]  updated  Q<turns>` and the title, then a hint for reading a result with `s7s session show`.
 - Not supported: keyword OR (all tokens are AND), phrase/adjacency matching (quoting a query is equivalent to unquoted tokens), negation, regex, and substring folder matching.
-- See `s7s session --help`, `s7s session show --help`, and `s7s session search --help` for detailed options, excerpt limits, matching, and error rules.
+- See `s7s session --help` and `s7s session <cmd> --help` for detailed options, excerpt limits, matching, and error rules.
+
+#### `s7s session list`
+
+Lists sessions by filter alone, for "the recent sessions of this folder" when no keyword applies. Filters, output format, and `--limit` behave as in `search`.
+
+```bash
+# 20 most recent sessions (with no filter at all, --limit is what bounds the list)
+s7s session list
+
+# Recent codex sessions of one folder
+s7s session list --folder ular-s7s --agent codex --limit 5
+```
+
+#### `s7s session rename` / `s7s session delete`
+
+```bash
+# Set the display title (single line, written through the agent's own title store)
+s7s session rename 019f36e8-9157-7c63-bee8-8937a6314982 "Release checklist"
+
+# Print the target without removing anything (no --yes)
+s7s session delete 019f36e8-9157-7c63-bee8-8937a6314982
+
+# Actually delete, clearing every store the agent keeps for that session
+s7s session delete 019f36e8-9157-7c63-bee8-8937a6314982 --yes
+```
+
+- Both resolve the full session ID across all profiles; `--agent` / `--profile` narrow it when more than one matches.
+- `delete` is irreversible and removes the session from the agent CLI too, not only from the s7s list.
+
+#### `s7s session handoff`
+
+Parks a task you are not doing now in a **new** session, to be picked up later. The body is the work order — what the task is, what to check, what counts as done — read from stdin unless `--body-file` is given.
+
+```bash
+# Park a task in the same agent, profile, and folder as the current session
+echo "Recheck the usage parser against the new codex release" \
+  | s7s session handoff --title "usage parser recheck"
+
+# Park it in another agent and folder, naming the origin explicitly
+s7s session handoff --title "gateway retry policy" --agent codex \
+  --folder ~/work/gateway --from 019f36e8-9157-7c63-bee8-8937a6314982 \
+  --body-file ./order.md
+```
+
+- The parked session **records the order and stops**; it does not start the work. It sits at one turn (`Q1`), which is what marks it as not started.
+- `--agent` / `--profile` default to the source session and `--folder` to its working directory, so resuming lands in the project the work belongs to. A `HAND-OVER: ` prefix is added to `--title` when absent.
+- The origin is recorded as the new session's context source, so `ctrl+o` opens it from the parked session. `--no-source` leaves out both the origin and that link.
+- The stop instruction is English by default (committed sources are English). Override it with `handoff_instruction` in `config.toml` to hand off in another language.
 
 ### New Session with Context
 
@@ -217,7 +281,7 @@ A session started with context keeps a `● Context Source` block above `Q1` on 
 
 ## Profiles (Multiple Subscriptions)
 
-The profile list is saved by the app in `~/.config/s7s/profiles.json` (or `~/Library/Application Support/s7s/` on macOS), and seeds the default 3 (Claude/Antigravity/Codex) on first run. You can add/edit them in the profile screen via `:` → `p`.
+The profile list is saved by the app in `~/.config/s7s/profiles.json` (or `~/Library/Application Support/s7s/` on macOS), and seeds the default 3 (Claude/Antigravity/Codex) on first run. You can add/edit them in the profile screen, opened with **Open Profile Window** in the `:` palette.
 
 - **path** = Agent config root (e.g., `~/.claude-team`). The session directory is automatically derived (Claude `<path>/projects`, Codex `<path>/sessions`, Antigravity is the path itself).
 - `CLAUDE_CONFIG_DIR`/`CODEX_HOME` is injected only for profiles that are not the default path. Specifying the env on the default path causes a re-login screen issue — [Details](docs/profiles.md).
@@ -231,17 +295,18 @@ resume template tokens: `{id}` (session ID), `{cwd}` (working folder). When exec
 You can open this file using the **Edit Config** command in the `:` palette. If the file does not exist, a template with all keys commented out (showing built-in defaults) is automatically created. Only uncommented keys override the defaults.
 
 ```toml
-resume_claude = "claude --resume {id}"
-resume_codex = "codex resume {id}"
-resume_antigravity = "agy --conversation {id}"
-new_claude = "claude"
-new_codex = "codex"
-new_antigravity = "agy"
+resume_claude = "claude --resume {id} --dangerously-skip-permissions"
+resume_codex = "codex resume {id} --yolo"
+resume_antigravity = "agy --conversation {id} --dangerously-skip-permissions"
+new_claude = "claude --dangerously-skip-permissions"
+new_codex = "codex --yolo"
+new_antigravity = "agy --dangerously-skip-permissions"
 editor = "vim"
 ```
 
 - **editor** = Default editor command (optional). If set, it is exported as `EDITOR`/`VISUAL` to the `!` Terminal Command execution shell, applying to commands that bring up an editor like `git commit`. The **Edit Config** command also uses this editor (if unset, it falls back to `$VISUAL` → `$EDITOR` → `vi`), and the settings are immediately reloaded upon returning to s7s after saving. If the editor execution fails (e.g., typo in command), it asks whether to reopen with vim.
   GUI editors must include a flag to wait until closed (e.g., `code -w`).
+- **handoff_instruction** = Trailing instruction appended to a `s7s session handoff` body (optional). It is the text that tells the parked session to record the order and stop. The built-in default is a multi-line English block, because committed sources are English; set this key to hand off in another language. It is not part of the generated template, so add it by hand.
 
 > **Antigravity resume**: The Antigravity CLI executable is `agy`, and it resumes conversations with `agy --conversation <id>`. If `agy` is not in the PATH, replace `resume_antigravity` with an absolute path (e.g., `~/.local/bin/agy --conversation {id}`).
 
