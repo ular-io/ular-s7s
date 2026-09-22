@@ -100,6 +100,16 @@ pub(crate) enum UserTextKind {
     Blank,
     /// No extractable text (e.g. a pure tool-result record).
     NoText,
+    /// `isCompactSummary == true`: the summary the CLI writes in the user role
+    /// when a conversation is compacted. It opens no turn (CLI-authored, not
+    /// human input) and closes none — an automatic compaction can interrupt an
+    /// answer, and the work recorded after the boundary still belongs to the
+    /// question before it.
+    ///
+    /// The payload is the cleaned text, used only when nothing precedes the
+    /// summary on the active branch (a truncated file): both consumers then keep
+    /// it as the first turn rather than leave the session with no turns at all.
+    CompactSummary { cleaned: String },
 }
 
 /// One ordered item of an assistant message's content array. `ToolUse` carries
@@ -207,7 +217,13 @@ fn record_link(v: &Value) -> Option<(Option<&str>, Option<&str>)> {
     }
     Some((
         v.get("uuid").and_then(Value::as_str),
-        v.get("parentUuid").and_then(Value::as_str),
+        // `/compact` writes its boundary record with `parentUuid: null` and keeps
+        // the real predecessor in `logicalParentUuid`. Without this fallback the
+        // boundary reads as a second root and everything before the compaction is
+        // dropped as an abandoned `/rewind` branch.
+        v.get("parentUuid")
+            .and_then(Value::as_str)
+            .or_else(|| v.get("logicalParentUuid").and_then(Value::as_str)),
     ))
 }
 
@@ -259,6 +275,10 @@ fn decode_user(v: &Value) -> UserRecord {
     let is_task_notification = origin_is_task_notification(v)
         || text.as_deref().map(is_notification_text).unwrap_or(false);
     let text_kind = match text.as_deref() {
+        Some(t) if is_compact_summary(v) => match clean_turn(t) {
+            Some(cleaned) => UserTextKind::CompactSummary { cleaned },
+            None => UserTextKind::Blank,
+        },
         None => UserTextKind::NoText,
         Some(t) if is_noise_turn(t) => UserTextKind::Boundary,
         Some(t) => match clean_turn(t) {
@@ -285,6 +305,10 @@ fn origin_is_task_notification(v: &Value) -> bool {
 
 fn is_notification_text(text: &str) -> bool {
     text.trim_start().starts_with("<task-notification>")
+}
+
+fn is_compact_summary(v: &Value) -> bool {
+    v.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
 }
 
 /// Ordered content items of an assistant message (text and tool_use).
@@ -322,12 +346,16 @@ mod tests {
         let tool = val(
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#,
         );
+        let compacted = val(
+            r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}"#,
+        );
 
         for (v, expect) in [
             (&turn, "turn"),
             (&noise, "boundary"),
             (&blank, "blank"),
             (&tool, "notext"),
+            (&compacted, "compact"),
         ] {
             let Some(RecordKind::User(u)) = decode(v).map(|d| d.kind) else {
                 panic!("expected user record");
@@ -340,6 +368,7 @@ mod tests {
                 UserTextKind::Boundary => "boundary",
                 UserTextKind::Blank => "blank",
                 UserTextKind::NoText => "notext",
+                UserTextKind::CompactSummary { .. } => "compact",
             };
             assert_eq!(got, expect);
         }
@@ -412,6 +441,34 @@ mod tests {
         assert!(filter.is_active(Some("a")));
         assert!(filter.is_active(Some("c")));
         assert!(filter.is_active(None));
+    }
+
+    #[test]
+    fn compact_boundary_keeps_pre_compaction_records_active() {
+        // `/compact` (and automatic compaction) writes the boundary with a null
+        // parentUuid; only `logicalParentUuid` reaches the record it followed.
+        // Without that link the pre-compaction half reads as a dead branch.
+        let values = vec![
+            val(
+                r#"{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}"#,
+            ),
+            val(
+                r#"{"type":"assistant","uuid":"b","parentUuid":"a","message":{"content":[{"type":"text","text":"답1"}]}}"#,
+            ),
+            val(
+                r#"{"type":"system","subtype":"compact_boundary","uuid":"c","parentUuid":null,"logicalParentUuid":"b","content":"Conversation compacted"}"#,
+            ),
+            val(
+                r#"{"type":"user","uuid":"d","parentUuid":"c","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}"#,
+            ),
+            val(
+                r#"{"type":"user","uuid":"e","parentUuid":"d","message":{"role":"user","content":"질문2"}}"#,
+            ),
+        ];
+        let filter = chain_filter(&values);
+        for uuid in ["a", "b", "c", "d", "e"] {
+            assert!(filter.is_active(Some(uuid)), "{uuid} must stay active");
+        }
     }
 
     #[test]

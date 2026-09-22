@@ -87,6 +87,20 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                             push_entry(&mut current, ContextEntryKind::ToolResult, entry);
                         }
                     }
+                    // Not rendered: the turns it restates are on the active
+                    // branch already, and keeping the current turn open leaves
+                    // post-compaction work attached to the question it answers.
+                    // Kept only with no earlier turn (the list parser agrees).
+                    UserTextKind::CompactSummary { .. } => {
+                        if turns.is_empty() && current.is_none() {
+                            current = Some(ContextTurn {
+                                user: cleanup_user_text(&u.text.unwrap_or_default()),
+                                submitted_at_ms: u.submitted_at_ms,
+                                last_assistant_text: None,
+                                entries: Vec::new(),
+                            });
+                        }
+                    }
                 }
             }
             RecordKind::Assistant { items, .. } => {
@@ -158,6 +172,52 @@ mod tests {
         ));
         std::fs::write(&path, content).expect("write temp file");
         path
+    }
+
+    #[test]
+    fn compaction_keeps_earlier_turns_and_attaches_later_work() {
+        // Automatic compaction interrupts an answer: the work the model does
+        // right after the summary still belongs to the question before it.
+        let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
+{"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"답1"}]}}
+{"type":"system","subtype":"compact_boundary","uuid":"c","parentUuid":null,"logicalParentUuid":"b","content":"Conversation compacted","compactMetadata":{"trigger":"auto"}}
+{"type":"user","uuid":"d","parentUuid":"c","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: 질문1 정리"}}
+{"type":"assistant","uuid":"e","parentUuid":"d","message":{"role":"assistant","content":[{"type":"text","text":"압축 후 이어서 한 작업"}]}}
+{"type":"user","uuid":"f","parentUuid":"e","message":{"role":"user","content":"질문2"}}
+{"type":"assistant","uuid":"g","parentUuid":"f","message":{"role":"assistant","content":[{"type":"text","text":"답2"}]}}
+"#;
+        let path = write_temp("compaction", content);
+        let turns = parse_turns(&path).expect("parse");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].user, "질문1");
+        assert_eq!(
+            turns[0].last_assistant_text.as_deref(),
+            Some("압축 후 이어서 한 작업")
+        );
+        assert_eq!(turns[1].user, "질문2");
+        assert!(turns
+            .iter()
+            .all(|t| !t.user.contains("This session is being continued")));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn summary_without_earlier_turns_becomes_the_first_turn() {
+        // Parity with the list parser's last-resort rule.
+        let content = r#"
+{"type":"user","uuid":"d","parentUuid":null,"isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: 앞선 대화 정리"}}
+{"type":"assistant","uuid":"e","parentUuid":"d","message":{"role":"assistant","content":[{"type":"text","text":"이어서 한 작업"}]}}
+"#;
+        let path = write_temp("compaction-only", content);
+        let turns = parse_turns(&path).expect("parse");
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].user.contains("앞선 대화 정리"));
+        assert_eq!(
+            turns[0].last_assistant_text.as_deref(),
+            Some("이어서 한 작업")
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

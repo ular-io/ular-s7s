@@ -50,6 +50,19 @@ share `parser::{clean_turn, is_noise_turn}`.
 
 - List and context consumers share `parser/claude/events.rs`.
 - `parentUuid` chain reduction excludes abandoned `/rewind` branches.
+- Compaction (`/compact` and the automatic one) breaks that chain: the
+  `system` / `compact_boundary` record carries `parentUuid: null` and keeps its
+  real predecessor in `logicalParentUuid`. The chain walk falls back to that
+  field, so pre-compaction turns stay on the active branch instead of being
+  dropped as a rewind branch. Without it a session compacted and then closed
+  showed a single turn.
+- The summary the CLI writes in the user role (`isCompactSummary`) is
+  `UserTextKind::CompactSummary`: it neither opens a turn nor closes one, so
+  work recorded after an automatic compaction stays attached to the question it
+  answers, and the summary text is not rendered — it restates turns that are
+  present in their original form. Both consumers share one exception: with
+  nothing before it on the active branch the summary becomes the first turn, or
+  the session would have no turns and vanish from the list.
 - Sidechain records and task notifications are classified consistently.
 - A noise boundary normally closes the current turn, but an `isMeta` skill
   injection does not; later tool work and the final answer stay attached.

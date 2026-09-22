@@ -21,6 +21,7 @@ the change area below and run every check listed for it.
 | Probe working directory / trust handling | `--usage-probe` **and** `--model-probe` from a folder whose `.claude/settings.json` pre-approves permissions (the case that used to fail): every profile must come back `Ready`. To cover auto-confirm, first drop the probe folder from agy's `trustedWorkspaces` so the dialog is actually raised — agy must re-add it on its own | [usage-display.md](./usage-display.md) |
 | Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
 | Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
+| Compaction parsing (claude `compact_boundary` / `isCompactSummary`) | Run `/compact` in a real session, then confirm s7s still lists the turns recorded before the boundary and does not count the summary as a question | [session-context.md](./session-context.md) |
 | `s7s session` mutating subcommands (`rename`, `delete`) | Run both against a disposable session and confirm the on-disk effect, not just the exit code | §Session CLI mutation checks below |
 | `s7s session handoff` | Park one disposable handoff per agent and confirm the store, the profile scoping, and that the new session did not act | §Session handoff checks below |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
@@ -172,6 +173,19 @@ If session context (`src/session_context/` · `s7s session`) or New Session with
    ```
 
    Then confirm the session is listed with the right Q count: `s7s session search --agent codex --limit 3 ""`.
+
+8. **After a claude upgrade, confirm a compacted session is still whole.** Run
+   `/compact` in a disposable session, then check that `s7s session show <id>`
+   still starts at the first question of the session, not at the compaction
+   summary. The chain link s7s depends on is `logicalParentUuid` on the
+   `compact_boundary` record; if the CLI renames or drops it, every compacted
+   session silently loses its earlier half, and the parity test cannot see it
+   (both views lose the same turns).
+
+   ```bash
+   jq -r 'select(.subtype=="compact_boundary" or .isCompactSummary) | "\(.type)/\(.subtype // "-") parent=\(.parentUuid) logical=\(.logicalParentUuid)"' \
+     ~/.claude/projects/<encoded-cwd>/<id>.jsonl
+   ```
 
 ## Session activity checks
 
