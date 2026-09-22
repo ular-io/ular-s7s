@@ -681,7 +681,7 @@ impl App {
     }
 }
 
-fn resolve_input_path(raw: &str) -> PathBuf {
+pub(crate) fn resolve_input_path(raw: &str) -> PathBuf {
     let path = crate::config::expand(raw);
     if path.is_absolute() {
         path

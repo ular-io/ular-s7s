@@ -19,6 +19,7 @@ planning; backlog entries are not implementation authorization.
 | Usage display / parsing | [usage-display.md](./docs/usage-display.md) |
 | Profiles / env injection (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) | [profiles.md](./docs/profiles.md) |
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
+| Session folder (`Change Folder` dialog, `src/ui/overlays/change_folder.rs`, `src/session_workspace.rs`, `scan::apply_workspace_cwd`) | [session-folder.md](./docs/session-folder.md) + [testing.md](./docs/testing.md) |
 | Scratch workspace (`src/scratch.rs`, folder dropdown `[SCRATCH]` row) | [architecture.md](./docs/architecture.md) §Scratch workspace + [testing.md](./docs/testing.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
 | Session deletion (`src/session_delete.rs`, shared by the TUI action and `s7s session delete`) | [session-context.md](./docs/session-context.md) §Delete + [testing.md](./docs/testing.md) |

@@ -13,6 +13,7 @@ pub enum CommandId {
     GoToContextSource,
     BackToPreviousSession,
     RenameSession,
+    ChangeFolder,
     DeleteSession,
     TerminalCommand,
     CreateProfile,
@@ -109,6 +110,24 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: Some("ctrl+r"),
         aliases: &["title", "name", "change"],
         description: None,
+    },
+    CommandSpec {
+        id: CommandId::ChangeFolder,
+        key: "change-folder",
+        label: "Change Folder",
+        shortcut: None,
+        aliases: &[
+            "folder",
+            "move",
+            "cwd",
+            "directory",
+            "dir",
+            "path",
+            "relocate",
+        ],
+        description: Some(
+            "Open this session in a different folder from now on · no file is moved · not available for Antigravity",
+        ),
     },
     CommandSpec {
         id: CommandId::DeleteSession,

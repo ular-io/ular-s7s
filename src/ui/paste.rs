@@ -21,6 +21,7 @@ impl App {
         match self.mode {
             UiMode::Keyword => self.paste_into_keyword(text),
             UiMode::Rename => self.paste_into_rename(text),
+            UiMode::ChangeFolder => self.paste_into_change_folder(text),
             UiMode::ProfileForm => self.paste_into_profile_form(text),
             UiMode::NewSession => self.paste_into_new_session(text),
             UiMode::QuickCommand => self.paste_into_quick(text),

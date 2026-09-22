@@ -72,7 +72,13 @@ pub(crate) fn scan_at(
                     },
                     |_name| true,
                     |path, sessions| {
-                        apply_claude_title_meta(path, sessions, &claude_meta);
+                        apply_claude_title_meta(
+                            path,
+                            sessions,
+                            &claude_meta,
+                            &workspaces,
+                            &profile.id,
+                        );
                     },
                 );
             }
@@ -88,7 +94,9 @@ pub(crate) fn scan_at(
                     &mut reparsed,
                     |path, mtime| parser::codex::parse_file(path, mtime, Some(&codex_meta)),
                     |name| name.starts_with("rollout-"),
-                    |_, sessions| apply_codex_title_meta(sessions, &codex_meta),
+                    |_, sessions| {
+                        apply_codex_title_meta(sessions, &codex_meta, &workspaces, &profile.id)
+                    },
                 );
             }
             Agent::Antigravity => scan_antigravity(
@@ -180,10 +188,38 @@ fn scan_jsonl_tree<P, F>(
     }
 }
 
+/// Applies the s7s-owned folder override (`session_workspaces.json`) to one session.
+///
+/// Claude and Codex resume in whatever directory s7s launches them from — the
+/// folder stored in the transcript is only where the session started — so a
+/// recorded override is the session's real folder and wins.
+///
+/// Antigravity is the exception. A resumed conversation keeps working in the
+/// folder captured when it was created; launching it elsewhere changes the
+/// header but not the working directory (verified against agy 1.2.8). Its own
+/// value therefore always wins, and the override only fills the gap left by
+/// handoffs, which record no folder at all. `Change Folder` is refused for
+/// Antigravity sessions for the same reason (see docs/session-folder.md).
+fn apply_workspace_cwd(session: &mut Session, workspaces: &WorkspaceStore, profile_id: &str) {
+    if session.agent == Agent::Antigravity && !session.cwd.as_os_str().is_empty() {
+        return;
+    }
+    let Some(cwd) = workspaces.cwd(profile_id, &session.id) else {
+        return;
+    };
+    session.cwd = cwd.to_path_buf();
+    session.folder = cwd
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| cwd.to_string_lossy().to_string());
+}
+
 fn apply_claude_title_meta(
     path: &Path,
     sessions: &mut [Session],
     meta: &std::collections::HashMap<String, parser::claude::TitleMeta>,
+    workspaces: &WorkspaceStore,
+    profile_id: &str,
 ) {
     // A missing registry entry is the normal case, not a reason to skip: claude
     // 2.1.263 keys `sessions/` by process id, so a stored session usually has no
@@ -206,6 +242,7 @@ fn apply_claude_title_meta(
             }
             session.title_fixed = session.title_fixed || meta.fixed;
         }
+        apply_workspace_cwd(session, workspaces, profile_id);
         parser::reindex_search_blob(session);
     }
 }
@@ -213,12 +250,15 @@ fn apply_claude_title_meta(
 fn apply_codex_title_meta(
     sessions: &mut [Session],
     meta: &std::collections::HashMap<String, parser::codex::TitleMeta>,
+    workspaces: &WorkspaceStore,
+    profile_id: &str,
 ) {
     for session in sessions {
         if let Some(meta) = meta.get(&session.id) {
             session.title_hint = meta.title.clone().or_else(|| session.title_hint.clone());
             session.title_fixed = meta.title.is_some();
         }
+        apply_workspace_cwd(session, workspaces, profile_id);
         parser::reindex_search_blob(session);
     }
 }
@@ -239,18 +279,7 @@ fn apply_antigravity_scan_meta(
                 session.title_fixed = false;
             }
         }
-        // Antigravity `--print` omits the launch cwd. For sessions created by
-        // `s7s session handoff`, use the exact target folder captured at launch.
-        // Agent-owned workspace data always wins when it is present.
-        if session.cwd.as_os_str().is_empty() {
-            if let Some(cwd) = workspaces.cwd(profile_id, &session.id) {
-                session.cwd = cwd.to_path_buf();
-                session.folder = cwd
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_else(|| cwd.to_string_lossy().to_string());
-            }
-        }
+        apply_workspace_cwd(session, workspaces, profile_id);
         parser::reindex_search_blob(session);
     }
 }
@@ -404,7 +433,7 @@ mod tests {
             },
         );
 
-        apply_codex_title_meta(&mut sessions, &meta);
+        apply_codex_title_meta(&mut sessions, &meta, &WorkspaceStore::default(), "p");
 
         assert_eq!(sessions[0].title(), "26-07 세션 타이틀 개선");
         assert!(sessions[0].title_fixed);
@@ -448,13 +477,13 @@ mod tests {
 
         // Cached body-derived title wins over the meta name.
         let mut sessions = vec![claude_session("abc-123", Some("본문 제목"))];
-        apply_claude_title_meta(&path, &mut sessions, &meta);
+        apply_claude_title_meta(&path, &mut sessions, &meta, &WorkspaceStore::default(), "p");
         assert_eq!(sessions[0].title_hint.as_deref(), Some("본문 제목"));
         assert!(sessions[0].title_fixed);
 
         // Without a body title the meta name fills the gap (and enters the search blob).
         let mut sessions = vec![claude_session("abc-123", None)];
-        apply_claude_title_meta(&path, &mut sessions, &meta);
+        apply_claude_title_meta(&path, &mut sessions, &meta, &WorkspaceStore::default(), "p");
         assert_eq!(sessions[0].title_hint.as_deref(), Some("메타 제목"));
         assert!(sessions[0].search_blob.contains("메타 제목"));
     }
@@ -468,7 +497,7 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/x/abc-123.jsonl");
 
         let mut sessions = vec![claude_session("abc-123", Some("HAND-OVER: 인계 항목"))];
-        apply_claude_title_meta(&path, &mut sessions, &meta);
+        apply_claude_title_meta(&path, &mut sessions, &meta, &WorkspaceStore::default(), "p");
 
         assert_eq!(
             sessions[0].title_hint.as_deref(),
@@ -624,6 +653,69 @@ mod tests {
 
         assert_eq!(sessions[0].title(), "26-07 컨테이너 레지스트리 이전");
         assert!(sessions[0].title_fixed);
+    }
+
+    #[test]
+    fn workspace_override_replaces_a_stored_folder_for_claude_and_codex() {
+        let root = std::env::temp_dir().join(format!(
+            "s7s-scan-folder-override-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace_path = root.join("session_workspaces.json");
+        crate::session_workspace::record(
+            &workspace_path,
+            "p",
+            "changed",
+            Path::new("/tmp/chosen-project"),
+        )
+        .expect("record override");
+        let workspaces = WorkspaceStore::load(&workspace_path);
+
+        // Claude and Codex both resume where s7s launches them, so the recorded
+        // folder is the real one and wins over the transcript's own value.
+        let mut claude = claude_session("changed", Some("claude"));
+        claude.cwd = PathBuf::from("/tmp/wrong-project");
+        claude.folder = "wrong-project".to_string();
+        let mut untouched = claude_session("untouched", Some("claude"));
+        untouched.cwd = PathBuf::from("/tmp/original-project");
+        untouched.folder = "original-project".to_string();
+        let mut sessions = vec![claude, untouched];
+        apply_claude_title_meta(
+            Path::new("/tmp/changed.jsonl"),
+            &mut sessions,
+            &HashMap::new(),
+            &workspaces,
+            "p",
+        );
+        assert_eq!(sessions[0].cwd, PathBuf::from("/tmp/chosen-project"));
+        assert_eq!(sessions[0].folder, "chosen-project");
+        assert!(sessions[0].search_blob.contains("chosen-project"));
+        assert_eq!(sessions[1].folder, "original-project");
+
+        let mut codex = claude_session("changed", Some("codex"));
+        codex.agent = Agent::Codex;
+        codex.cwd = PathBuf::from("/tmp/wrong-project");
+        codex.folder = "wrong-project".to_string();
+        let mut sessions = vec![codex];
+        apply_codex_title_meta(&mut sessions, &HashMap::new(), &workspaces, "p");
+        assert_eq!(sessions[0].folder, "chosen-project");
+
+        // Antigravity keeps its own value: a resumed agy conversation works in
+        // the folder it was created in, whatever folder it is launched from.
+        let mut agy = claude_session("changed", Some("agy"));
+        agy.agent = Agent::Antigravity;
+        agy.cwd = PathBuf::from("/tmp/agy-project");
+        agy.folder = "agy-project".to_string();
+        let mut sessions = vec![agy];
+        apply_antigravity_scan_meta(&mut sessions, &HashMap::new(), &workspaces, "p");
+        assert_eq!(sessions[0].folder, "agy-project");
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

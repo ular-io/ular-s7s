@@ -319,3 +319,90 @@ fn modal_list_item_renders_checkmark_mark() {
     assert!(selected_debug.contains("[✓] Option A"));
     assert!(unselected_debug.contains("[ ] Option B"));
 }
+
+// ---- Change Folder ----
+
+#[test]
+fn change_folder_is_refused_for_antigravity_sessions() {
+    let mut app = app_with_session();
+    app.sessions[0].agent = Agent::Antigravity;
+
+    app.open_change_folder_at(0);
+
+    // The dialog never opens, so the list can never claim a folder agy ignores.
+    assert_eq!(app.mode, UiMode::Table);
+    assert!(app.change_folder.is_none());
+    assert!(app.status_msg.is_some());
+}
+
+#[test]
+fn change_folder_opens_prefilled_with_the_current_folder() {
+    let mut app = app_with_cwd("/tmp");
+
+    app.open_change_folder_at(0);
+
+    let state = app.change_folder.as_ref().expect("dialog");
+    assert_eq!(state.input.value, "/tmp");
+    // Prefilled and selected: the first keystroke replaces the whole path.
+    assert!(state.input.select_all);
+    assert_eq!(app.mode, UiMode::ChangeFolder);
+}
+
+#[test]
+fn change_folder_rejects_a_path_that_is_not_a_folder() {
+    let mut app = app_with_cwd("/tmp");
+    app.open_change_folder_at(0);
+    app.change_folder.as_mut().expect("dialog").input =
+        TextInput::new("/no/such/dir/s7s-change-folder".to_string());
+
+    app.confirm_change_folder();
+
+    // Nothing is recorded and the dialog stays open with the reason.
+    assert!(app.pending_effect.is_none());
+    assert_eq!(app.mode, UiMode::ChangeFolder);
+    assert!(app.change_folder.as_ref().expect("dialog").error.is_some());
+}
+
+#[test]
+fn change_folder_enqueues_the_effect_for_an_existing_folder() {
+    let mut app = app_with_cwd("/tmp");
+    app.open_change_folder_at(0);
+    let target = std::env::temp_dir();
+    app.change_folder.as_mut().expect("dialog").input =
+        TextInput::new(target.to_string_lossy().into_owned());
+
+    app.confirm_change_folder();
+
+    match app.pending_effect.as_ref() {
+        Some(AppEffect::ChangeSessionFolder { idx, folder }) => {
+            assert_eq!(*idx, 0);
+            assert_eq!(*folder, std::fs::canonicalize(&target).expect("canonical"));
+        }
+        other => panic!("expected ChangeSessionFolder, got {other:?}"),
+    }
+}
+
+#[test]
+fn change_folder_pick_list_puts_matches_first() {
+    let mut app = app_with_cwd("/tmp");
+    app.open_change_folder_at(0);
+    let state = app.change_folder.as_mut().expect("dialog");
+    state.folders = vec![
+        PathBuf::from("/work/alpha"),
+        PathBuf::from("/work/beta"),
+        PathBuf::from("/work/alphabet"),
+    ];
+    state.input = TextInput::new("alpha".to_string());
+
+    state.rank();
+
+    assert_eq!(state.match_count, 2);
+    let leading: Vec<&PathBuf> = state.ordered[..state.match_count]
+        .iter()
+        .map(|&i| &state.folders[i])
+        .collect();
+    assert!(leading.contains(&&PathBuf::from("/work/alpha")));
+    assert!(leading.contains(&&PathBuf::from("/work/alphabet")));
+    // Non-matching folders stay listed at the tail rather than disappearing.
+    assert_eq!(state.ordered.len(), 3);
+}

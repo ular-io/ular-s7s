@@ -18,6 +18,7 @@
 //! spawns background probes is modeled here.
 
 use crate::ui::{App, Screen, UiMode};
+use std::path::PathBuf;
 
 /// Lifecycle of the two-phase global refresh (Ctrl+U / palette "Refresh All").
 ///
@@ -88,6 +89,11 @@ pub(crate) enum AppEffect {
     /// open with an error so the user can retry. Pre-flight validation (empty
     /// title, missing profile) is performed by the handler before enqueuing.
     RenameSession { idx: usize, title: String },
+    /// Re-point the session at `idx` to `folder`: record it in the s7s-owned
+    /// folder store and rescan. Nothing on disk moves and the agent transcript
+    /// is never rewritten, so the change is reversible by recording the old
+    /// folder again. A write failure keeps the dialog open with the error.
+    ChangeSessionFolder { idx: usize, folder: PathBuf },
     /// Delete the session at `idx`: remove its on-disk artifacts, drop it from
     /// the list, rebuild folders/filters, and return from the Detail screen if
     /// open. A filesystem failure leaves the list unchanged with an error.
@@ -116,6 +122,9 @@ impl App {
         match effect {
             AppEffect::RefreshAll => self.run_refresh_all(),
             AppEffect::RenameSession { idx, title } => self.run_rename_session(idx, title),
+            AppEffect::ChangeSessionFolder { idx, folder } => {
+                self.run_change_session_folder(idx, folder)
+            }
             AppEffect::DeleteSession { idx } => self.run_delete_session(idx),
             AppEffect::ProfileSaved {
                 id,
@@ -217,6 +226,35 @@ impl App {
             Err(err) => {
                 self.status_msg = Some(format!("Rename failed: {err}"));
             }
+        }
+    }
+
+    /// Records the session's new folder in the s7s-owned store and rescans, so
+    /// the list column and the next resume follow it together. The agent's own
+    /// storage is untouched: the folder written there stays as the session's
+    /// starting folder, and dropping the record restores it.
+    fn run_change_session_folder(&mut self, idx: usize, folder: PathBuf) {
+        let Some(session) = self.sessions.get(idx).cloned() else {
+            self.status_msg = Some("Folder change target no longer exists".to_string());
+            return;
+        };
+        match crate::session_workspace::record(
+            &crate::config::session_workspaces_path(),
+            &session.profile_id,
+            &session.id,
+            &folder,
+        ) {
+            Ok(()) => {
+                self.change_folder = None;
+                self.change_folder_target = None;
+                self.mode = UiMode::Table;
+                self.refresh_sessions();
+                self.status_msg = Some(format!("Folder changed: {}", folder.display()));
+            }
+            Err(err) => match self.change_folder.as_mut() {
+                Some(state) => state.error = Some(format!("Change failed: {err}")),
+                None => self.status_msg = Some(format!("Change failed: {err}")),
+            },
         }
     }
 

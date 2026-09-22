@@ -62,16 +62,18 @@ pub fn delete_session_artifacts(profiles: &ProfileStore, session: &Session) -> R
                 );
             }
             remove_sqlite_sidecars(source_path);
-            // This s7s-owned fallback is independent of the external profile root,
-            // so remove it even if that profile disappeared after the last scan.
-            let _ = crate::session_workspace::remove(
-                &crate::config::session_workspaces_path(),
-                &session.profile_id,
-                &session.id,
-            );
         }
         Agent::Claude => {}
     }
+
+    // The s7s-owned folder record (handoff launch folder, or a `Change Folder`
+    // override) is independent of the external profile root, so remove it for
+    // every agent and even if that profile disappeared after the last scan.
+    let _ = crate::session_workspace::remove(
+        &crate::config::session_workspaces_path(),
+        &session.profile_id,
+        &session.id,
+    );
 
     Ok(())
 }

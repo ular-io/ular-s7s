@@ -1,9 +1,17 @@
-//! s7s-owned working-directory metadata for sessions whose agent store omits it.
+//! s7s-owned working-directory records: `(profile, session) -> folder`.
 //!
-//! Antigravity `--print` runs in the requested directory but does not persist
-//! that cwd in the conversation DB. For handoffs created by s7s, the launch
-//! path is known exactly, so this store keeps the `(profile, conversation) ->
-//! cwd` fact independently of Antigravity's disposable caches.
+//! Two features write here.
+//!
+//! Antigravity handoffs: `agy --print` / `-i` do not adopt the directory they
+//! are launched in at all (verified against agy 1.2.8 — the agent reports no
+//! active workspace and runs shell commands under its own scratch project), and
+//! nothing records a cwd in the conversation DB. Only a fully interactive run
+//! adopts the launch folder. For handoffs created by s7s the target folder is
+//! known exactly, so it is kept here instead.
+//!
+//! `Change Folder` (`ui::overlays::change_folder`): re-points a Claude or Codex
+//! session at a different folder without moving a file or rewriting the agent's
+//! transcript. `scan::apply_workspace_cwd` decides which value wins.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};

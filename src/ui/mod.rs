@@ -21,6 +21,7 @@ pub use detail::state::{DetailFocus, SessionDetailState};
 pub use new_session::state::{
     ModelOption, NewSessionFocus, NewSessionRequest, NewSessionState, SessionContextRef,
 };
+pub use overlays::change_folder::{ChangeFolderFocus, ChangeFolderState};
 pub use overlays::confirm::{RenameFocus, RenameModalState};
 pub use overlays::filters::ModalState;
 pub use overlays::message::{MessageDialog, MessageKind};
@@ -63,6 +64,9 @@ pub enum UiMode {
     DeleteConfirm,
     /// Session renaming modal.
     Rename,
+    /// Session folder change dialog (palette-only `Change Folder`). Re-points
+    /// where the session opens next without moving files.
+    ChangeFolder,
     /// Profile creation/edit form.
     ProfileForm,
     /// Profile deletion confirmation modal.
@@ -146,6 +150,11 @@ pub struct App {
     /// Target session index for renaming (valid while the rename modal is open).
     /// Kept independent of the main table selection to operate safely within details screens as well.
     pub rename_target: Option<usize>,
+    /// Active folder change dialog (present when mode == ChangeFolder).
+    pub change_folder: Option<ChangeFolderState>,
+    /// Target session index for the folder change, captured when the dialog
+    /// opens so the main table cursor can move without affecting it.
+    pub change_folder_target: Option<usize>,
     /// Active message dialog (present when mode == Message).
     pub message: Option<MessageDialog>,
     /// Target session index pending deletion.
@@ -269,6 +278,8 @@ impl App {
             folder_modal: None,
             rename_modal: None,
             rename_target: None,
+            change_folder: None,
+            change_folder_target: None,
             detail_show_tools: false,
             message: None,
             pending_delete: None,

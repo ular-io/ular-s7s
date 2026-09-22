@@ -143,6 +143,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         UiMode::FolderModal => super::overlays::filters::draw_folder_modal(f, app),
         UiMode::DeleteConfirm => super::overlays::confirm::draw_delete_confirm(f, app),
         UiMode::Rename => super::overlays::confirm::draw_rename_modal(f, app),
+        UiMode::ChangeFolder => super::overlays::change_folder::draw_change_folder_modal(f, app),
         UiMode::ProfileForm => super::profile::render::draw_profile_form(f, app),
         UiMode::ProfileDeleteConfirm => super::profile::render::draw_profile_delete_confirm(f, app),
         UiMode::ProfileDirConfirm => super::profile::render::draw_profile_dir_confirm(f, app),

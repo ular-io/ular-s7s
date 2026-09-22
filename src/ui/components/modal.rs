@@ -164,6 +164,7 @@ mod tests {
             UiMode::FolderModal,
             UiMode::DeleteConfirm,
             UiMode::Rename,
+            UiMode::ChangeFolder,
             UiMode::ProfileForm,
             UiMode::ProfileDeleteConfirm,
             UiMode::ProfileDirConfirm,

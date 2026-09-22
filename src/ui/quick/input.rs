@@ -46,6 +46,20 @@ impl App {
         (!cwd.as_os_str().is_empty() && cwd.is_dir()).then(|| cwd.clone())
     }
 
+    /// Focused session eligible for `Change Folder`: any non-Antigravity session
+    /// on the Session or Detail screen. Antigravity is excluded because a resumed
+    /// agy conversation keeps working in the folder it was created in, so a
+    /// changed value would only make the list wrong
+    /// (see [`crate::ui::overlays::change_folder`]).
+    fn change_folder_candidate(&self) -> Option<usize> {
+        let idx = match self.screen {
+            Screen::Session => self.filtered.get(self.selected).copied(),
+            Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
+            Screen::Profile => None,
+        }?;
+        (self.sessions.get(idx)?.agent != crate::model::Agent::Antigravity).then_some(idx)
+    }
+
     /// Switches the open window to terminal mode (empty-input `!`), re-resolving the target
     /// folder. Keeps palette mode with a status message if no target folder is available.
     fn quick_switch_terminal(&mut self) {
@@ -117,6 +131,7 @@ impl App {
             BackToPreviousSession => {
                 self.screen != Screen::Profile && self.can_return_to_jump_origin()
             }
+            ChangeFolder => self.change_folder_candidate().is_some(),
             TerminalCommand => self.terminal_target().is_some(),
             NewSession => true,
             CreateProfile => self.screen == Screen::Profile,
@@ -395,6 +410,11 @@ impl App {
             RenameSession => {
                 if let Some(idx) = session_idx {
                     self.open_rename_modal_at(idx);
+                }
+            }
+            ChangeFolder => {
+                if let Some(idx) = session_idx {
+                    self.open_change_folder_at(idx);
                 }
             }
             DeleteSession => {

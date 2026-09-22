@@ -26,6 +26,7 @@ the change area below and run every check listed for it.
 | `s7s session handoff` | Park one disposable handoff per agent and confirm the store, the profile scoping, and that the new session did not act | §Session handoff checks below |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
 | Session activity time / Updated ordering | `cargo test real_data_index_snapshot -- --ignored --nocapture`; compare Updated against the real CLI record, then resume and exit without input and verify it is unchanged | §Session activity checks below |
+| Session folder override (`Change Folder`, `src/ui/overlays/change_folder.rs`, `scan::apply_workspace_cwd`) | Change one disposable session's folder, confirm the list column and the resume launch directory both follow, then set it back. Confirm the palette row is refused for an Antigravity session | §Session folder checks below · [session-folder.md](./session-folder.md) |
 | Scratch workspace (`scratch.rs`, the folder dropdown `[SCRATCH]` row) | Start a session on the `[SCRATCH]` row, write a file into the folder from inside the session, exit, and start again: the file must be gone and both policy files present with their current text. Confirm the agent asks for a target directory instead of writing there or picking its own path | [architecture.md](./architecture.md) §Scratch workspace |
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [ui-style-guide.md](./ui-style-guide.md) |
@@ -96,6 +97,28 @@ not evidence. Use a disposable session rather than a real one.
 Exit codes to confirm: 0 on success, 1 for an unresolved ID, a missing profile,
 or a declined delete, and 2 for argument errors (a missing rename title, an
 unknown `--agent`).
+
+## Session folder checks
+
+`Change Folder` only re-points a session; it moves no file and never rewrites a
+transcript. Verify both halves of "the list and the launch directory agree".
+
+1. Pick a disposable Claude or Codex session, open `:` → `Change Folder`, and set
+   a different existing folder. The list column must change immediately.
+2. Resume that session and run `pwd` inside it. It must print the new folder, and
+   the agent must have been told the folder changed (claude prints an
+   `Environment update` naming the previous folder).
+3. Open `Change Folder` again and set the original folder back. The list must
+   return to its earlier value.
+4. Confirm `~/.config/s7s/session_workspaces.json` holds one record per changed
+   session and that deleting such a session removes its record.
+5. Select an Antigravity session: the palette row must be dimmed, and triggering
+   it must refuse with a reason instead of opening the dialog.
+
+On an agent CLI upgrade, re-run the resume comparison behind the table in
+[session-folder.md](./session-folder.md): start a disposable session in one
+folder, resume it from another, and check whether the working directory follows
+the launch folder. That table decides which agents the feature is offered for.
 
 ## Session handoff checks
 

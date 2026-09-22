@@ -10,19 +10,22 @@
 //!
 //! - `filters` — agent and folder multi-select filter modals (`ModalState`).
 //! - `confirm` — session rename and delete confirmation dialogs.
+//! - `change_folder` — the session folder change dialog, which re-points where a
+//!   session opens without moving files (`ChangeFolderState`).
 //! - `message` — the reusable alert dialog (`show_message`).
 //! - `help` — the `?` keyboard-shortcuts screen.
 //! - `theme` — the theme selection dialog with live preview.
 //!
 //! The overlay state types are re-exported from `ui` so the existing
-//! `crate::ui::{ModalState, RenameFocus, RenameModalState, MessageKind,
-//! MessageDialog, ThemeSelectState}` paths stay stable. The Quick Command
-//! palette keeps its own `ui::quick` module (its render moved there in R9 to
-//! complete its state/input/render boundary — §9.5); the New Session project-
-//! directory confirmation stays with the New Session flow in `ui::render`. The
-//! session-deletion filesystem work invoked by the delete dialog stays in
-//! `ui::mod` as cross-feature `App` coordination.
+//! `crate::ui::{ModalState, RenameFocus, RenameModalState, ChangeFolderFocus,
+//! ChangeFolderState, MessageKind, MessageDialog, ThemeSelectState}` paths stay
+//! stable. The Quick Command palette keeps its own `ui::quick` module (its
+//! render moved there in R9 to complete its state/input/render boundary —
+//! §9.5); the New Session project-directory confirmation stays with the New
+//! Session flow in `ui::render`. The session-deletion filesystem work invoked
+//! by the delete dialog stays in `ui::mod` as cross-feature `App` coordination.
 
+pub(crate) mod change_folder;
 pub(crate) mod confirm;
 pub(crate) mod filters;
 pub(crate) mod help;
