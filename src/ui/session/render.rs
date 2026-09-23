@@ -6,6 +6,7 @@
 //! `draw`/`draw_header`/`draw_body` dispatchers and the shared preview helpers
 //! (`session_meta_lines`, `preview_turn_lines`, `agent_tag`) stay in `ui::render`;
 //! the Session render tests are full-frame (`super::draw`) and stay there too.
+//! Only the pure `table_layout` width tests live here.
 
 use crate::model::format_local_datetime_seconds;
 use crate::ui::components::modal::titled_block_nav;
@@ -80,6 +81,116 @@ pub(crate) fn draw_search_prompt(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Session table columns in display order. UPDATED, Q, and SIZE are optional and
+/// dropped on narrow panes (see `table_layout`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableColumn {
+    Agent,
+    Folder,
+    Updated,
+    Title,
+    Q,
+    Size,
+}
+
+/// TITLE width below which the table gives up space: first FOLDER's extra width,
+/// then the optional columns in the order SIZE, Q, UPDATED.
+const TITLE_MIN_W: usize = 20;
+/// FOLDER width range. The column grows to the longest folder label up to
+/// `FOLDER_MAX_PERCENT` of the table width (never below the minimum), but only
+/// while every column is shown; it is back at the minimum before any column is
+/// hidden, so narrowing the window never widens it.
+const FOLDER_MIN_W: usize = 12;
+const FOLDER_MAX_PERCENT: usize = 20;
+
+fn folder_max_w(area_width: u16) -> usize {
+    (area_width as usize * FOLDER_MAX_PERCENT / 100).max(FOLDER_MIN_W)
+}
+
+struct TableLayout {
+    columns: Vec<TableColumn>,
+    folder_w: usize,
+    title_w: usize,
+}
+
+impl TableLayout {
+    fn is_last(&self, col: TableColumn) -> bool {
+        self.columns.last() == Some(&col)
+    }
+
+    /// Fixed cell width of a non-TITLE column.
+    /// UPDATED is 10 characters + 1 right padding before TITLE. SIZE is 5
+    /// right-aligned characters + 1 right margin before the border; Q takes that
+    /// margin over when SIZE is hidden.
+    fn width(&self, col: TableColumn) -> usize {
+        match col {
+            TableColumn::Agent => 4,
+            TableColumn::Folder => self.folder_w,
+            TableColumn::Updated => 11,
+            TableColumn::Title => self.title_w,
+            TableColumn::Q if self.is_last(col) => 5,
+            TableColumn::Q => 4,
+            TableColumn::Size => 6,
+        }
+    }
+
+    fn pad_right(&self, col: TableColumn, text: String) -> String {
+        if col == TableColumn::Q && self.is_last(col) {
+            text + " "
+        } else {
+            text
+        }
+    }
+
+    /// TITLE width left in a table `area_width` wide. inner area = area.width -
+    /// borders (2); subtract highlight_symbol (1), the fixed columns, one spacing
+    /// cell per gap, and 1 cell padding that keeps a double-width character from
+    /// overflowing the right border.
+    fn fit_title(&mut self, area_width: u16) {
+        let fixed: usize = self
+            .columns
+            .iter()
+            .filter(|&&c| c != TableColumn::Title)
+            .map(|&c| self.width(c))
+            .sum();
+        let gaps = self.columns.len() - 1;
+        self.title_w = (area_width as usize).saturating_sub(2 + 1 + fixed + gaps + 1);
+    }
+}
+
+/// Picks the visible columns and the FOLDER/TITLE widths for a table
+/// `area_width` wide whose longest folder label is `folder_label_w` cells.
+fn table_layout(area_width: u16, folder_label_w: usize) -> TableLayout {
+    let mut layout = TableLayout {
+        columns: vec![
+            TableColumn::Agent,
+            TableColumn::Folder,
+            TableColumn::Updated,
+            TableColumn::Title,
+            TableColumn::Q,
+            TableColumn::Size,
+        ],
+        folder_w: folder_label_w.clamp(FOLDER_MIN_W, folder_max_w(area_width)),
+        title_w: 0,
+    };
+    layout.fit_title(area_width);
+    if layout.title_w >= TITLE_MIN_W {
+        return layout;
+    }
+    // Give back FOLDER's extra width before hiding any column.
+    let deficit = TITLE_MIN_W - layout.title_w;
+    layout.folder_w = layout.folder_w.saturating_sub(deficit).max(FOLDER_MIN_W);
+    layout.fit_title(area_width);
+    for col in [TableColumn::Size, TableColumn::Q, TableColumn::Updated] {
+        if layout.title_w >= TITLE_MIN_W {
+            break;
+        }
+        layout.columns.retain(|&c| c != col);
+        layout.fit_title(area_width);
+    }
+    layout
+}
+
 /// Left session table. Title exhibits `sessions[filter: count]`.
 pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
     let th = &app.theme;
@@ -101,24 +212,24 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         Style::default()
     };
 
-    let header = Row::new(vec![
-        Cell::from("A"),
-        Cell::from("FOLDER"),
-        Cell::from("UPDATED"),
-        Cell::from("TITLE"),
-        Cell::from(format!("{:>4}", "Q")),
-        Cell::from(format!("{:>5} ", "SIZE")),
-    ])
-    .style(header_style);
-
-    // Truncates the TITLE column to fill the remaining width.
-    // inner area = area.width - borders (2). Subtracting highlight_symbol (1) +
-    // fixed columns (A 4 + FOLDER 18 + UPDATED 11 + Q 4 + SIZE 6 = 43) +
-    // spacing (5 gaps for 6 columns) yields TITLE width.
-    // UPDATED consists of 10 characters + 1 right padding to add space before TITLE.
-    // SIZE consists of 5 right-aligned characters + 1 right margin before the border.
-    // Leaves 1 cell padding to prevent right border double-width character overflow.
-    let title_w = (area.width as usize).saturating_sub(2 + 1 + 43 + 5 + 1);
+    // Measured over every loaded session, not just the filtered ones, so the
+    // column does not shift while a search is typed.
+    let folder_label_w = app
+        .sessions
+        .iter()
+        .map(|s| UnicodeWidthStr::width(crate::scratch::folder_label(&s.cwd, &s.folder)))
+        .max()
+        .unwrap_or(0);
+    let layout = table_layout(area.width, folder_label_w);
+    let header_cell = |col: TableColumn| match col {
+        TableColumn::Agent => Cell::from("A"),
+        TableColumn::Folder => Cell::from("FOLDER"),
+        TableColumn::Updated => Cell::from("UPDATED"),
+        TableColumn::Title => Cell::from("TITLE"),
+        TableColumn::Q => Cell::from(layout.pad_right(col, format!("{:>4}", "Q"))),
+        TableColumn::Size => Cell::from(format!("{:>5} ", "SIZE")),
+    };
+    let header = Row::new(layout.columns.iter().map(|&col| header_cell(col))).style(header_style);
 
     let rows: Vec<Row> = app
         .filtered
@@ -131,31 +242,39 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(color)
             };
-            Row::new(vec![
-                Cell::from(Span::styled(tag, tag_style)),
-                Cell::from(Span::styled(
-                    truncate_w(crate::scratch::folder_label(&s.cwd, &s.folder), 18),
+            Row::new(layout.columns.iter().map(|&col| match col {
+                TableColumn::Agent => Cell::from(Span::styled(tag, tag_style)),
+                TableColumn::Folder => Cell::from(Span::styled(
+                    truncate_w(
+                        crate::scratch::folder_label(&s.cwd, &s.folder),
+                        layout.folder_w,
+                    ),
                     text_style,
                 )),
-                Cell::from(Span::styled(s.date_str(), text_style)),
-                Cell::from(Span::styled(truncate_w(&s.title(), title_w), text_style)),
-                Cell::from(Span::styled(
-                    format!("{:>4}", s.user_turns.len()),
+                TableColumn::Updated => Cell::from(Span::styled(s.date_str(), text_style)),
+                TableColumn::Title => Cell::from(Span::styled(
+                    truncate_w(&s.title(), layout.title_w),
                     text_style,
                 )),
-                Cell::from(Span::styled(format!("{:>5} ", s.size_str()), text_style)),
-            ])
+                TableColumn::Q => Cell::from(Span::styled(
+                    layout.pad_right(col, format!("{:>4}", s.user_turns.len())),
+                    text_style,
+                )),
+                TableColumn::Size => {
+                    Cell::from(Span::styled(format!("{:>5} ", s.size_str()), text_style))
+                }
+            }))
         })
         .collect();
 
-    let widths = [
-        Constraint::Length(4),
-        Constraint::Length(18),
-        Constraint::Length(11),
-        Constraint::Min(10),
-        Constraint::Length(4),
-        Constraint::Length(6),
-    ];
+    let widths: Vec<Constraint> = layout
+        .columns
+        .iter()
+        .map(|&col| match col {
+            TableColumn::Title => Constraint::Min(10),
+            _ => Constraint::Length(layout.width(col) as u16),
+        })
+        .collect();
 
     // sessions[filter: count] / sessions[count]
     let title = if app.filter.is_active() {
@@ -304,4 +423,67 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         viewport,
         th,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{table_layout, TableColumn::*, FOLDER_MIN_W, TITLE_MIN_W};
+
+    #[test]
+    fn table_layout_drops_size_then_q_then_updated() {
+        // (table width, visible columns, TITLE width) with FOLDER at its minimum.
+        let cases = [
+            (66, vec![Agent, Folder, Updated, Title, Q, Size], 20),
+            (65, vec![Agent, Folder, Updated, Title, Q], 25),
+            (60, vec![Agent, Folder, Updated, Title, Q], 20),
+            (59, vec![Agent, Folder, Updated, Title], 25),
+            (54, vec![Agent, Folder, Updated, Title], 20),
+            (53, vec![Agent, Folder, Title], 31),
+        ];
+        for (width, columns, title_w) in cases {
+            let layout = table_layout(width, 0);
+            assert_eq!(layout.columns, columns, "width {width}");
+            assert_eq!(layout.folder_w, FOLDER_MIN_W, "width {width}");
+            assert_eq!(layout.title_w, title_w, "width {width}");
+        }
+    }
+
+    #[test]
+    fn folder_grows_to_the_longest_label_within_bounds() {
+        assert_eq!(table_layout(200, 10).folder_w, FOLDER_MIN_W);
+        assert_eq!(table_layout(200, 20).folder_w, 20);
+        // The maximum is 20% of the table width: 40 at 200, 20 at 100.
+        assert_eq!(table_layout(200, 50).folder_w, 40);
+        assert_eq!(table_layout(100, 50).folder_w, 20);
+    }
+
+    #[test]
+    fn folder_shrinks_before_any_column_is_hidden() {
+        // At 67 cells the 20% cap (13) still leaves TITLE 20.
+        let layout = table_layout(67, 20);
+        assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q, Size]);
+        assert_eq!((layout.folder_w, layout.title_w), (13, 20));
+        // At 66 the cap (13) leaves TITLE 19, so FOLDER returns to the minimum.
+        let layout = table_layout(66, 20);
+        assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q, Size]);
+        assert_eq!((layout.folder_w, layout.title_w), (FOLDER_MIN_W, 20));
+        // Once a column is hidden FOLDER stays at the minimum, never regrowing.
+        let layout = table_layout(65, 20);
+        assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q]);
+        assert_eq!((layout.folder_w, layout.title_w), (FOLDER_MIN_W, 25));
+    }
+
+    #[test]
+    fn table_layout_keeps_agent_folder_title_when_still_narrow() {
+        let layout = table_layout(30, 20);
+        assert_eq!(layout.columns, vec![Agent, Folder, Title]);
+        assert_eq!(layout.folder_w, FOLDER_MIN_W);
+        assert!(layout.title_w < TITLE_MIN_W);
+    }
+
+    #[test]
+    fn q_takes_the_right_margin_when_it_is_the_last_column() {
+        assert_eq!(table_layout(66, 0).width(Q), 4);
+        assert_eq!(table_layout(60, 0).width(Q), 5);
+    }
 }

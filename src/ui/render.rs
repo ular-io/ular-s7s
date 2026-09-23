@@ -1215,6 +1215,30 @@ mod tests {
         }
     }
 
+    /// Table header row (the line carrying `FOLDER`) at a given terminal width.
+    fn session_table_header(width: u16) -> String {
+        rendered_text(&session_app(), width, 30)
+            .lines()
+            .find(|line| line.contains("FOLDER"))
+            .expect("session table header")
+            .to_string()
+    }
+
+    #[test]
+    fn session_table_hides_optional_columns_on_narrow_terminals() {
+        let wide = session_table_header(200);
+        for label in ["UPDATED", "TITLE", " Q ", "SIZE"] {
+            assert!(wide.contains(label), "{label} missing: {wide}");
+        }
+        // 98 columns leave the table ~57 cells: SIZE and Q hidden, UPDATED kept.
+        let narrow = session_table_header(98);
+        assert!(narrow.contains("UPDATED") && narrow.contains("TITLE"));
+        assert!(
+            !narrow.contains("SIZE") && !narrow.contains(" Q "),
+            "{narrow}"
+        );
+    }
+
     #[test]
     fn header_shows_the_context_source_jump_key() {
         let app = session_app();

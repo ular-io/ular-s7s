@@ -176,6 +176,24 @@ Additional rules:
 - Both preview paths use `preview_turn_display(turn, expanded)` so collapsed and
   expanded forms cannot drift.
 
+## Session table width
+
+- The Session table keeps A, FOLDER, and TITLE. FOLDER is `FOLDER_MIN_W` (12)
+  cells, widened to the longest folder label of all loaded sessions (not the
+  filtered ones, so typing a search does not shift columns) up to
+  `FOLDER_MAX_PERCENT` (20%) of the table width, never below the minimum.
+- When TITLE would drop below `TITLE_MIN_W` (20) cells, `table_layout` in
+  `src/ui/session/render.rs` first shrinks FOLDER back toward 12, then hides
+  SIZE, then Q, then UPDATED. FOLDER widens only while every column is shown,
+  so narrowing the window never widens it. Q and UPDATED stay visible in the
+  Prompt panel (`Qn` headings, `Updated at:`); SIZE has no other display.
+- Header cells, row cells, width constraints, and TITLE truncation all come from
+  the same `TableLayout`, so they cannot disagree. The last visible fixed column
+  keeps the one-cell right margin before the border (Q takes it over from SIZE).
+- The `table_layout` unit tests in `src/ui/session/render.rs` pin the
+  thresholds and FOLDER bounds; `session_table_hides_optional_columns_on_narrow_terminals`
+  checks the frame.
+
 ## Width and root layout
 
 - Use `ui/components/text.rs` for width-aware padding, truncation, and wrapping.
