@@ -95,7 +95,7 @@ enum TableColumn {
 
 /// TITLE width below which the table gives up space: first FOLDER's extra width,
 /// then the optional columns in the order SIZE, Q, UPDATED.
-const TITLE_MIN_W: usize = 20;
+const TITLE_MIN_W: usize = 25;
 /// FOLDER width range. The column grows to the longest folder label up to
 /// `FOLDER_MAX_PERCENT` of the table width (never below the minimum), but only
 /// while every column is shown; it is back at the minimum before any column is
@@ -433,12 +433,12 @@ mod tests {
     fn table_layout_drops_size_then_q_then_updated() {
         // (table width, visible columns, TITLE width) with FOLDER at its minimum.
         let cases = [
-            (66, vec![Agent, Folder, Updated, Title, Q, Size], 20),
+            (71, vec![Agent, Folder, Updated, Title, Q, Size], 25),
+            (70, vec![Agent, Folder, Updated, Title, Q], 30),
             (65, vec![Agent, Folder, Updated, Title, Q], 25),
-            (60, vec![Agent, Folder, Updated, Title, Q], 20),
+            (64, vec![Agent, Folder, Updated, Title], 30),
             (59, vec![Agent, Folder, Updated, Title], 25),
-            (54, vec![Agent, Folder, Updated, Title], 20),
-            (53, vec![Agent, Folder, Title], 31),
+            (58, vec![Agent, Folder, Title], 36),
         ];
         for (width, columns, title_w) in cases {
             let layout = table_layout(width, 0);
@@ -459,18 +459,18 @@ mod tests {
 
     #[test]
     fn folder_shrinks_before_any_column_is_hidden() {
-        // At 67 cells the 20% cap (13) still leaves TITLE 20.
-        let layout = table_layout(67, 20);
+        // At 73 cells the 20% cap (14) still leaves TITLE 25.
+        let layout = table_layout(73, 20);
         assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q, Size]);
-        assert_eq!((layout.folder_w, layout.title_w), (13, 20));
-        // At 66 the cap (13) leaves TITLE 19, so FOLDER returns to the minimum.
-        let layout = table_layout(66, 20);
+        assert_eq!((layout.folder_w, layout.title_w), (14, 25));
+        // At 71 the cap (14) leaves TITLE 23, so FOLDER returns to the minimum.
+        let layout = table_layout(71, 20);
         assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q, Size]);
-        assert_eq!((layout.folder_w, layout.title_w), (FOLDER_MIN_W, 20));
-        // Once a column is hidden FOLDER stays at the minimum, never regrowing.
-        let layout = table_layout(65, 20);
-        assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q]);
         assert_eq!((layout.folder_w, layout.title_w), (FOLDER_MIN_W, 25));
+        // Once a column is hidden FOLDER stays at the minimum, never regrowing.
+        let layout = table_layout(70, 20);
+        assert_eq!(layout.columns, vec![Agent, Folder, Updated, Title, Q]);
+        assert_eq!((layout.folder_w, layout.title_w), (FOLDER_MIN_W, 30));
     }
 
     #[test]
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn q_takes_the_right_margin_when_it_is_the_last_column() {
-        assert_eq!(table_layout(66, 0).width(Q), 4);
-        assert_eq!(table_layout(60, 0).width(Q), 5);
+        assert_eq!(table_layout(71, 0).width(Q), 4);
+        assert_eq!(table_layout(65, 0).width(Q), 5);
     }
 }

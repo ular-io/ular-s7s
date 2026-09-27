@@ -182,7 +182,7 @@ Additional rules:
   cells, widened to the longest folder label of all loaded sessions (not the
   filtered ones, so typing a search does not shift columns) up to
   `FOLDER_MAX_PERCENT` (20%) of the table width, never below the minimum.
-- When TITLE would drop below `TITLE_MIN_W` (20) cells, `table_layout` in
+- When TITLE would drop below `TITLE_MIN_W` (25) cells, `table_layout` in
   `src/ui/session/render.rs` first shrinks FOLDER back toward 12, then hides
   SIZE, then Q, then UPDATED. FOLDER widens only while every column is shown,
   so narrowing the window never widens it. Q and UPDATED stay visible in the

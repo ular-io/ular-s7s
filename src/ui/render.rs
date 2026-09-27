@@ -1230,8 +1230,8 @@ mod tests {
         for label in ["UPDATED", "TITLE", " Q ", "SIZE"] {
             assert!(wide.contains(label), "{label} missing: {wide}");
         }
-        // 98 columns leave the table ~57 cells: SIZE and Q hidden, UPDATED kept.
-        let narrow = session_table_header(98);
+        // 105 columns leave the table 61 cells: SIZE and Q hidden, UPDATED kept.
+        let narrow = session_table_header(105);
         assert!(narrow.contains("UPDATED") && narrow.contains("TITLE"));
         assert!(
             !narrow.contains("SIZE") && !narrow.contains(" Q "),
