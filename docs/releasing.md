@@ -27,6 +27,11 @@ An automated release script is provided under `scripts/release.sh`. It automatic
 
 The script creates an **annotated** tag (`git tag -a`) so the Tags/Release page shows the `Release <version>` tag message rather than falling back to the pointed-to commit subject. The GitHub Release body is filled with `--generate-notes` (auto-generated from merged PRs/commits since the previous tag; falls back to a Full Changelog link when there are no PRs).
 
+Before publishing, review the changes since the previous tag. If they include a
+major user-facing feature, update `README.md` with what the feature does and how
+to use it. Commit and push the README update before creating the release tag so
+the tagged version includes the documentation.
+
 Bump the version in `Cargo.toml` (and sync `Cargo.lock`), commit, and push to `main` before running the script — the script only pushes the tag, not the branch commit it points to.
 
 To create and publish a new version (e.g., `v0.1.0`):
