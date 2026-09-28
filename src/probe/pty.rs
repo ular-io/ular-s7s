@@ -40,6 +40,8 @@ pub(crate) enum DriveOutcome {
     NotLoggedIn,
 }
 
+pub(crate) const CAPTURE_SEPARATOR: &str = "\n--- s7s screen capture ---\n";
+
 /// Drives the CLI inside a PTY to execute a slash command and capture the final screen (generic).
 /// Shared by usage queries (`/usage`, `/status`) and model list queries (`/model`).
 ///
@@ -53,6 +55,8 @@ pub(crate) enum DriveOutcome {
 ///
 /// `dump_env` names an environment variable that, when set to a directory, receives a dump of the
 /// final screen text (client-chosen so this driver stays neutral about what is being probed).
+/// `capture_down_while` receives the initial screen and all captured screens so far. It lets a
+/// client collect rows below a scrollable screen without teaching the PTY driver its format.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drive_screen(
     cmd: &str,
@@ -64,6 +68,7 @@ pub(crate) fn drive_screen(
     enter_delay: Duration,
     envs: &[(&str, &Path)],
     dump_env: Option<&str>,
+    capture_down_while: Option<fn(&str, &str) -> bool>,
 ) -> Result<DriveOutcome> {
     // Set a wide width so that agy's 5h `Disabled` message (~150 chars) fits on a single line
     // (at 120 width, the refresh time details get truncated).
@@ -208,7 +213,26 @@ pub(crate) fn drive_screen(
             while let Ok(chunk) = brx.try_recv() {
                 parser.process(&chunk);
             }
-            break Ok(DriveOutcome::Screen(parser.screen().contents()));
+            let mut current = parser.screen().contents();
+            let initial = current.clone();
+            let mut captured = initial.clone();
+            if let Some(should_scroll) = capture_down_while {
+                for _ in 0..40 {
+                    if !should_scroll(&initial, &captured) {
+                        break;
+                    }
+                    let _ = writer.write_all(b"\x1b[B");
+                    let _ = writer.flush();
+                    thread::sleep(Duration::from_millis(100));
+                    while let Ok(chunk) = brx.try_recv() {
+                        parser.process(&chunk);
+                    }
+                    current = parser.screen().contents();
+                    captured.push_str(CAPTURE_SEPARATOR);
+                    captured.push_str(&current);
+                }
+            }
+            break Ok(DriveOutcome::Screen(captured));
         }
         if entered_at.unwrap().elapsed() > done_timeout {
             // If the logout screen was visible, treat as logged out instead of timing out.
@@ -224,7 +248,11 @@ pub(crate) fn drive_screen(
     if let Some(dir) = dump_env.and_then(std::env::var_os) {
         let name = format!("{cmd}-{}.screen.txt", slash_cmd.trim_start_matches('/'));
         let path = std::path::Path::new(&dir).join(name);
-        let _ = std::fs::write(path, parser.screen().contents());
+        let screen = match &result {
+            Ok(DriveOutcome::Screen(screen)) => screen.clone(),
+            _ => parser.screen().contents(),
+        };
+        let _ = std::fs::write(path, screen);
     }
 
     // Move cleanup to a background thread. Returns parsed values immediately and handles process termination

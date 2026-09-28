@@ -365,6 +365,7 @@ fn drive(
         enter_delay,
         envs,
         Some("ULAR_USAGE_DUMP"),
+        None,
     ) {
         Ok(DriveOutcome::Screen(text)) => parse(&text)
             .map(UsageResult::Ready)
