@@ -118,7 +118,7 @@ Pure state recomputation is not an effect. Usage/model results stay on `App`;
 `BackgroundState` owns only receivers and in-flight coordination.
 
 `Ctrl+U` and palette Refresh All draw loading feedback before starting a session
-scan worker. The worker scans all profiles, loads the Detail target captured at
+scan worker. The worker scans all profiles, loads the Detail identity captured at
 launch, and serializes its cache into a temporary sibling of `index.bin`.
 The event loop continues handling input and polls results every frame or at
 100 ms idle intervals. Repeated refresh requests merge until the completion
@@ -134,8 +134,8 @@ snapshots publish the staged cache by rename; discarded or late snapshots remove
 the temporary file without overwriting the current index. This keeps a completed
 background scan from restoring deleted sessions or older title/folder data.
 
-Resume, new session, login, and terminal commands suspend the TUI, run synchronously through
-`resume.rs`, then restore and rescan.
+Resume, new session, login, and terminal commands suspend the TUI, run
+synchronously through `resume.rs`, then restore and rescan.
 
 See [ui-style-guide.md](./ui-style-guide.md) for visual changes and
 [terminal-input-hardening.md](./terminal-input-hardening.md) for input or

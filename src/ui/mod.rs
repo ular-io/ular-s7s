@@ -383,16 +383,17 @@ impl App {
     ///
     /// Only modified or new files are parsed. Tracks selection by (agent, profile, id)
     /// to preserve cursor position post-refresh (even if content modifications re-order lists to the top).
-    /// Shared between automatic triggers on resume return and manual Ctrl+U refreshes.
+    /// Used after handovers and mutations. Ctrl+U scans on a worker and shares
+    /// only result application with this synchronous path.
     pub fn refresh_sessions(&mut self) {
         self.cancel_refresh_scan();
         let result = crate::scan::scan(&self.profiles.profiles, false);
-        let detail = self.detail_session().and_then(|session| {
+        let detail = self.detail_key().and_then(|key| {
             result
                 .sessions
                 .iter()
-                .find(|s| refresh::SessionKey::of(s) == refresh::SessionKey::of(&session))
-                .map(|s| (refresh::SessionKey::of(s), crate::handoff::load_turns(s)))
+                .find(|s| key.matches(s))
+                .map(|s| (key, crate::handoff::load_turns(s)))
         });
         self.apply_session_scan(result, detail);
     }
@@ -405,7 +406,7 @@ impl App {
         detail: Option<refresh::DetailRefresh>,
     ) {
         let prev = self.current().map(refresh::SessionKey::of);
-        let detail_key = self.detail_session().as_ref().map(refresh::SessionKey::of);
+        let detail_key = self.detail_key();
         let preview = (
             self.preview_scroll,
             self.preview_expanded,
@@ -435,8 +436,8 @@ impl App {
             }
         }
 
-        // Rebind details screen: update target session index and re-parse turns
-        // (reflecting updates such as messages added on resume return). Closes details view if session was deleted.
+        // Rebind the current Detail target. Only replace its turns when the
+        // result was loaded for that identity; navigation may have changed it.
         if self.detail.is_some() {
             let found = detail_key
                 .as_ref()

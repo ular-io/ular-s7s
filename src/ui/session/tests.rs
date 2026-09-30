@@ -58,7 +58,7 @@ fn ctrl_u_updates_sessions_without_entering_rename_mode() {
     );
     assert!(app.refresh_scan_scheduled());
 
-    app.run_scheduled_refresh_scan();
+    app.start_scheduled_refresh_scan();
     assert!(app.poll_background());
     assert!(matches!(
         app.status_msg.as_deref(),

@@ -1,4 +1,4 @@
-//! Explicit application effects (R10a).
+//! External application effects requested by key handlers.
 //!
 //! Key handlers describe requested external work by enqueuing an [`AppEffect`]
 //! into `App::pending_effect` instead of performing filesystem, rescan, or
@@ -74,7 +74,7 @@ impl RefreshAllPhase {
 pub(crate) enum AppEffect {
     /// Global refresh (Ctrl+U / palette "Refresh All"): start the background
     /// usage/model probes and schedule a session rescan for right after the
-    /// next draw (two-phase; see [`RefreshAllPhase`]).
+    /// next draw (see [`RefreshAllPhase`]).
     RefreshAll,
     /// Persist the selected session's bookmark before updating its title marker.
     ToggleBookmark { idx: usize },
@@ -138,9 +138,8 @@ impl App {
     /// Global Ctrl+U, prepare phase (shared across all main screens): start the
     /// background usage/model probes, show an in-progress status, and schedule
     /// a background session scan to start right after the next draw
-    /// ([`App::run_scheduled_refresh_scan`]) so loading feedback is immediate.
-    /// Repeat requests while a cycle is
-    /// active merge into it. Model catalogs are force-refreshed (bypassing
+    /// ([`App::start_scheduled_refresh_scan`]) so loading feedback is immediate.
+    /// Repeat requests while a cycle is active merge into it. Model catalogs are force-refreshed (bypassing
     /// version gates) to capture plan changes. The usage/model fetches go
     /// through the existing start methods so the `Loading` phase flips only
     /// together with an actually spawned probe (never set the phase directly).
@@ -166,7 +165,7 @@ impl App {
         "updating sessions and usage…".to_string()
     }
 
-    /// Status once the session scan has completed (usage still updating).
+    /// Status after the scan completes, including any remaining usage query.
     pub(crate) fn refresh_status_scanned(&self) -> String {
         let suffix = if self.usage_in_flight() {
             " · updating usage…"
@@ -186,13 +185,13 @@ impl App {
     /// the event loop right after the preparing frame is rendered — never in
     /// response to a new input event. The cycle stays active (merging queued
     /// repeat requests) until [`App::finish_refresh_cycle`].
-    pub(crate) fn run_scheduled_refresh_scan(&mut self) {
+    pub(crate) fn start_scheduled_refresh_scan(&mut self) {
         if !self.refresh_scan_scheduled() {
             return;
         }
         self.refresh_all = RefreshAllPhase::Scanning;
         self.background
-            .spawn_refresh(self.profiles.profiles.clone(), self.detail_session());
+            .spawn_refresh(self.profiles.profiles.clone(), self.detail_key());
     }
 
     /// Ends a completed refresh cycle after its completion frame renders.

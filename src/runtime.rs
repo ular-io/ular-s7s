@@ -332,7 +332,7 @@ fn run_loop(session: &mut TerminalSession, app: &mut App) -> Result<()> {
         app.poll_background();
         session.terminal_mut().draw(|f| ui::render::draw(f, app))?;
         app.finish_refresh_cycle();
-        app.run_scheduled_refresh_scan();
+        app.start_scheduled_refresh_scan();
 
         // 1) Wait for the first event. If background jobs are in progress, poll with a short
         //    timeout so that background updates trigger a redraw.

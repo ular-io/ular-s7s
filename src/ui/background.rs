@@ -1,22 +1,10 @@
-//! Background usage/model probes and session-refresh job coordination.
+//! Receiver and in-flight coordination for usage, model, and session-refresh jobs.
 //!
-//! Isolates the receiver channels and in-flight tracking for the background
-//! usage and model-catalog probes out of `App`. Only the *coordination* state
-//! lives here — the receivers and the model-loading dedup guard — so key
-//! handlers and rendering never touch receiver internals directly. The result
-//! caches (`UsageState`, `ModelCatalog`) stay on `App` because they are read
-//! and written across features (session/profile/new-session rendering, profile
-//! deletion cleanup, new-session launch persistence).
-//!
-//! `App` keeps thin forwarding methods (`start_usage_fetch`, `poll_usage`, …)
-//! that read the App-side caches/profiles and delegate only the receiver
-//! operations to this struct. `drain_*` returns owned results so the borrow of
-//! `App::background` is released before `App` mutates its caches (avoids the
-//! borrow pressure of holding `&mut background` and `&mut usage` together —
-//! plan §15.2).
-//!
-//! Jobs use threads and mpsc without an async runtime. Probe spawn guards live
-//! on `App`; session-refresh tests use controlled receivers and isolated stores.
+//! Application caches remain on `App`. This module owns channels and duplicate
+//! query guards, returning owned results before the application mutates its
+//! state. Jobs use threads and mpsc without an async runtime. Probe spawn guards
+//! live on `App`; session-refresh tests use controlled receivers and isolated
+//! stores.
 
 use crate::models::{self, ModelsResult};
 use crate::profile::Profile;
@@ -42,7 +30,7 @@ impl BackgroundState {
     pub(crate) fn spawn_refresh(
         &mut self,
         profiles: Vec<Profile>,
-        detail: Option<crate::model::Session>,
+        detail: Option<super::refresh::SessionKey>,
     ) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.refresh_rx = Some(rx);

@@ -59,7 +59,7 @@ A large changed transcript is another option when a FIFO is unavailable.
 5. Exit during a slow scan and compare the PTY's terminal modes before/after.
    Shutdown must not wait for the worker.
 
-`ui::refresh::tests` covers controlled in-flight input, repeat coalescing,
+`src/ui/refresh/tests.rs` (`ui::refresh::tests`) covers controlled in-flight input, repeat coalescing,
 selection/profile identity, Detail navigation, dialog and handover deferral,
 deletion invalidation, worker failure, and staged-cache acceptance/discard.
 
