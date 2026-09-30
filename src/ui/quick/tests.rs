@@ -112,7 +112,7 @@ fn terminal_history_recall_fills_input_and_restores_typed_text() {
 #[test]
 fn palette_refresh_all_uses_the_shared_refresh_effect() {
     // "Refresh Usage & Sessions" enqueues the same AppEffect::RefreshAll as
-    // Ctrl+U on the Session/Profile/Detail screens (one shared two-phase path).
+    // Ctrl+U on the Session/Profile/Detail screens (one shared background refresh path).
     let mut app = empty_app();
     app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE));
     for c in "refresh".chars() {

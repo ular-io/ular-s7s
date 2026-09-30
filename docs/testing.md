@@ -31,10 +31,37 @@ the change area below and run every check listed for it.
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Session bookmarks / Ctrl+B | Release TUI/PTY: toggle in Session and Detail, restart to verify persistence, run the bookmark filter, and inspect `Ⓑ  ` at narrow/wide widths | [bookmarks.md](./bookmarks.md) §Verification |
+| Global refresh (`Ctrl+U` / palette Refresh All) | Release PTY with a deliberately slow session-storage read: navigate, search, repeat refresh, and exit before completion; verify completion preserves selection and Detail, and dialogs/mutations cannot apply stale snapshots | §Global refresh checks below |
 | Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
 | Terminal lifecycle / bracketed paste / grapheme editing | Fault-injection lifecycle tests + paste-routing tests, plus the real-terminal checks below | §Terminal lifecycle and paste checks · [terminal-input-hardening.md](./terminal-input-hardening.md) |
 | Storage structure change | Update code and the owning document together; consider whether `CACHE_VERSION` must bump | [session-title-compat.md](./session-title-compat.md) |
 | CLI flags / subcommands / `s7s <dir>` startup | `runtime::tests` parse cases, plus a run of the release binary: `s7s <dir>` opens the dialog on that folder, and a wrong path / a subcommand combination exits 2 before the scan | [architecture.md](./architecture.md) |
+
+## Global refresh checks
+
+Use disposable generated data (`s7s demo`) rather than slowing down a real store.
+After the initial TUI scan, append a user turn to a demo transcript so the next
+scan has a visible result. Delay a storage read for several seconds: on Unix,
+create a `.json` FIFO under the demo Claude `sessions` metadata directory, press
+`Ctrl+U`, and open its writer without closing it. The scan blocks on that file;
+writing `{}` and closing the writer releases it. Remove the FIFO after the check.
+A large changed transcript is another option when a FIFO is unavailable.
+
+1. During scanning, move the cursor, enter a keyword, and switch screens. Each
+   must visibly respond before the scan completes. Repeat `Ctrl+U`: it must
+   merge into the active scan instead of launching another.
+2. Wait for completion without further input. The list must refresh on its own,
+   keep the current selection/filter, and preserve the Detail target and turn.
+3. Open rename/delete/folder dialogs before completion. Results must wait until
+   the dialog closes, so its stored target index cannot change underneath it.
+4. Complete a mutation during refresh. Its result must not be replaced by the
+   earlier snapshot, and no stale worker may publish its staged cache.
+5. Exit during a slow scan and compare the PTY's terminal modes before/after.
+   Shutdown must not wait for the worker.
+
+`src/ui/refresh/tests.rs` (`ui::refresh::tests`) covers controlled in-flight input, repeat coalescing,
+selection/profile identity, Detail navigation, dialog and handover deferral,
+deletion invalidation, worker failure, and staged-cache acceptance/discard.
 
 ## Why unit tests are not enough
 

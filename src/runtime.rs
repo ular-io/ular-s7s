@@ -325,49 +325,38 @@ fn resolve_startup_dir(raw: &str) -> Result<std::path::PathBuf, String> {
 /// remaining events to update the state, then redraws **exactly once**.
 /// Rapidly pressing or holding navigation keys won't redraw on every frame, ensuring immediate cursor movement.
 ///
-/// Two-phase global refresh (Ctrl+U): the effect only prepares (background
-/// probes + status), so the draw above shows the loading state first; the
-/// scheduled synchronous session scan then runs here right after that draw,
-/// without waiting for another input event. Input queued while the scan ran is
-/// drained before the cycle ends, so repeat Ctrl+U presses merge into one scan.
+/// Global refresh draws its preparing frame before spawning a worker. Polling
+/// at every frame also applies ready results during sustained keyboard input.
 fn run_loop(session: &mut TerminalSession, app: &mut App) -> Result<()> {
     loop {
+        app.poll_background();
         session.terminal_mut().draw(|f| ui::render::draw(f, app))?;
+        app.finish_refresh_cycle();
+        app.start_scheduled_refresh_scan();
 
-        if app.refresh_scan_scheduled() {
-            // The preparing frame is on screen: run the scheduled scan now.
-            app.run_scheduled_refresh_scan();
-            // Keys queued during the scan apply normally, but a queued Ctrl+U
-            // merges into this still-active cycle instead of rescanning.
-            drain_queued_events(app)?;
-            app.finish_refresh_cycle();
-            // Fall through to the request handling below; the next iteration's
-            // draw renders the scan result without waiting for input.
-        } else {
-            // 1) Wait for the first event. If usage or model queries are in progress, poll with a short
-            //    timeout so that background updates trigger a redraw.
-            loop {
-                // 100ms: Keep at half the pulse step duration (render.rs PULSE_STEP_MS 200ms)
-                //        to prevent step skipping between redraws.
-                let timeout = if app.background_in_flight() {
-                    Duration::from_millis(100)
-                } else {
-                    Duration::from_secs(3600)
-                };
-                if event::poll(timeout)? {
-                    dispatch_event(app, event::read()?);
-                    app.apply_effect();
-                    break;
-                }
-                let updated = app.poll_background();
-                if updated || app.background_in_flight() {
-                    break; // Background update or loading animation frame -> redraw
-                }
+        // 1) Wait for the first event. If background jobs are in progress, poll with a short
+        //    timeout so that background updates trigger a redraw.
+        loop {
+            // 100ms: Keep at half the pulse step duration (render.rs PULSE_STEP_MS 200ms)
+            //        to prevent step skipping between redraws.
+            let timeout = if app.background_in_flight() {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(3600)
+            };
+            if event::poll(timeout)? {
+                dispatch_event(app, event::read()?);
+                app.apply_effect();
+                break;
             }
-
-            // 2) Drain remaining queued events immediately (reflecting state without redrawing).
-            drain_queued_events(app)?;
+            let updated = app.poll_background();
+            if updated || app.background_in_flight() {
+                break; // Background update or loading animation frame -> redraw
+            }
         }
+
+        // 2) Drain remaining queued events immediately (reflecting state without redrawing).
+        drain_queued_events(app)?;
 
         // Process resume request: exit TUI -> execute agent -> return to TUI.
         if let Some(idx) = app.resume_request.take() {

@@ -12,6 +12,7 @@ pub mod overlays;
 pub mod paste;
 pub mod profile;
 pub mod quick;
+pub(crate) mod refresh;
 pub mod render;
 pub mod session;
 
@@ -229,9 +230,8 @@ pub struct App {
     /// the TUI stays mounted. Unlike the handover `*_request` fields above, these
     /// do not unmount the terminal.
     pub(crate) pending_effect: Option<effect::AppEffect>,
-    /// Two-phase global-refresh (Ctrl+U) cycle state: the prepare step runs at
-    /// the effect boundary, the session scan runs right after the next draw,
-    /// and repeat requests merge until the completion frame renders
+    /// Global-refresh (Ctrl+U) cycle state: prepare at the effect boundary,
+    /// spawn the scan after the next draw, and merge repeats until completion
     /// (`effect::RefreshAllPhase`).
     pub(crate) refresh_all: effect::RefreshAllPhase,
 
@@ -381,19 +381,37 @@ impl App {
 
     /// Rescans sessions on disk to refresh the session list (utilizes mtime-based incremental cache).
     ///
-    /// Low overhead as only modified or new files are parsed. Tracks current selection by (agent, id)
+    /// Only modified or new files are parsed. Tracks selection by (agent, profile, id)
     /// to preserve cursor position post-refresh (even if content modifications re-order lists to the top).
-    /// Shared between automatic triggers on resume return and manual Ctrl+U refreshes.
+    /// Used after handovers and mutations. Ctrl+U scans on a worker and shares
+    /// only result application with this synchronous path.
     pub fn refresh_sessions(&mut self) {
-        let prev = self.current().map(|s| (s.agent, s.id.clone()));
-        // If the details view is open, capture the target session's identity to rebind post-refresh.
-        let detail_key = self
-            .detail
-            .as_ref()
-            .and_then(|d| self.sessions.get(d.session_idx))
-            .map(|s| (s.agent, s.id.clone()));
-
+        self.cancel_refresh_scan();
         let result = crate::scan::scan(&self.profiles.profiles, false);
+        let detail = self.detail_key().and_then(|key| {
+            result
+                .sessions
+                .iter()
+                .find(|s| key.matches(s))
+                .map(|s| (key, crate::handoff::load_turns(s)))
+        });
+        self.apply_session_scan(result, detail);
+    }
+
+    /// Applies a completed index against the selection and detail target that
+    /// exist now, including navigation performed while the worker was running.
+    pub(crate) fn apply_session_scan(
+        &mut self,
+        result: crate::scan::ScanResult,
+        detail: Option<refresh::DetailRefresh>,
+    ) {
+        let prev = self.current().map(refresh::SessionKey::of);
+        let detail_key = self.detail_key();
+        let preview = (
+            self.preview_scroll,
+            self.preview_expanded,
+            self.table_state.borrow().offset(),
+        );
         self.scan_info = format!(
             "{} sessions · reparsed {}/{}",
             result.sessions.len(),
@@ -405,33 +423,39 @@ impl App {
         self.recompute();
 
         // Restore selection: if the same session still passes the filters, move cursor to its new index.
-        if let Some((agent, id)) = prev {
+        if let Some(key) = prev {
             if let Some(pos) = self
                 .filtered
                 .iter()
-                .position(|&i| self.sessions[i].agent == agent && self.sessions[i].id == id)
+                .position(|&i| key.matches(&self.sessions[i]))
             {
                 self.selected = pos;
+                self.preview_scroll = preview.0;
+                self.preview_expanded = preview.1;
+                *self.table_state.borrow_mut().offset_mut() = preview.2;
             }
         }
 
-        // Rebind details screen: update target session index and re-parse turns
-        // (reflecting updates such as messages added on resume return). Closes details view if session was deleted.
+        // Rebind the current Detail target. Only replace its turns when the
+        // result was loaded for that identity; navigation may have changed it.
         if self.detail.is_some() {
-            let found = detail_key.and_then(|(agent, id)| {
-                self.sessions
-                    .iter()
-                    .position(|s| s.agent == agent && s.id == id)
-            });
+            let found = detail_key
+                .as_ref()
+                .and_then(|key| self.sessions.iter().position(|s| key.matches(s)));
             match found {
                 Some(idx) => {
-                    let turns = crate::handoff::load_turns(&self.sessions[idx]);
-                    if turns.is_empty() {
+                    let turns = detail
+                        .filter(|(key, _)| Some(key) == detail_key.as_ref())
+                        .map(|(_, turns)| turns);
+                    if turns.as_ref().is_some_and(Vec::is_empty) {
                         self.close_session_detail();
                     } else if let Some(d) = self.detail.as_mut() {
                         d.session_idx = idx;
-                        d.selected = d.selected.min(turns.len() - 1);
-                        d.turns = turns;
+                        if let Some(turns) = turns {
+                            d.selected = d.selected.min(turns.len() - 1);
+                            d.expanded_prompt = d.expanded_prompt.filter(|&i| i < turns.len());
+                            d.turns = turns;
+                        }
                     }
                 }
                 None => self.close_session_detail(),
@@ -515,7 +539,13 @@ impl App {
                 usage::UsageResult::Failed(_) => entry.phase = UsagePhase::Failed,
             }
         }
-        if updated && !self.background.usage_in_flight() {
+        if updated
+            && !self.background.usage_in_flight()
+            && !matches!(
+                self.refresh_all,
+                effect::RefreshAllPhase::Prepared | effect::RefreshAllPhase::Scanning
+            )
+        {
             self.status_msg = Some("usage update complete".to_string());
         }
         updated
@@ -590,16 +620,17 @@ impl App {
         dirty
     }
 
-    /// Returns whether any background query (usage or models) is in progress (used to determine polling frequency).
+    /// Returns whether any background job (usage, models, sessions) is in progress (used to determine polling frequency).
     pub fn background_in_flight(&self) -> bool {
         self.background.in_flight()
     }
 
-    /// Polls and applies all background query results. Returns true if updates occurred (triggering a redraw).
+    /// Polls and applies all background job results. Returns true if updates occurred (triggering a redraw).
     pub fn poll_background(&mut self) -> bool {
         let usage_updated = self.poll_usage();
         let models_updated = self.poll_models();
-        usage_updated || models_updated
+        let sessions_updated = self.poll_refresh_scan();
+        usage_updated || models_updated || sessions_updated
     }
 
     fn rebuild_all_folders(&mut self) {

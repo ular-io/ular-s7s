@@ -38,6 +38,19 @@ pub(crate) fn scan_at(
     cache_path: &Path,
     workspace_path: &Path,
 ) -> ScanResult {
+    let (result, cache) = collect_at(profiles, rebuild_cache, cache_path, workspace_path);
+    let _ = cache.save(cache_path);
+    result
+}
+
+/// Collects an index without publishing its cache. Background refreshes stage
+/// the cache separately so a superseded scan cannot overwrite newer changes.
+pub(crate) fn collect_at(
+    profiles: &[Profile],
+    rebuild_cache: bool,
+    cache_path: &Path,
+    workspace_path: &Path,
+) -> (ScanResult, Cache) {
     let old = if rebuild_cache {
         Cache::default()
     } else {
@@ -120,13 +133,14 @@ pub(crate) fn scan_at(
     // such as a resume-without-input `last-prompt` append.
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at_ms));
 
-    let _ = new.save(cache_path);
-
-    ScanResult {
-        sessions,
-        scanned_files: scanned,
-        reparsed_files: reparsed,
-    }
+    (
+        ScanResult {
+            sessions,
+            scanned_files: scanned,
+            reparsed_files: reparsed,
+        },
+        new,
+    )
 }
 
 /// Recursively scans for *.jsonl files and parses them into one session per file (with cache applied).
