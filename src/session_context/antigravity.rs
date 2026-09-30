@@ -2,9 +2,9 @@
 //!
 //! Conversation bodies live in protobuf payloads inside SQLite, but a readable
 //! JSONL transcript is also written under `brain/<id>/.system_generated/logs/`.
-//! The detailed parser reads that transcript. `/rewind` rewrites the DB (and
-//! transcript source of truth) destructively, so no dead-branch filtering is
-//! needed here — the store only ever holds the active path.
+//! `/rewind` truncates the DB, but the transcript can retain the old suffix and
+//! append the replacement branch with reused step indices. Reduce that suffix
+//! before extracting turns, work entries, and response-completion timestamps.
 
 use super::model::{ContextEntryKind, ContextTurn};
 use super::{cleanup_user_text, compact_json, promote_qa_turn, push_entry, set_last_assistant};
@@ -49,6 +49,33 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
 /// `PLANNER_RESPONSE.created_at` attached to a real user turn is the best
 /// available completion timestamp.
 pub(crate) fn parse_turns_with_activity(path: &Path) -> Result<(Vec<ContextTurn>, Option<i64>)> {
+    parse_transcript(path, None)
+}
+
+/// The DB is truncated immediately on rewind, before a replacement user record
+/// reaches the transcript. Its last step also bounds the reduced transcript.
+/// A missing/unreadable DB leaves standalone transcript parsing available.
+pub(crate) fn parse_turns_with_activity_for_db(
+    path: &Path,
+    db_path: &Path,
+) -> Result<(Vec<ContextTurn>, Option<i64>)> {
+    let last_step =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()
+            .and_then(|conn| {
+                conn.query_row("SELECT MAX(idx) FROM steps", [], |row| {
+                    row.get::<_, Option<i64>>(0)
+                })
+                .ok()
+            })
+            .map(|index| index.unwrap_or(-1));
+    parse_transcript(path, last_step)
+}
+
+fn parse_transcript(
+    path: &Path,
+    last_step: Option<i64>,
+) -> Result<(Vec<ContextTurn>, Option<i64>)> {
     let content = std::fs::read_to_string(path)?;
     let mut turns: Vec<ContextTurn> = Vec::new();
     let mut current: Option<ContextTurn> = None;
@@ -56,11 +83,17 @@ pub(crate) fn parse_turns_with_activity(path: &Path) -> Result<(Vec<ContextTurn>
     // Question list from the preceding ask_question tool_call (for pairing with ASK_QUESTION answers).
     let mut pending_questions: Vec<String> = Vec::new();
 
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+    for line in active_transcript_lines(&content) {
         let v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let (Some(limit), Some(index)) = (last_step, v.get("step_index").and_then(Value::as_i64))
+        {
+            if index > limit {
+                continue;
+            }
+        }
         let source = v.get("source").and_then(Value::as_str).unwrap_or("");
         let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
         let text = v.get("content").and_then(Value::as_str).unwrap_or("");
@@ -159,6 +192,34 @@ pub(crate) fn parse_turns_with_activity(path: &Path) -> Result<(Vec<ContextTurn>
     Ok((turns, last_response_completed_at_ms))
 }
 
+/// A replayed user step replaces the previous suffix. Do not treat arbitrary
+/// index decreases as rewinds: normal planner responses and checkpoints can
+/// arrive after records with higher indices. Unindexed transcripts retain their
+/// original order, and truncating before parsing also discards pending QA state.
+fn active_transcript_lines(content: &str) -> Vec<&str> {
+    let mut active: Vec<(Option<u64>, &str)> = Vec::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let index = record.get("step_index").and_then(Value::as_u64);
+        if record.get("source").and_then(Value::as_str) == Some("USER_EXPLICIT")
+            && record.get("type").and_then(Value::as_str) == Some("USER_INPUT")
+        {
+            if let Some(index) = index {
+                if let Some(start) = active
+                    .iter()
+                    .position(|(previous, _)| previous.is_some_and(|previous| previous >= index))
+                {
+                    active.truncate(start);
+                }
+            }
+        }
+        active.push((index, line));
+    }
+    active.into_iter().map(|(_, line)| line).collect()
+}
+
 fn created_at_ms(v: &Value) -> Option<i64> {
     v.get("created_at")
         .and_then(Value::as_str)
@@ -249,25 +310,106 @@ fn extract_user_request(content: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn activity_uses_latest_done_planner_response_attached_to_a_user_turn() {
-        let content = r#"
-{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T00:00:00Z","content":"orphan"}
-{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-07-23T01:00:00Z","content":"<USER_REQUEST>question</USER_REQUEST>"}
-{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T01:01:02Z","content":"answer"}
-{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"RUNNING","created_at":"2026-07-23T01:02:00Z","content":"partial"}
-"#;
+    fn parse_fixture(content: &str) -> (Vec<ContextTurn>, Option<i64>) {
         let path = std::env::temp_dir().join(format!(
-            "s7s-antigravity-activity-{}.jsonl",
+            "s7s-antigravity-context-{}-{}.jsonl",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos()
         ));
         std::fs::write(&path, content).expect("write transcript");
-        let (turns, completed_at_ms) = parse_turns_with_activity(&path).expect("parse transcript");
+        let parsed = parse_turns_with_activity(&path).expect("parse transcript");
+        std::fs::remove_file(path).expect("remove fixture");
+        parsed
+    }
+
+    #[test]
+    fn rewind_replaces_the_suffix_including_answers_tools_qa_and_activity() {
+        let (turns, activity) = parse_fixture(
+            r#"
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"first"}
+{"step_index":2,"source":"MODEL","type":"RUN_COMMAND","content":"kept tool"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T01:00:00Z","content":"kept answer"}
+{"step_index":10,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"old second"}
+{"step_index":11,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T05:00:00Z","content":"abandoned answer","tool_calls":[{"name":"ask_question","args":{"questions":[{"question":"abandoned question"}]}}]}
+{"step_index":12,"source":"MODEL","type":"ASK_QUESTION","content":"A1: Yes"}
+{"step_index":13,"source":"MODEL","type":"RUN_COMMAND","content":"abandoned tool"}
+{"step_index":20,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"old third"}
+{"step_index":21,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T06:00:00Z","content":"abandoned third answer"}
+{"step_index":10,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"new second"}
+{"step_index":11,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T02:00:00Z","content":"new answer"}
+"#,
+        );
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].user, "first");
+        assert_eq!(turns[0].last_assistant_text.as_deref(), Some("kept answer"));
+        assert!(turns[0]
+            .entries
+            .iter()
+            .any(|e| e.text.contains("kept tool")));
+        assert_eq!(turns[1].user, "new second");
+        assert_eq!(turns[1].last_assistant_text.as_deref(), Some("new answer"));
+        assert!(turns
+            .iter()
+            .flat_map(|t| &t.entries)
+            .all(|e| !e.text.contains("abandoned")));
+        assert_eq!(activity, Some(1_784_772_000_000));
+    }
+
+    #[test]
+    fn repeated_rewinds_can_replace_work_with_a_user_or_noise_boundary() {
+        let (turns, activity) = parse_fixture(
+            r#"
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"first"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T01:00:00Z","content":"kept answer"}
+{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T03:00:00Z","content":"old continuation"}
+{"step_index":4,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"old second"}
+{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"replacement second"}
+{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","tool_calls":[{"name":"ask_question","args":{"questions":[{"question":"discarded question"}]}}]}
+{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"/usage"}
+{"step_index":3,"source":"MODEL","type":"ASK_QUESTION","content":"A1: User Skipped"}
+"#,
+        );
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].last_assistant_text.as_deref(), Some("kept answer"));
+        assert_eq!(activity, Some(1_784_768_400_000));
+    }
+
+    #[test]
+    fn unindexed_transcripts_keep_repeated_prompts_and_skip_malformed_lines() {
+        let (turns, _) = parse_fixture(
+            r#"
+{"source":"USER_EXPLICIT","type":"USER_INPUT","content":"same prompt"}
+not json
+{"source":"MODEL","type":"PLANNER_RESPONSE","content":"first answer"}
+{"source":"USER_EXPLICIT","type":"USER_INPUT","content":"same prompt"}
+{"source":"MODEL","type":"PLANNER_RESPONSE","content":"second answer"}
+"#,
+        );
+        assert_eq!(turns.len(), 2);
+        assert_eq!(
+            turns[0].last_assistant_text.as_deref(),
+            Some("first answer")
+        );
+        assert_eq!(
+            turns[1].last_assistant_text.as_deref(),
+            Some("second answer")
+        );
+    }
+
+    #[test]
+    fn activity_uses_latest_done_planner_response_attached_to_a_user_turn() {
+        let (turns, completed_at_ms) = parse_fixture(
+            r#"
+{"step_index":0,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T00:00:00Z","content":"orphan"}
+{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-07-23T01:00:00Z","content":"<USER_REQUEST>question</USER_REQUEST>"}
+{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-07-23T01:01:02Z","content":"answer"}
+{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"RUNNING","created_at":"2026-07-23T01:02:00Z","content":"partial"}
+"#,
+        );
         assert_eq!(turns.len(), 1);
         assert_eq!(completed_at_ms, Some(1_784_768_462_000));
-        let _ = std::fs::remove_file(path);
     }
 }

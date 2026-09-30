@@ -57,13 +57,15 @@ assistant and tool records.
 | --- | --- | --- | --- |
 | Claude | `parser/claude/` | `session_context/claude.rs` | shared `events` decoder and `parentUuid` chain reduction |
 | Codex | `parser/codex/` | `session_context/codex.rs` | shared `events` decoder; consumers apply `thread_rolled_back` truncation |
-| Antigravity | `parser/antigravity.rs` over SQLite | `session_context/antigravity.rs` over transcript JSONL | different stores; no shared decoder |
+| Antigravity | `parser/antigravity.rs` over SQLite | `session_context/antigravity.rs` over transcript JSONL | DB step bound and replayed user-step suffix reduction |
 
 All parsers use `parser::{clean_turn, is_noise_turn}`. Claude and Codex event
 decoders classify records without materializing tool payloads; detailed parsers
 extract payloads from the raw records. Antigravity's list parser reuses
-`session_context::antigravity::parse_turns` only for last-assistant-text search
-indexing because that text is absent from its SQLite store.
+`session_context::antigravity::parse_turns_with_activity_for_db` for
+last-assistant-text search indexing because that text is absent from its SQLite
+store. This shares active-path filtering with Detail while keeping the two
+storage decoders separate.
 
 Invariant: List Q count, Detail turn count, and `s7s session show` turn count
 must agree under the rules in [session-context.md](./session-context.md).

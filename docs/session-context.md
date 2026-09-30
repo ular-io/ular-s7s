@@ -101,8 +101,24 @@ well as Q counts: turn parity alone missed an unmirrored `AgentMessage`.
 ### Antigravity
 
 - The list reads the conversation SQLite DB; details read transcript JSONL.
+- Rewind truncates the DB but can leave abandoned records in the transcript
+  (verified with agy 1.2.14).
+  `session_context::antigravity::active_transcript_lines` processes records in
+  file order: an indexed `USER_EXPLICIT/USER_INPUT` that reuses an earlier step
+  replaces the recorded suffix from that step onward. Reduction precedes turn,
+  answer, work, QA, and response-activity extraction, including assistant search
+  indexing through `parse_turns_with_activity_for_db`.
+- The same parser bounds indexed records by `SELECT MAX(idx) FROM steps` in
+  the owning DB. This removes the abandoned suffix immediately after rewind,
+  even before a replacement prompt is submitted. An empty steps table excludes
+  all indexed transcript records; an unreadable DB or unindexed transcript
+  retains the compatible standalone behavior.
+- A lower index on a planner response or checkpoint alone is not a rewind;
+  these records can arrive out of order during normal execution. Transcripts
+  without step indices retain their original file order.
 - Do not force these stores into a shared decoder.
-- The list may reuse `session_context::antigravity::parse_turns` for
+- The list reuses
+  `session_context::antigravity::parse_turns_with_activity_for_db` for
   last-assistant-text search indexing because that text is absent from SQLite.
 - Working directory precedence is the user-step workspace, then
   `conversation_metadata.json` `WorkspaceURIs`, then the s7s-owned

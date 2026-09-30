@@ -183,8 +183,8 @@ fn parse_detailed(session: &Session) -> DetailedParse {
                 return DetailedParse::SourceMissing;
             }
             match antigravity::transcript_path(source, &session.id) {
-                Some(path) => match antigravity::parse_turns(&path) {
-                    Ok(turns) => DetailedParse::Parsed(turns),
+                Some(path) => match antigravity::parse_turns_with_activity_for_db(&path, source) {
+                    Ok((turns, _)) => DetailedParse::Parsed(turns),
                     Err(_) => DetailedParse::Failed,
                 },
                 None => DetailedParse::UserTurnsOnly,

@@ -204,7 +204,10 @@ pub fn parse_db(
     // search falls back to user turns for that session.
     let (assistant_per_turn, last_response_completed_at_ms): (Vec<String>, Option<i64>) =
         crate::session_context::antigravity::transcript_path(path, &id)
-            .and_then(|tp| crate::session_context::antigravity::parse_turns_with_activity(&tp).ok())
+            .and_then(|tp| {
+                crate::session_context::antigravity::parse_turns_with_activity_for_db(&tp, path)
+                    .ok()
+            })
             .map(|(turns, completed_at_ms)| {
                 let answers = turns
                     .into_iter()
@@ -619,6 +622,8 @@ mod tests {
             [user_payload("question", 1_784_768_523_456)],
         )
         .expect("insert user");
+        conn.execute("INSERT INTO steps VALUES (1, 15, X'')", [])
+            .expect("insert response step");
         drop(conn);
         std::fs::write(
             logs.join("transcript_full.jsonl"),
@@ -633,6 +638,112 @@ mod tests {
         assert_eq!(session.updated_at_ms, 1_784_768_584_000);
         assert_ne!(session.updated_at_ms, later_mtime);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rewind_keeps_db_detail_and_assistant_search_on_the_active_branch() {
+        let root = std::env::temp_dir().join(format!(
+            "s7s-antigravity-rewind-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let id = "rewind-session";
+        let conversations = root.join("conversations");
+        let logs = root.join(format!("brain/{id}/.system_generated/logs"));
+        std::fs::create_dir_all(&conversations).expect("create conversations");
+        std::fs::create_dir_all(&logs).expect("create logs");
+        let path = conversations.join(format!("{id}.db"));
+        let conn = rusqlite::Connection::open(&path).expect("open temp DB");
+        conn.execute(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+            [],
+        )
+        .expect("create steps");
+        for (idx, prompt) in [(0, "first"), (2, "replacement")] {
+            conn.execute(
+                "INSERT INTO steps VALUES (?1, 14, ?2)",
+                rusqlite::params![idx, user_payload(prompt, 1_784_768_523_456)],
+            )
+            .expect("insert user");
+        }
+        conn.execute("INSERT INTO steps VALUES (3, 15, X'')", [])
+            .expect("insert response step");
+        drop(conn);
+        std::fs::write(
+            logs.join("transcript_full.jsonl"),
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"first"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T01:03:04Z","content":"retained answer"}
+{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"abandoned prompt"}
+{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T03:00:00Z","content":"abandoned answer"}
+{"step_index":4,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"abandoned later prompt"}
+{"step_index":5,"source":"MODEL","type":"RUN_COMMAND","content":"abandoned work"}
+{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"replacement"}
+{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-07-23T02:00:00Z","content":"replacement answer"}
+"#,
+        )
+        .expect("write transcript");
+
+        let session = parse_db(&path, 0, &HashMap::new()).expect("parse session");
+        assert_eq!(session.user_turns, ["first", "replacement"]);
+        assert!(session.assistant_blob.contains("retained answer"));
+        assert!(session.assistant_blob.contains("replacement answer"));
+        assert!(!session.assistant_blob.contains("abandoned"));
+        assert_eq!(session.updated_at_ms, 1_784_772_000_000);
+        let context = crate::session_context::load(&session);
+        assert_eq!(
+            context.completeness,
+            crate::session_context::ContextCompleteness::Full
+        );
+        assert_eq!(context.turns.len(), session.user_turns.len());
+        assert_eq!(context.turns[1].user, "replacement");
+        assert_eq!(
+            context.turns[1].last_assistant_text.as_deref(),
+            Some("replacement answer")
+        );
+        let detail_turns = crate::handoff::load_turns(&session);
+        assert_eq!(detail_turns.len(), 2);
+        assert!(detail_turns
+            .iter()
+            .flat_map(|t| &t.work_entries)
+            .all(|e| !e.text.contains("abandoned")));
+
+        // Rewind again without submitting a replacement: the transcript has no
+        // new boundary, so the DB's remaining step range must exclude its tail.
+        let conn = rusqlite::Connection::open(&path).expect("reopen temp DB");
+        conn.execute("DELETE FROM steps WHERE idx >= 2", [])
+            .expect("rewind DB");
+        conn.execute("INSERT INTO steps VALUES (1, 15, X'')", [])
+            .expect("keep first response step");
+        let session = parse_db(&path, 0, &HashMap::new()).expect("parse rewound session");
+        assert_eq!(session.user_turns, ["first"]);
+        assert_eq!(session.assistant_blob, "retained answer");
+        assert_eq!(session.updated_at_ms, 1_784_768_584_000);
+        let context = crate::session_context::load(&session);
+        assert_eq!(context.turns.len(), 1);
+        assert_eq!(
+            context.turns[0].last_assistant_text.as_deref(),
+            Some("retained answer")
+        );
+        assert_eq!(
+            context.completeness,
+            crate::session_context::ContextCompleteness::Full
+        );
+
+        // An empty steps table is an empty active path, not an unavailable bound.
+        conn.execute("DELETE FROM steps", []).expect("clear DB");
+        let (turns, activity) =
+            crate::session_context::antigravity::parse_turns_with_activity_for_db(
+                &logs.join("transcript_full.jsonl"),
+                &path,
+            )
+            .expect("parse empty active path");
+        assert!(turns.is_empty());
+        assert_eq!(activity, None);
+        drop(conn);
+        std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
