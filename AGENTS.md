@@ -66,7 +66,11 @@ authoritative matrix; the essentials:
   is empty afterwards, not just the rollout file ([testing.md](./docs/testing.md) Codex section).
 - **Usage parsing**: `--usage-probe` cross-check against the real CLI screen (do not misread absolute times vs. countdowns).
 - **Model list**: `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs accept invalid model names — agy silently falls back — so s7s owns list accuracy).
-- **Rewind/backtrack parsing** (claude `parentUuid`, codex `thread_rolled_back`): rewind in the real CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively and has no parser handling — expected).
+- **Rewind/backtrack parsing** (claude `parentUuid`, codex `thread_rolled_back`,
+  agy replayed user step indices): rewind in the real CLI and compare the
+  saved-file diff against the s7s preview. Agy truncates its DB but may retain
+  the abandoned transcript suffix, which must be reduced before detail and
+  assistant-search parsing.
 - **Context / list turn selection**: `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade.
 - **New Session dialog layout**: `cargo build --release` is mandatory, plus a PTY/TUI visual check.
 - **Terminal lifecycle / paste / text editing**: real-terminal paste, exit, and handover checks, plus the `S7S_PANIC_PROBE=1` panic-restore check — [testing.md](./docs/testing.md#terminal-lifecycle-and-paste-checks).

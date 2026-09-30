@@ -20,7 +20,7 @@ the change area below and run every check listed for it.
 | Usage parsing / usage display | `--usage-probe` cross-check against the real CLI screen (do not misread absolute times vs. countdowns) | [usage-display.md](./usage-display.md) |
 | Probe working directory / trust handling | `--usage-probe` **and** `--model-probe` from a folder whose `.claude/settings.json` pre-approves permissions (the case that used to fail): every profile must come back `Ready`. To cover auto-confirm, first drop the probe folder from agy's `trustedWorkspaces` so the dialog is actually raised — agy must re-add it on its own | [usage-display.md](./usage-display.md) |
 | Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
-| Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview (agy rewrites storage destructively, so it has no parser handling — this is expected) | [session-context.md](./session-context.md) |
+| Rewind / backtrack parsing (claude `parentUuid` branch, codex `thread_rolled_back`, agy replayed user step indices) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview. For agy, verify that the truncated DB and transcript suffix reduction agree, including answers, work, and assistant search results | [session-context.md](./session-context.md) |
 | Compaction parsing (claude `compact_boundary` / `isCompactSummary`) | Run `/compact` in a real session, then confirm s7s still lists the turns recorded before the boundary and does not count the summary as a question | [session-context.md](./session-context.md) |
 | `s7s session` mutating subcommands (`rename`, `delete`) | Run both against a disposable session and confirm the on-disk effect, not just the exit code | §Session CLI mutation checks below |
 | `s7s session handoff` | Park one disposable handoff per agent and confirm the store, the profile scoping, and that the new session did not act | §Session handoff checks below |
@@ -172,6 +172,15 @@ agent. Delete each one afterwards.
 
 ### Antigravity
 
+- Rewind in a disposable conversation, check before submitting anything, then
+  submit a replacement prompt. The DB removes the old suffix; the transcript
+  can append a user record at an already-used `step_index` while retaining
+  abandoned records. The DB's last step bounds the transcript before that
+  replacement exists. Confirm List Q
+  count, Detail, and `session show` match the active DB turns after `Ctrl+U`, and
+  abandoned answers/work are absent from Detail and assistant search. Also
+  retain normal out-of-order planner responses/checkpoints; an index decrease
+  alone must not remove them.
 - `title:"..."` in `annotations/<id>.pbtxt` — the live store; a rename must land here, and a delete must take the file back
 - `cache/conversation_metadata.json` must not grow: rename a session that has no entry there and confirm both the entry count and the file mtime are unchanged
 - `summary.Title` for a session that *does* have an entry must still be refreshed
