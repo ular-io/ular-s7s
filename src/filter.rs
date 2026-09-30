@@ -26,11 +26,21 @@ pub struct Filter {
     pub folders: HashSet<String>,
     /// Selected profile IDs. If empty, matches all (configured via header number keys `1..5`).
     pub profile_ids: HashSet<String>,
+    /// Only s7s-bookmarked sessions. Membership is supplied by the app-owned store.
+    pub bookmarked_only: bool,
 }
 
 impl Filter {
-    /// Returns true if the session satisfies all active filter conditions.
+    /// Matches without bookmark metadata, treating the session as unbookmarked.
+    /// The TUI supplies membership through `apply_with_bookmarks` instead.
     pub fn matches(&self, s: &Session) -> bool {
+        self.matches_with_bookmark(s, false)
+    }
+
+    fn matches_with_bookmark(&self, s: &Session, bookmarked: bool) -> bool {
+        if self.bookmarked_only && !bookmarked {
+            return false;
+        }
         // Agent filter
         if !self.agents.is_empty() && !self.agents.contains(&s.agent) {
             return false;
@@ -70,12 +80,16 @@ impl Filter {
             || !self.agents.is_empty()
             || !self.folders.is_empty()
             || !self.profile_ids.is_empty()
+            || self.bookmarked_only
     }
 
     /// Brief description of active filters for the table title `sessions[<describe>: N]`.
     /// The profile ID is resolved to its display name via `resolve`. Returns empty string if no filters are active.
     pub fn describe_with(&self, resolve: impl Fn(&str) -> Option<String>) -> String {
         let mut parts = Vec::new();
+        if self.bookmarked_only {
+            parts.push("bookmarked".to_string());
+        }
         if !self.keyword.trim().is_empty() {
             parts.push(self.keyword.trim().to_string());
         }
@@ -102,10 +116,20 @@ impl Filter {
 
 /// Filters the session list and returns indices of matched sessions, preserving original order.
 pub fn apply(sessions: &[Session], filter: &Filter) -> Vec<usize> {
+    apply_with_bookmarks(sessions, filter, |_| false)
+}
+
+pub(crate) fn apply_with_bookmarks(
+    sessions: &[Session],
+    filter: &Filter,
+    is_bookmarked: impl Fn(&Session) -> bool,
+) -> Vec<usize> {
     sessions
         .iter()
         .enumerate()
-        .filter(|(_, s)| filter.matches(s))
+        .filter(|(_, s)| {
+            filter.matches_with_bookmark(s, !filter.bookmarked_only || is_bookmarked(s))
+        })
         .map(|(i, _)| i)
         .collect()
 }

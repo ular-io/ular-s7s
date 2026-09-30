@@ -1,6 +1,7 @@
 //! TUI application state and state machine.
 
 pub mod background;
+pub(crate) mod bookmarks;
 pub mod components;
 pub mod context_jump;
 pub mod copy;
@@ -117,6 +118,8 @@ pub struct App {
     /// List of profiles (vector order corresponds to UI/header index numbers).
     pub profiles: ProfileStore,
     pub sessions: Vec<Session>,
+    pub(crate) bookmarks: crate::bookmarks::BookmarkStore,
+    pub(crate) bookmarks_path: PathBuf,
     pub all_folders: Vec<String>,
 
     pub filter: Filter,
@@ -140,7 +143,7 @@ pub struct App {
     /// bypassing the `preview_turn_lines` omission. Toggled via `.` while the preview is focused;
     /// reset to false whenever the selected session changes.
     pub preview_expanded: bool,
-    /// Return stack for context-source jumps (`ctrl+o`), consumed by `ctrl+b`.
+    /// Return stack for context-source jumps (`ctrl+o`), consumed by the palette's Back action.
     /// Holds only jump origins — never ordinary cursor movement (`ui/context_jump.rs`).
     pub(crate) context_jump_origins: Vec<context_jump::JumpOrigin>,
 
@@ -258,10 +261,24 @@ impl App {
         all_folders.dedup();
 
         let filtered: Vec<usize> = (0..sessions.len()).collect();
+        let bookmarks_path = crate::config::bookmarks_path();
+        let (bookmarks, bookmark_error) = if cfg!(test) {
+            (crate::bookmarks::BookmarkStore::default(), None)
+        } else {
+            match crate::bookmarks::BookmarkStore::load(&bookmarks_path) {
+                Ok(store) => (store, None),
+                Err(err) => (
+                    crate::bookmarks::BookmarkStore::default(),
+                    Some(format!("Bookmarks unavailable: {err}")),
+                ),
+            }
+        };
         let mut app = App {
             cfg,
             profiles,
             sessions,
+            bookmarks,
+            bookmarks_path,
             all_folders,
             filter: Filter::default(),
             keyword_cursor: 0,
@@ -288,7 +305,7 @@ impl App {
             folder_order: Vec::new(),
             folder_visible: Vec::new(),
             scan_info,
-            status_msg: None,
+            status_msg: bookmark_error,
             table_state: std::cell::RefCell::new(ratatui::widgets::TableState::default()),
             profile_selected: 0,
             profile_table_state: std::cell::RefCell::new(ratatui::widgets::TableState::default()),
@@ -326,9 +343,18 @@ impl App {
         app
     }
 
-    /// Applies active filters and resets selection / scroll positions.
+    /// Rebuilds the visible list, keeping activity order within each bookmark group.
+    fn rebuild_filtered(&mut self) {
+        self.filtered = filter::apply_with_bookmarks(&self.sessions, &self.filter, |session| {
+            self.bookmarks.contains(session)
+        });
+        self.filtered
+            .sort_by_cached_key(|&idx| !self.bookmarks.contains(&self.sessions[idx]));
+    }
+
+    /// Applies active filters and bookmark priority, then resets selection / scroll positions.
     pub fn recompute(&mut self) {
-        self.filtered = filter::apply(&self.sessions, &self.filter);
+        self.rebuild_filtered();
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
         }
@@ -341,6 +367,16 @@ impl App {
     /// Returns the currently selected session.
     pub fn current(&self) -> Option<&Session> {
         self.filtered.get(self.selected).map(|&i| &self.sessions[i])
+    }
+
+    /// Session the active screen operates on: the list cursor on Session, the
+    /// detail target on Detail. The Profile screen has no focused session.
+    pub(crate) fn focused_session_index(&self) -> Option<usize> {
+        match self.screen {
+            Screen::Session => self.filtered.get(self.selected).copied(),
+            Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
+            Screen::Profile => None,
+        }
     }
 
     /// Rescans sessions on disk to refresh the session list (utilizes mtime-based incremental cache).

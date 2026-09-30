@@ -109,6 +109,9 @@ pub(super) fn save_terminal_history(history: &[String]) {
 
 /// Loads recently executed keys (most recent first) from disk, returning empty if absent/malformed.
 pub fn load_history() -> Vec<String> {
+    if cfg!(test) {
+        return Vec::new();
+    }
     std::fs::read_to_string(history_path())
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
@@ -117,6 +120,9 @@ pub fn load_history() -> Vec<String> {
 
 /// Saves history to disk (best-effort; failures do not disrupt application runtime).
 pub(super) fn save_history(history: &[String]) {
+    if cfg!(test) {
+        return;
+    }
     let path = history_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);

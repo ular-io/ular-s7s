@@ -10,6 +10,34 @@ use crate::ui::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 
+/// Isolated durable bookmark storage for tests; never writes user configuration.
+pub(crate) struct TempBookmarkStore {
+    pub path: PathBuf,
+}
+
+impl TempBookmarkStore {
+    pub fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "s7s-bookmark-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        Self {
+            path: root.join("bookmarks.json"),
+        }
+    }
+}
+
+impl Drop for TempBookmarkStore {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.path.parent().expect("temp dir"));
+    }
+}
+
 pub(crate) fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     KeyEvent::new(code, modifiers)
 }

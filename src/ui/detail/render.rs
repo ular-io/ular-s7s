@@ -74,11 +74,19 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
     } else {
         th.selection_inactive_bg
     };
-    let mut rows: Vec<Line> = session_meta_lines(s, inner_w, th, !focused);
+    let mut rows: Vec<Line> =
+        session_meta_lines(s, app.bookmarks.contains(s), inner_w, th, !focused);
     rows.push(sep_line());
     if let Some(src) = &s.context_source {
         let resolved = app.context_source_index(s).map(|i| &app.sessions[i]);
-        rows.extend(context_source_lines(src, resolved, inner_w, th, !focused));
+        rows.extend(context_source_lines(
+            src,
+            resolved,
+            resolved.is_some_and(|s| app.bookmarks.contains(s)),
+            inner_w,
+            th,
+            !focused,
+        ));
         rows.push(sep_line());
     }
     let mut sel_top = rows.len().saturating_sub(1);

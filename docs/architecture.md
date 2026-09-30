@@ -44,6 +44,9 @@ ProfileStore
 - `filter.rs` applies keyword, agent, folder, and profile filters. The keyword
   index includes user text, title, folder, last assistant text, and sufficiently
   long session-ID tokens.
+- `ui::App::rebuild_filtered` applies the bookmark filter and stably groups
+  bookmarked indices first. Each group preserves the scan's activity order;
+  the parsed session vector and CLI projections are not reordered.
 
 ## Parser boundaries
 
@@ -101,6 +104,7 @@ discrete request fields drained by `runtime`.
 | Filters, confirmation, help, theme, messages | `ui/overlays/` |
 | Quick Command and terminal-command input | `ui/quick/` |
 | Context-source navigation stack | `ui/context_jump.rs` |
+| Bookmark actions and title decoration | `ui/bookmarks.rs` |
 | Clipboard projections | `ui/copy.rs` |
 | Paste routing | `ui/paste.rs` |
 | Reusable input/modal/scroll/text primitives | `ui/components/` |
@@ -166,6 +170,7 @@ without a project.
 | `~/.config/s7s/theme.json` | app | JSON |
 | `~/.config/s7s/{quick,terminal}_history.json` | app | JSON |
 | `~/.config/s7s/session_workspaces.json` | app | JSON; cwd captured for s7s-created sessions whose agent store omits it |
+| `~/.config/s7s/bookmarks.json` | app | versioned JSON; bookmarks keyed by agent/profile/session identity |
 | `~/.config/s7s/projects/` | app/user | directories |
 | `~/.config/s7s/scratch/` | app | shared working directory, emptied on every launch |
 | `<OS cache>/s7s/index.bin` | app | versioned bincode, mode `0600` |
@@ -180,6 +185,7 @@ index is a disposable cache.
 | --- | --- | --- |
 | Scan, list, filter | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | `session-context.md` when turn selection changes |
 | Rename/title | `rename.rs`, `title.rs`, parser title paths | `session-title-compat.md` |
+| Session bookmarks | `bookmarks.rs`, `ui/bookmarks.rs`, `filter.rs` | `bookmarks.md` |
 | Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli.rs`) | `session-context.md` §Delete |
 | Work handoff | `session_handoff.rs`, `config.rs` (`handoff_instruction`) | `session-context.md` §Handoff |
 | Detailed context/CLI | `session_context/*`, `session_cli.rs` | `session-context.md` |

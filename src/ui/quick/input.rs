@@ -118,13 +118,15 @@ impl App {
             OpenSessionWindow => self.screen != Screen::Session,
             OpenProfileWindow => self.screen != Screen::Profile,
             // Contextual New Session needs a focused source session (Session/Detail only).
-            ResumeSession | NewSessionWithContext | RenameSession | DeleteSession => {
-                match self.screen {
-                    Screen::Session => self.filtered.get(self.selected).is_some(),
-                    Screen::Detail => self.detail.is_some(),
-                    Screen::Profile => false,
-                }
-            }
+            ResumeSession
+            | NewSessionWithContext
+            | RenameSession
+            | DeleteSession
+            | ToggleBookmark => match self.screen {
+                Screen::Session => self.filtered.get(self.selected).is_some(),
+                Screen::Detail => self.detail.is_some(),
+                Screen::Profile => false,
+            },
             // Both move the session list cursor; Profile has no focused session,
             // which already excludes the jump and is why Back is gated explicitly.
             GoToContextSource => self.can_jump_to_context_source(),
@@ -141,7 +143,9 @@ impl App {
             ToggleProfileShortcut => {
                 self.screen == Screen::Profile && !self.profiles.profiles.is_empty()
             }
-            SearchSessions | FilterByAgent | FilterByFolder => self.screen == Screen::Session,
+            SearchSessions | FilterByAgent | FilterByFolder | FilterBookmarkedSessions => {
+                self.screen == Screen::Session
+            }
             ClearFilters => self.screen == Screen::Session && self.filter.is_active(),
             ToggleToolLogs => self.screen == Screen::Detail,
             RefreshAll | EditConfig | ChangeTheme | OpenHelp | ExitApp => true,
@@ -407,6 +411,7 @@ impl App {
             NewSessionWithContext => self.open_new_session_modal_for_session(session_idx, true),
             GoToContextSource => self.jump_to_context_source(),
             BackToPreviousSession => self.return_to_jump_origin(),
+            ToggleBookmark => self.toggle_focused_bookmark(),
             RenameSession => {
                 if let Some(idx) = session_idx {
                     self.open_rename_modal_at(idx);
@@ -433,6 +438,7 @@ impl App {
             }
             FilterByAgent => self.open_agent_modal(),
             FilterByFolder => self.open_folder_modal(),
+            FilterBookmarkedSessions => self.toggle_bookmark_filter(),
             ClearFilters => self.clear_all_filters(),
             RefreshAll => self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll),
             ToggleToolLogs => self.detail_show_tools = !self.detail_show_tools,

@@ -252,8 +252,9 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
                     text_style,
                 )),
                 TableColumn::Updated => Cell::from(Span::styled(s.date_str(), text_style)),
-                TableColumn::Title => Cell::from(Span::styled(
-                    truncate_w(&s.title(), layout.title_w),
+                TableColumn::Title => Cell::from(crate::ui::bookmarks::styled_title(
+                    truncate_w(&app.session_display_title(s), layout.title_w),
+                    app.bookmarks.contains(s),
                     text_style,
                 )),
                 TableColumn::Q => Cell::from(Span::styled(
@@ -345,7 +346,13 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(s) = app.current() {
-        lines.extend(session_meta_lines(s, inner_w, th, false));
+        lines.extend(session_meta_lines(
+            s,
+            app.bookmarks.contains(s),
+            inner_w,
+            th,
+            false,
+        ));
         lines.push(Line::from(Span::styled(
             "─".repeat(inner_w.max(1)),
             Style::default().fg(th.dim),
@@ -353,7 +360,14 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 
         if let Some(src) = &s.context_source {
             let resolved = app.context_source_index(s).map(|i| &app.sessions[i]);
-            lines.extend(context_source_lines(src, resolved, inner_w, th, false));
+            lines.extend(context_source_lines(
+                src,
+                resolved,
+                resolved.is_some_and(|s| app.bookmarks.contains(s)),
+                inner_w,
+                th,
+                false,
+            ));
             lines.push(Line::from(Span::styled(
                 "─".repeat(inner_w.max(1)),
                 Style::default().fg(th.dim),

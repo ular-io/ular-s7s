@@ -33,6 +33,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen. Keyword search spans user prompts, titles, folder names, and each turn's last assistant answer, so you can find a session by something the agent said.
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
+- **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
 - **Project-Free Scratch Sessions**: Pick `[SCRATCH]` at the top of the New Session folder list to start an agent with no project attached — for a question or a quick check. It runs in a shared folder (`~/.config/s7s/scratch`) that is emptied on every start and carries a policy file telling the agent to ask you for a target directory before writing anything, so nothing important is left in a throwaway location.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
 - **Work Handoff**: Park a task you are not doing now in a new session (`s7s session handoff`). The parked session records the work order and stops without acting on it, and keeps a link back to the session it came from, so `ctrl+o` walks to the origin when the work is picked up later.
@@ -113,7 +114,7 @@ leaves the ordinary session list behind the dialog.
 
 | Key | Action |
 | :-- | :-- |
-| `:` | Quick Command palette. Typing filters every command by label, alias, or shortcut (`↑`/`↓` to pick, `enter` to run), so `profile` reaches **Open Profile Window** and `theme` reaches **Change Theme**. Commands with no key of their own — **Change Folder**, **Edit Config**, **Change Theme** — are reachable only here |
+| `:` | Quick Command palette. Typing filters every command by label, alias, or shortcut (`↑`/`↓` to pick, `enter` to run), so `profile` reaches **Open Profile Window** and `theme` reaches **Change Theme**. Palette-only commands include **Change Folder**, **Edit Config**, **Change Theme**, **Back to Previous Session**, and **Filter Bookmarked Sessions** |
 | `!` | Terminal command in session folder (run shell command in the selected session's folder) |
 | `/` | Keyword search mode (real-time matching over body/title/folder + last assistant answers + session id, space=AND) |
 | `a` | Agents modal (`space` toggle, `enter` apply) |
@@ -126,7 +127,7 @@ leaves the ordinary session list behind the dialog.
 | `ctrl+n` | New Session (Profile/Model/Folder dialog; typing a bare name instead of a path offers to create a new project folder under `~/.config/s7s/projects`; the folder list starts with `[SCRATCH]` for a project-free session; a prefilled path starts selected, so typing replaces it and `→` keeps it for editing) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |
 | `ctrl+o` | Go to Context Source (move to the session the selected one was launched from; clears filters if they hide it) |
-| `ctrl+b` | Back to Previous Session (return along the `ctrl+o` jumps, restoring the filter each was made under) |
+| `ctrl+b` | Toggle Bookmark (show `Ⓑ  ` before the title; also available on Detail) |
 | `ctrl+r` | Rename Session |
 | `ctrl+d` / `del` | Confirm Delete Session |
 | `tab` / `shift+tab` | Toggle focus between left table ↔ right preview panel |
@@ -138,7 +139,7 @@ leaves the ordinary session list behind the dialog.
 | `esc` | Cancel search/filter/selection state (reset keyword/filter, close modal) — **Not quit** |
 | `q` / `ctrl+c` | Press again to quit |
 
-All filters (Keyword · Agent · Folder · Profile) operate with an **AND combination**.
+All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an **AND combination**.
 
 ### Shortcuts (Profile Screen, `:` → **Open Profile Window**)
 
@@ -152,6 +153,18 @@ All filters (Keyword · Agent · Folder · Profile) operate with an **AND combin
 | `ctrl+d` | Delete profile (default profile cannot be deleted, actual folder remains) |
 | `ctrl+u` | Refresh all profile usages (keeps showing previous value during refresh) |
 | `→` / `l` | Return to session screen |
+
+## Session Bookmarks
+
+Press `ctrl+b` to add or remove a bookmark on the selected session. Bookmarked
+titles show a bold `Ⓑ  ` in the list and Prompt/Detail metadata. Bookmarked
+sessions appear first, with the latest activity first within each group.
+Bookmarks are stored locally in `~/.config/s7s/bookmarks.json` and survive app
+restarts and cache rebuilds without changing the agent's stored title.
+
+Use `:` → **Toggle Bookmark** for the same action, or **Filter Bookmarked
+Sessions** to show only bookmarked sessions under the current search/filters.
+Run that filter command again to turn it off, or press `0` to clear all filters.
 
 ## Session Folder
 
@@ -267,7 +280,10 @@ Pressing `ctrl+shift+n` (or **New Session with Context** in the `:` palette) on 
 
 A session started with context keeps a `● Context Source` block above `Q1` on the Session and Detail screens, with a `<ctrl+o>` hint on its heading whenever the source can actually be reached. `ctrl+o` (or **Go to Context Source** in the `:` palette) moves to that source session; because a source may live in another agent, folder, or profile, the active filters are cleared when they would hide it (the status bar says so). Repeating `ctrl+o` keeps walking up the chain, since every derived session carries its own source.
 
-`ctrl+b` (**Back to Previous Session**) returns along the jumps already made, restoring the filter each jump started under. Only `ctrl+o` jumps are recorded — ordinary cursor movement is not — and origins whose session has since been deleted are skipped. Both keys use plain control bytes, so they work identically in every terminal.
+`:` → **Back to Previous Session** returns along the jumps already made,
+restoring the filter each jump started under. This action is palette-only;
+`ctrl+b` toggles bookmarks. Only `ctrl+o` jumps are recorded — ordinary cursor
+movement is not — and origins whose session has since been deleted are skipped.
 
 ## Data Sources
 
@@ -342,6 +358,7 @@ accent = "#88C0D0"    # focus borders / selection
 - Verification: [Testing Guide](./docs/testing.md)
 - Current planning candidates and verification debt: [Backlog](./docs/backlog.md)
 - Domain contracts: [Session Context](./docs/session-context.md),
+  [Session Bookmarks](./docs/bookmarks.md),
   [Session Title Compatibility](./docs/session-title-compat.md),
   [Profiles](./docs/profiles.md), [Model Selection](./docs/models.md),
   [Usage Display](./docs/usage-display.md),

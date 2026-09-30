@@ -379,7 +379,8 @@ which is what marks it as not started.
 - Session and Detail views render a `Context Source` block above Q1, and
   `session show` renders the matching header line (CLI §Show).
 - `ctrl+o` resolves and opens that source; filters clear only when they hide the
-  target. `ctrl+b` returns through the in-memory navigation stack.
+  target. The palette-only **Back to Previous Session** action returns through
+  the in-memory navigation stack. `ctrl+b` toggles a [bookmark](./bookmarks.md).
 - `ContextEntryKind::SessionReference` is reserved for future nested-reference
   recognition and is not currently produced.
 

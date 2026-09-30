@@ -190,6 +190,11 @@ pub(crate) fn session_workspaces_path() -> PathBuf {
     config_base_dir().join("session_workspaces.json")
 }
 
+/// Durable s7s bookmarks, independent of the disposable session index.
+pub(crate) fn bookmarks_path() -> PathBuf {
+    config_base_dir().join("bookmarks.json")
+}
+
 /// Configuration directory: `~/.config/s7s`.
 ///
 /// Hardcoded rather than resolved via `dirs::config_dir()` so all app state

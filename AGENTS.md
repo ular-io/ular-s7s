@@ -25,6 +25,7 @@ planning; backlog entries are not implementation authorization.
 | Session deletion (`src/session_delete.rs`, shared by the TUI action and `s7s session delete`) | [session-context.md](./docs/session-context.md) §Delete + [testing.md](./docs/testing.md) |
 | Work handoff (`src/session_handoff.rs`, `s7s session handoff`) | [session-context.md](./docs/session-context.md) §Handoff + [testing.md](./docs/testing.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
+| Session bookmarks / Ctrl+B / bookmark filter (`src/bookmarks.rs`, `src/ui/bookmarks.rs`) | [bookmarks.md](./docs/bookmarks.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |
 

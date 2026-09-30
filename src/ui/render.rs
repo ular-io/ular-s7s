@@ -54,15 +54,14 @@ const SHORTCUTS_SESSION: [&[(&str, &str)]; 2] = [
         ("c", "Copy to Clipboard"),
         ("0", "Clear"),
     ],
-    // Session operations. Five entries is the ceiling (§ui-style-guide, enforced by
-    // `header_shortcut_columns_fit_the_five_row_header`), so `ctrl+b` — the return
-    // key paired with `ctrl+o` — lives in `?` help and the `:` palette only.
+    // Session operations. The header has five rows; the conditional context
+    // source heading exposes Ctrl+O beside its target instead.
     &[
         ("enter", "Resume Session"),
         ("ctrl+n", "New Session"),
         ("ctrl+r", "Rename Session"),
         ("ctrl+d", "Delete Session"),
-        ("ctrl+o", "Go to Source"),
+        ("ctrl+b", "Bookmark"),
     ],
 ];
 
@@ -74,7 +73,7 @@ const SHORTCUTS_DETAIL: [&[(&str, &str)]; 2] = [
         ("ctrl+n", "New Session"),
         ("ctrl+r", "Rename Session"),
         ("ctrl+d", "Delete Session"),
-        ("ctrl+o", "Go to Source"),
+        ("ctrl+b", "Bookmark"),
     ],
 ];
 
@@ -613,6 +612,7 @@ fn draw_project_dir_confirm(f: &mut Frame, app: &App) {
 /// `dimmed` renders the accent-colored values in soft-dim too (whole panel unfocused).
 pub(crate) fn session_meta_lines(
     s: &crate::model::Session,
+    bookmarked: bool,
     inner_w: usize,
     th: &Theme,
     dimmed: bool,
@@ -624,7 +624,7 @@ pub(crate) fn session_meta_lines(
             heading_hint: None,
             folder: crate::scratch::folder_label(&s.cwd, &s.folder),
             full_path: &s.cwd.to_string_lossy(),
-            title: &s.title(),
+            title: &crate::ui::bookmarks::display_title(s, bookmarked),
             extra_rows: &[
                 ("Created at: ", s.created_str()),
                 ("Updated at: ", s.updated_str()),
@@ -654,6 +654,7 @@ const CONTEXT_SOURCE_JUMP_HINT: &str = "<ctrl+o>";
 pub(crate) fn context_source_lines(
     src: &crate::model::ContextSource,
     resolved: Option<&crate::model::Session>,
+    bookmarked: bool,
     inner_w: usize,
     th: &Theme,
     dimmed: bool,
@@ -669,7 +670,7 @@ pub(crate) fn context_source_lines(
                 heading_hint: Some(CONTEXT_SOURCE_JUMP_HINT),
                 folder: crate::scratch::folder_label(&s.cwd, &s.folder),
                 full_path: &s.cwd.to_string_lossy(),
-                title: &s.title(),
+                title: &crate::ui::bookmarks::display_title(s, bookmarked),
                 extra_rows: &[],
                 id_value: Some(format!("[{}] {} · {}", tag.trim(), src.id, src.profile)),
             },
@@ -1182,18 +1183,20 @@ mod tests {
                 .collect()
         };
 
-        let resolved = super::context_source_lines(&src, Some(&source_session), 60, &th, false);
+        let resolved =
+            super::context_source_lines(&src, Some(&source_session), false, 60, &th, false);
         let heading = heading_of(&resolved);
         assert!(heading.starts_with("● Context Source"));
         assert!(heading.ends_with("<ctrl+o>"), "heading was {heading:?}");
         assert_eq!(heading.width(), 60, "hint is flush with the pane edge");
 
         // Unresolved source: the key would report "unavailable", so no hint.
-        let missing = super::context_source_lines(&src, None, 60, &th, false);
+        let missing = super::context_source_lines(&src, None, false, 60, &th, false);
         assert!(!heading_of(&missing).contains("ctrl+o"));
 
         // Narrow pane: the hint is dropped rather than crowding the heading.
-        let narrow = super::context_source_lines(&src, Some(&source_session), 20, &th, false);
+        let narrow =
+            super::context_source_lines(&src, Some(&source_session), false, 20, &th, false);
         assert_eq!(heading_of(&narrow), "● Context Source");
     }
 
@@ -1240,13 +1243,13 @@ mod tests {
     }
 
     #[test]
-    fn header_shows_the_context_source_jump_key() {
+    fn header_shows_the_bookmark_key() {
         let app = session_app();
         let mut terminal = Terminal::new(TestBackend::new(160, 30)).expect("terminal");
         terminal.draw(|f| super::draw(f, &app)).expect("draw");
 
         // Fifth row of the session-operations column, still inside the header.
-        let (_, y) = find_cell(&terminal, "Go to Source");
+        let (_, y) = find_cell(&terminal, "Bookmark");
         assert!(y < 5, "shortcut row {y} is clipped out of the header");
     }
 

@@ -1,9 +1,9 @@
 //! Context-source navigation for sessions started via "New Session with Context".
 //!
 //! `ctrl+o` moves to the session the focused one was launched from — the same
-//! source the `● Context Source` block renders — and `ctrl+b` walks back along
-//! the jumps already made. Only `ctrl+o` jumps enter the return stack: a general
-//! navigation history would leave the user unable to predict what `ctrl+b` undoes.
+//! source the `● Context Source` block renders — and the palette's Back action
+//! walks back along the jumps already made. Only `ctrl+o` jumps enter the return stack: a general
+//! navigation history would leave the user unable to predict what Back undoes.
 //!
 //! Two rules make the pair behave predictably:
 //!
@@ -46,16 +46,6 @@ impl App {
             .position(|c| c.agent == src.agent && c.id == src.id)
     }
 
-    /// Session the active screen operates on: the list cursor on Session, the
-    /// detail target on Detail. The Profile screen has no focused session.
-    fn focused_session_index(&self) -> Option<usize> {
-        match self.screen {
-            Screen::Session => self.filtered.get(self.selected).copied(),
-            Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
-            Screen::Profile => None,
-        }
-    }
-
     /// Whether `ctrl+o` has a reachable target (also gates the palette entry).
     pub(crate) fn can_jump_to_context_source(&self) -> bool {
         self.focused_session_index()
@@ -64,7 +54,8 @@ impl App {
             .is_some()
     }
 
-    /// Whether `ctrl+b` has an origin to return to (also gates the palette entry).
+    /// Whether the Back action has an origin to return to
+    /// (also gates the palette entry).
     pub(crate) fn can_return_to_jump_origin(&self) -> bool {
         !self.context_jump_origins.is_empty()
     }
@@ -108,7 +99,7 @@ impl App {
         });
     }
 
-    /// `ctrl+b`: returns to the origin of the most recent `ctrl+o` jump, restoring
+    /// Palette Back action: returns to the origin of the most recent `ctrl+o` jump, restoring
     /// the filter that was active there. Origins whose session is gone (deleted,
     /// or dropped by a rescan) are skipped rather than failing the whole return.
     pub(crate) fn return_to_jump_origin(&mut self) {
@@ -169,6 +160,19 @@ mod tests {
         key(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
+    fn palette_back(app: &mut crate::ui::App) {
+        match app.screen {
+            crate::ui::Screen::Detail => {
+                app.on_key_detail(key(KeyCode::Char(':'), KeyModifiers::NONE))
+            }
+            _ => app.on_key_table(key(KeyCode::Char(':'), KeyModifiers::NONE)),
+        }
+        for c in "back to previous".chars() {
+            app.on_key_quick(key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.on_key_quick(key(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
     #[test]
     fn ctrl_o_walks_up_the_context_chain() {
         let mut app = app_with_context_chain();
@@ -225,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_b_returns_to_the_origin_and_restores_its_filter() {
+    fn palette_back_returns_to_the_origin_and_restores_its_filter() {
         let mut app = app_with_context_chain();
         app.filter.folders.insert("leaf".to_string());
         app.recompute();
@@ -233,7 +237,7 @@ mod tests {
         app.on_key_table(ctrl('o'));
         assert_eq!(app.current().unwrap().id, "middle");
 
-        app.on_key_table(ctrl('b'));
+        palette_back(&mut app);
 
         assert_eq!(app.current().unwrap().id, "leaf");
         // The jump cleared the folder filter; returning puts it back.
@@ -247,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_b_skips_an_origin_whose_session_is_gone() {
+    fn palette_back_skips_an_origin_whose_session_is_gone() {
         let mut app = app_with_context_chain();
         app.on_key_table(ctrl('o'));
         app.on_key_table(ctrl('o'));
@@ -257,23 +261,21 @@ mod tests {
         app.sessions.retain(|s| s.id != "middle");
         app.recompute();
 
-        app.on_key_table(ctrl('b'));
+        palette_back(&mut app);
 
         assert_eq!(app.current().unwrap().id, "leaf");
         assert!(!app.can_return_to_jump_origin());
     }
 
     #[test]
-    fn ctrl_b_reports_an_empty_return_stack() {
+    fn palette_back_reports_an_empty_return_stack() {
         let mut app = app_with_context_chain();
 
-        app.on_key_table(ctrl('b'));
+        palette_back(&mut app);
 
         assert_eq!(app.current().unwrap().id, "leaf");
-        assert_eq!(
-            app.status_msg.as_deref(),
-            Some("No previous session to return to")
-        );
+        assert_eq!(app.mode, crate::ui::UiMode::QuickCommand);
+        assert!(!app.quick.as_ref().unwrap().items[0].enabled);
     }
 
     #[test]
@@ -290,7 +292,7 @@ mod tests {
         // The list cursor follows, so leaving the detail screen lands on the source.
         assert_eq!(app.current().unwrap().id, "middle");
 
-        app.on_key_detail(ctrl('b'));
+        palette_back(&mut app);
         let detail = app.detail.as_ref().expect("detail stays open");
         assert_eq!(app.sessions[detail.session_idx].id, "leaf");
     }

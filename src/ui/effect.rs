@@ -84,6 +84,8 @@ pub(crate) enum AppEffect {
     /// usage/model probes and schedule a session rescan for right after the
     /// next draw (two-phase; see [`RefreshAllPhase`]).
     RefreshAll,
+    /// Persist the selected session's bookmark before updating its title marker.
+    ToggleBookmark { idx: usize },
     /// Rename the session at `idx` to `title` via the owning agent CLI, then
     /// rescan. The rename dialog is closed only on success; a failure keeps it
     /// open with an error so the user can retry. Pre-flight validation (empty
@@ -121,6 +123,7 @@ impl App {
         };
         match effect {
             AppEffect::RefreshAll => self.run_refresh_all(),
+            AppEffect::ToggleBookmark { idx } => self.run_toggle_bookmark(idx),
             AppEffect::RenameSession { idx, title } => self.run_rename_session(idx, title),
             AppEffect::ChangeSessionFolder { idx, folder } => {
                 self.run_change_session_folder(idx, folder)

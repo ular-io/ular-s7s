@@ -84,6 +84,11 @@ drives the current decision. Avoid using bold for every value.
   width remains. Do not put cursor-dependent actions in the global header.
 - `ui/copy.rs` mirrors the metadata content without visual hints. Keep copied and
   rendered content aligned.
+- Bookmarked titles carry `Ⓑ  ` in the table and metadata grids. This prefix is
+  display-only; clipboard text retains the original title. In the table the
+  marker is bold even on an unselected or unfocused row, without changing the
+  title text's tone. Bookmarked rows precede ordinary rows, retaining activity
+  ordering within each group. See [bookmarks.md](./bookmarks.md).
 - Each Prompt `Qn` heading shows an available local submit timestamp in
   `YYYY-MM-DD HH:MM:SS` using `soft_dim()`.
 
@@ -99,6 +104,8 @@ drives the current decision. Avoid using bold for every value.
   labels within existing widths.
 - Header action labels must not duplicate control names used by render-buffer
   assertions elsewhere on the screen.
+- Session/Detail operations include `<ctrl+b> Bookmark`; `ctrl+o` remains on the
+  conditional Context Source heading and in Help. The Back action is palette-only.
 
 ## Dialogs and overlays
 

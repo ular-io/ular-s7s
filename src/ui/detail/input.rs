@@ -113,7 +113,7 @@ impl App {
                 self.jump_to_context_source();
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.return_to_jump_origin();
+                self.toggle_focused_bookmark();
             }
             // Focus-aware expand toggle:
             // - Prompt (Questions) panel: expand the selected turn's omitted prompt.

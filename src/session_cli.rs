@@ -453,6 +453,7 @@ fn run_search(args: &SearchArgs) -> i32 {
         agents,
         folders: args.folder.iter().cloned().collect(),
         profile_ids: args.profile.iter().cloned().collect(),
+        bookmarked_only: false,
     };
 
     // Quiet incremental scan (shares the TUI mtime cache); scan() already sorts
@@ -495,6 +496,7 @@ fn run_list(args: &ListArgs) -> i32 {
         agents,
         folders: args.folder.iter().cloned().collect(),
         profile_ids: args.profile.iter().cloned().collect(),
+        bookmarked_only: false,
     };
 
     let result = crate::scan::scan(&profiles.profiles, false);

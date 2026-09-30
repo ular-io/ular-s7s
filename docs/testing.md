@@ -30,6 +30,7 @@ the change area below and run every check listed for it.
 | Scratch workspace (`scratch.rs`, the folder dropdown `[SCRATCH]` row) | Start a session on the `[SCRATCH]` row, write a file into the folder from inside the session, exit, and start again: the file must be gone and both policy files present with their current text. Confirm the agent asks for a target directory instead of writing there or picking its own path | [architecture.md](./architecture.md) §Scratch workspace |
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [ui-style-guide.md](./ui-style-guide.md) |
+| Session bookmarks / Ctrl+B | Release TUI/PTY: toggle in Session and Detail, restart to verify persistence, run the bookmark filter, and inspect `Ⓑ  ` at narrow/wide widths | [bookmarks.md](./bookmarks.md) §Verification |
 | Keyboard protocol / input | kitty-protocol PTY checks and tmux/legacy fallback | §Keyboard protocol checks below |
 | Terminal lifecycle / bracketed paste / grapheme editing | Fault-injection lifecycle tests + paste-routing tests, plus the real-terminal checks below | §Terminal lifecycle and paste checks · [terminal-input-hardening.md](./terminal-input-hardening.md) |
 | Storage structure change | Update code and the owning document together; consider whether `CACHE_VERSION` must bump | [session-title-compat.md](./session-title-compat.md) |

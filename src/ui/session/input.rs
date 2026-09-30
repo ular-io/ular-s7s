@@ -104,7 +104,7 @@ impl App {
                 self.jump_to_context_source();
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.return_to_jump_origin();
+                self.toggle_focused_bookmark();
             }
             KeyCode::Char(c @ '1'..='5') => self.set_single_profile(c as usize - '1' as usize),
             KeyCode::Char('0') => self.clear_all_filters(),
