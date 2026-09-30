@@ -21,6 +21,7 @@ fn ctrl_u_is_global_across_profile_and_detail_screens() {
     );
     assert!(app.refresh_scan_scheduled());
     app.run_scheduled_refresh_scan();
+    assert!(app.poll_background());
     assert!(matches!(
         app.status_msg.as_deref(),
         Some(msg) if msg.starts_with("session update complete · ")
@@ -38,6 +39,7 @@ fn ctrl_u_is_global_across_profile_and_detail_screens() {
     // The prepare step leaves the screen untouched; the scan does the rescan.
     assert_eq!(app.screen, Screen::Detail);
     app.run_scheduled_refresh_scan();
+    assert!(app.poll_background());
     assert!(matches!(
         app.status_msg.as_deref(),
         Some(msg) if msg.starts_with("session update complete · ")
@@ -66,6 +68,7 @@ fn refresh_all_requests_merge_into_one_cycle_until_completion_render() {
 
     // The loop renders the preparing frame, then runs the single scan.
     app.run_scheduled_refresh_scan();
+    assert!(app.poll_background());
     assert!(!app.refresh_scan_scheduled());
     assert!(matches!(
         app.status_msg.as_deref(),

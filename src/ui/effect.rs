@@ -8,10 +8,9 @@
 //! login / terminal) keep their existing discrete request fields drained by the
 //! `runtime` event loop.
 //!
-//! Effect execution stays synchronous / threaded exactly as before — this phase
-//! introduces no async runtime (plan §8.2). To preserve the current per-event
-//! timing, the event loop applies the pending effect immediately after each
-//! dispatched key event, so no redraw occurs between a handler and its effect.
+//! The event loop applies pending effects immediately after each input event.
+//! Global refresh schedules a worker after loading feedback renders; other
+//! in-place effects remain synchronous. No async runtime is required.
 //!
 //! Pure state recomputation (`recompute`, `rebuild_all_folders`) is not an
 //! effect; only work that touches the filesystem, rescans session storage, or
@@ -20,20 +19,9 @@
 use crate::ui::{App, Screen, UiMode};
 use std::path::PathBuf;
 
-/// Lifecycle of the two-phase global refresh (Ctrl+U / palette "Refresh All").
-///
-/// A refresh cycle renders one preparing frame before the synchronous session
-/// scan so the user sees loading feedback immediately instead of a stale frame:
-///
-/// 1. `begin` — the effect runs the prepare step (background usage/model
-///    probes + in-progress status) and schedules the scan.
-/// 2. The event loop draws the prepared state, then runs the scheduled scan
-///    right away without waiting for another input event (`mark_scanned`).
-/// 3. Repeat requests arriving anywhere in the cycle merge into it (`begin`
-///    returns false). The loop drains queued input after the scan and only then
-///    ends the cycle (`finish`), so Ctrl+U presses queued during the scan
-///    cannot schedule a second scan; a press after the completion frame starts
-///    a fresh cycle.
+/// Lifecycle of a global refresh. Prepare renders loading feedback, Scanning
+/// keeps the event loop responsive, and Scanned merges requests until the
+/// completion frame has rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum RefreshAllPhase {
     /// No refresh cycle active; the next request starts one.
@@ -41,8 +29,10 @@ pub(crate) enum RefreshAllPhase {
     Idle,
     /// Prepare ran; the session scan runs right after the next completed draw.
     Prepared,
+    /// The worker is scanning; input and background results continue normally.
+    Scanning,
     /// The scan ran; the cycle stays active (merging repeat requests) until the
-    /// completion frame is about to render.
+    /// completion frame has rendered.
     Scanned,
 }
 
@@ -63,15 +53,17 @@ impl RefreshAllPhase {
         self == RefreshAllPhase::Prepared
     }
 
-    /// Marks the scheduled scan as executed (the cycle remains active).
+    /// Marks the worker result as applied (the cycle remains active).
     pub(crate) fn mark_scanned(&mut self) {
         *self = RefreshAllPhase::Scanned;
     }
 
-    /// Ends the cycle: the completion result is about to render, so the next
+    /// Ends the cycle after the completion result renders, so the next
     /// request starts a fresh cycle.
     pub(crate) fn finish(&mut self) {
-        *self = RefreshAllPhase::Idle;
+        if *self == RefreshAllPhase::Scanned {
+            *self = RefreshAllPhase::Idle;
+        }
     }
 }
 
@@ -121,6 +113,12 @@ impl App {
         let Some(effect) = self.pending_effect.take() else {
             return;
         };
+        if !matches!(
+            effect,
+            AppEffect::RefreshAll | AppEffect::ToggleBookmark { .. }
+        ) {
+            self.cancel_refresh_scan();
+        }
         match effect {
             AppEffect::RefreshAll => self.run_refresh_all(),
             AppEffect::ToggleBookmark { idx } => self.run_toggle_bookmark(idx),
@@ -139,9 +137,9 @@ impl App {
 
     /// Global Ctrl+U, prepare phase (shared across all main screens): start the
     /// background usage/model probes, show an in-progress status, and schedule
-    /// the synchronous session scan to run right after the next draw
-    /// ([`App::run_scheduled_refresh_scan`]) so the loading state is visible
-    /// before the 1–2s scan blocks the loop. Repeat requests while a cycle is
+    /// a background session scan to start right after the next draw
+    /// ([`App::run_scheduled_refresh_scan`]) so loading feedback is immediate.
+    /// Repeat requests while a cycle is
     /// active merge into it. Model catalogs are force-refreshed (bypassing
     /// version gates) to capture plan changes. The usage/model fetches go
     /// through the existing start methods so the `Loading` phase flips only
@@ -151,7 +149,9 @@ impl App {
             // Merged into the active cycle: no second prepare/scan. Restore the
             // cycle's progress message, which the key handler just cleared.
             self.status_msg = Some(match self.refresh_all {
-                RefreshAllPhase::Prepared => Self::refresh_status_preparing(),
+                RefreshAllPhase::Prepared | RefreshAllPhase::Scanning => {
+                    Self::refresh_status_preparing()
+                }
                 _ => self.refresh_status_scanned(),
             });
             return;
@@ -167,11 +167,13 @@ impl App {
     }
 
     /// Status once the session scan has completed (usage still updating).
-    fn refresh_status_scanned(&self) -> String {
-        format!(
-            "session update complete · {} · updating usage…",
-            self.scan_info
-        )
+    pub(crate) fn refresh_status_scanned(&self) -> String {
+        let suffix = if self.usage_in_flight() {
+            " · updating usage…"
+        } else {
+            ""
+        };
+        format!("session update complete · {}{}", self.scan_info, suffix)
     }
 
     /// Whether a Ctrl+U session scan is scheduled (checked by the event loop
@@ -185,17 +187,16 @@ impl App {
     /// response to a new input event. The cycle stays active (merging queued
     /// repeat requests) until [`App::finish_refresh_cycle`].
     pub(crate) fn run_scheduled_refresh_scan(&mut self) {
-        if !self.refresh_all.scan_scheduled() {
+        if !self.refresh_scan_scheduled() {
             return;
         }
-        self.refresh_all.mark_scanned();
-        self.refresh_sessions();
-        self.status_msg = Some(self.refresh_status_scanned());
+        self.refresh_all = RefreshAllPhase::Scanning;
+        self.background
+            .spawn_refresh(self.profiles.profiles.clone(), self.detail_session());
     }
 
-    /// Ends the refresh cycle. Called by the event loop after the post-scan
-    /// input drain, immediately before the completion frame renders, so only a
-    /// Ctrl+U pressed after that frame starts a fresh cycle.
+    /// Ends a completed refresh cycle after its completion frame renders.
+    /// Prepared and running cycles remain active and merge repeat requests.
     pub(crate) fn finish_refresh_cycle(&mut self) {
         self.refresh_all.finish();
     }

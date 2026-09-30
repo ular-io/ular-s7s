@@ -306,6 +306,7 @@ impl App {
         if idx >= self.profiles.profiles.len() || self.profiles.profiles[idx].builtin {
             return;
         }
+        self.cancel_refresh_scan();
         let removed = self.profiles.profiles.remove(idx);
         if let Err(e) = self.profiles.save() {
             self.status_msg = Some(format!("failed to save profiles.json: {e}"));

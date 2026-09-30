@@ -110,12 +110,31 @@ discrete request fields drained by `runtime`.
 | Clipboard projections | `ui/copy.rs` |
 | Paste routing | `ui/paste.rs` |
 | Reusable input/modal/scroll/text primitives | `ui/components/` |
-| Synchronous external effects | `ui/effect.rs` |
-| Usage/model receiver coordination | `ui/background.rs` |
+| In-place external effects and refresh scheduling | `ui/effect.rs` |
+| Background job receiver coordination | `ui/background.rs` |
+| Global refresh snapshots and result application | `ui/refresh.rs` |
 
 Pure state recomputation is not an effect. Usage/model results stay on `App`;
-`BackgroundState` owns only receivers and in-flight coordination. Resume, new
-session, login, and terminal commands suspend the TUI, run synchronously through
+`BackgroundState` owns only receivers and in-flight coordination.
+
+`Ctrl+U` and palette Refresh All draw loading feedback before starting a session
+scan worker. The worker scans all profiles, loads the Detail target captured at
+launch, and serializes its cache into a temporary sibling of `index.bin`.
+The event loop continues handling input and polls results every frame or at
+100 ms idle intervals. Repeated refresh requests merge until the completion
+frame renders. Results preserve the current agent/profile/session selection,
+filters, and navigation state rather than restoring the scan's starting cursor.
+If the user has opened another Detail target, its already-loaded turns are
+retained and only its index is rebound; the old target's turns are not applied.
+
+Dialogs retain session/folder indices, so completed snapshots wait until Table
+or Keyword mode with no pending effect, quit, or handover request. Session and
+profile mutations and synchronous rescans invalidate the receiver. Accepted
+snapshots publish the staged cache by rename; discarded or late snapshots remove
+the temporary file without overwriting the current index. This keeps a completed
+background scan from restoring deleted sessions or older title/folder data.
+
+Resume, new session, login, and terminal commands suspend the TUI, run synchronously through
 `resume.rs`, then restore and rescan.
 
 See [ui-style-guide.md](./ui-style-guide.md) for visual changes and
