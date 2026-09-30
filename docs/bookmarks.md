@@ -16,6 +16,10 @@
   shared Unicode-width helpers; it never changes the original title.
 - The marker is bold, including on unselected rows and with Prompt focus. The
   table title text keeps its existing tone; metadata titles are already bold.
+- Bookmarked table rows have a subtle full-width `Theme::bookmark_bg` fill.
+  The existing selected-row background takes precedence in both focus states;
+  Prompt/Detail metadata backgrounds remain unchanged. Every built-in palette
+  defines this role, and custom themes can override `[colors].bookmark_bg`.
 - Bookmarked sessions appear before unbookmarked sessions. Each group retains
   the scan's latest-activity-first order; filtering, rescanning, and restarting
   apply the same priority. A toggle immediately reorders the list while keeping
@@ -54,6 +58,14 @@
   the bookmark file for external changes.
 - Records for unavailable sessions are retained, since a missing session may
   belong to a temporarily unscanned profile. They never create rows in the list.
+- A successful TUI or `s7s session delete --yes` deletion removes the matching
+  bookmark identity from disk and the TUI's loaded store. Cancelling or failing
+  transcript deletion retains it. Cleanup re-reads the store and preserves
+  other identities; deleting an unbookmarked session does not create a file.
+  If bookmark cleanup fails after transcript deletion, the TUI status or CLI
+  stderr reports that the session was deleted but bookmark cleanup failed.
+  An unreadable/newer store is not overwritten, and CLI deletion still exits 0
+  because the transcript was removed.
 - Key handlers enqueue `AppEffect::ToggleBookmark`; filesystem work remains at
   the existing synchronous effect boundary. Rendering and filtering use the
   loaded in-memory store, never filesystem access.
@@ -62,6 +74,8 @@
 
 - Baseline: `scripts/check.sh`.
 - Storage/UI regression coverage: `bookmarks::tests`, `ui::bookmarks::tests`.
+- Delete regression coverage: `session_delete::tests`,
+  `ui::detail::tests::detail_delete_returns_to_session_screen_with_next_selected`.
 - Source-jump return behavior: `ui::context_jump::tests::palette_back_*` plus
   `ctrl_o_reopens_the_detail_screen_on_the_source`.
 - Release TUI/PTY: use `s7s demo`, press `ctrl+b`, inspect `Ⓑ  ` before the table
@@ -72,6 +86,14 @@
   second newer row and verify the bookmark group is ordered by activity, not
   the sequence of toggles. Restart/rescan and verify the same ordering. Move
   selection off a bookmarked row and inspect the marker's bold style.
+- Inspect the bookmark background across the entire row, including blank column
+  gaps and margins. Select the row and switch focus to Prompt: the existing
+  selection style must take precedence. Remove the bookmark and move off the
+  row to verify its background returns to the ordinary table background.
+- Bookmark disposable sessions and delete one from Detail and one through the
+  CLI. Verify both the session artifacts and matching bookmark records are
+  gone; other bookmark identities must remain. Cancel a delete and verify its
+  bookmark remains.
 - Check narrow/wide widths, dark/light themes, focus changes, and a CJK title.
   `Ⓑ` has ambiguous East Asian width; actual font/terminal rendering must be
   inspected as well as the buffer tests. Verify the glyph and next title

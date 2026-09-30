@@ -116,12 +116,13 @@ pub(crate) fn app_with_two_deletable_sessions() -> (App, std::path::PathBuf) {
             context_source: None,
         }
     };
-    let app = App::new(
+    let mut app = App::new(
         Config::load(),
         test_profiles(),
         vec![make("s1.jsonl"), make("s2.jsonl")],
         "2 sessions".to_string(),
     );
+    app.bookmarks_path = root.join("bookmarks.json");
     (app, root)
 }
 

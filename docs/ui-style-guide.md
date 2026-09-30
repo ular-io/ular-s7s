@@ -21,6 +21,7 @@ semantic fields rather than literal colors.
 | `accent`, `on_accent` | focused borders, titles, bullets, chips |
 | `selection_bg`, `selection_fg` | focused table row |
 | `selection_inactive_bg` | selected row in an unfocused table |
+| `bookmark_bg` | subtle fill across an unselected bookmarked session row |
 | `key_hint` | shortcut notation |
 | `usage_high`, `usage_low` | usage status and logo accent |
 | `button_*` | focused/unfocused dialog buttons |
@@ -33,6 +34,8 @@ semantic fields rather than literal colors.
   deliberately fainter level such as omission markers.
 - `Theme::base_style()` must be painted under the full frame and repainted after
   `Clear`; otherwise a custom background leaks terminal-default cells.
+- Built-in `bookmark_bg` colors mix 12% accent into the base background.
+  Custom themes inherit this role from `base` and can override it in `[colors]`.
 - Severity and state must not rely on color alone. Pair them with text, symbols,
   border thickness, or modifiers.
 
@@ -87,7 +90,9 @@ drives the current decision. Avoid using bold for every value.
 - Bookmarked titles carry `Ⓑ  ` in the table and metadata grids. This prefix is
   display-only; clipboard text retains the original title. In the table the
   marker is bold even on an unselected or unfocused row, without changing the
-  title text's tone. Bookmarked rows precede ordinary rows, retaining activity
+  title text's tone. The entire bookmarked row uses `bookmark_bg`, including
+  column gaps and inner margins. The existing focused/unfocused selection style
+  takes precedence. Bookmarked rows precede ordinary rows, retaining activity
   ordering within each group. See [bookmarks.md](./bookmarks.md).
 - Each Prompt `Qn` heading shows an available local submit timestamp in
   `YYYY-MM-DD HH:MM:SS` using `soft_dim()`.

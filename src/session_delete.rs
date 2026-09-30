@@ -20,6 +20,35 @@ use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Transcript deletion succeeded; bookmark persistence may still need attention.
+pub(crate) struct DeleteOutcome {
+    pub bookmarks: Option<crate::bookmarks::BookmarkStore>,
+    pub bookmark_warning: Option<String>,
+}
+
+/// Shared TUI/CLI deletion boundary. Remove the bookmark only after the session
+/// artifacts were deleted. A bookmark error must not report a deleted transcript
+/// as still present or overwrite an unreadable store.
+pub(crate) fn delete_session(
+    profiles: &ProfileStore,
+    session: &Session,
+    bookmarks_path: &Path,
+) -> Result<DeleteOutcome> {
+    delete_session_artifacts(profiles, session)?;
+    Ok(
+        match crate::bookmarks::BookmarkStore::remove(bookmarks_path, session) {
+            Ok(bookmarks) => DeleteOutcome {
+                bookmarks: Some(bookmarks),
+                bookmark_warning: None,
+            },
+            Err(err) => DeleteOutcome {
+                bookmarks: None,
+                bookmark_warning: Some(format!("bookmark cleanup failed: {err}")),
+            },
+        },
+    )
+}
+
 /// Removes the transcript and every agent-specific store that holds the session.
 ///
 /// The transcript is authoritative: its removal failing is an error, while the
@@ -262,6 +291,66 @@ mod tests {
     /// Deleting a codex session must empty every store that holds its text.
     /// Removing only the rollout file left the title and the first user message
     /// in `threads`, and every turn in the paginated history, readable.
+    #[test]
+    fn deletion_removes_only_the_matching_bookmark_identity() {
+        let temp = crate::ui::test_support::TempBookmarkStore::new();
+        let root = temp.path.parent().unwrap();
+        let transcript = root.join("session.jsonl");
+        fs::write(&transcript, "{}").unwrap();
+        let target = session(Agent::Claude, "session-1", &transcript);
+        let mut other_profile = target.clone();
+        other_profile.profile_id = "other-profile".to_string();
+        let mut other_agent = target.clone();
+        other_agent.agent = Agent::Codex;
+        let mut other_session = target.clone();
+        other_session.id = "session-2".to_string();
+        for s in [&target, &other_profile, &other_agent, &other_session] {
+            crate::bookmarks::BookmarkStore::toggle(&temp.path, s).unwrap();
+        }
+
+        let outcome = delete_session(&store(Agent::Claude, root), &target, &temp.path).unwrap();
+        assert!(!transcript.exists());
+        assert!(outcome.bookmark_warning.is_none());
+        let reloaded = crate::bookmarks::BookmarkStore::load(&temp.path).unwrap();
+        for bookmarks in [outcome.bookmarks.unwrap(), reloaded] {
+            assert!(!bookmarks.contains(&target));
+            assert!(bookmarks.contains(&other_profile));
+            assert!(bookmarks.contains(&other_agent));
+            assert!(bookmarks.contains(&other_session));
+        }
+    }
+
+    #[test]
+    fn bookmark_cleanup_error_reports_a_completed_delete_without_overwriting_the_store() {
+        let temp = crate::ui::test_support::TempBookmarkStore::new();
+        let root = temp.path.parent().unwrap();
+        let transcript = root.join("session.jsonl");
+        let target = session(Agent::Claude, "session-1", &transcript);
+        fs::write(&transcript, "{}").unwrap();
+        fs::write(&temp.path, "broken json").unwrap();
+        let outcome = delete_session(&store(Agent::Claude, root), &target, &temp.path).unwrap();
+        assert!(!transcript.exists());
+        assert!(outcome.bookmarks.is_none());
+        assert!(outcome
+            .bookmark_warning
+            .unwrap()
+            .starts_with("bookmark cleanup failed:"));
+        assert_eq!(fs::read_to_string(&temp.path).unwrap(), "broken json");
+    }
+
+    #[test]
+    fn deleting_an_unbookmarked_session_does_not_create_bookmark_storage() {
+        let temp = crate::ui::test_support::TempBookmarkStore::new();
+        let root = temp.path.parent().unwrap();
+        let transcript = root.join("session.jsonl");
+        fs::write(&transcript, "{}").unwrap();
+        let target = session(Agent::Claude, "session-1", &transcript);
+        let outcome = delete_session(&store(Agent::Claude, root), &target, &temp.path).unwrap();
+        assert!(!transcript.exists());
+        assert!(!temp.path.exists());
+        assert!(outcome.bookmark_warning.is_none());
+    }
+
     #[test]
     fn codex_delete_clears_the_thread_from_every_store() {
         let root = temp_root("ular-s7s-delete-codex");

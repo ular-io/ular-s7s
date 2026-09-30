@@ -157,10 +157,13 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 ## Session Bookmarks
 
 Press `ctrl+b` to add or remove a bookmark on the selected session. Bookmarked
-titles show a bold `Ⓑ  ` in the list and Prompt/Detail metadata. Bookmarked
-sessions appear first, with the latest activity first within each group.
+titles show a bold `Ⓑ  ` in the list and Prompt/Detail metadata. Bookmarked rows
+also have a subtle background tint; the selected row keeps its usual highlight.
+Bookmarked sessions appear first, with the latest activity first within each
+group.
 Bookmarks are stored locally in `~/.config/s7s/bookmarks.json` and survive app
 restarts and cache rebuilds without changing the agent's stored title.
+Deleting a session from the TUI or CLI also removes its bookmark.
 
 Use `:` → **Toggle Bookmark** for the same action, or **Filter Bookmarked
 Sessions** to show only bookmarked sessions under the current search/filters.

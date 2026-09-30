@@ -236,6 +236,7 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|&i| {
             let s = &app.sessions[i];
+            let bookmarked = app.bookmarks.contains(s);
             let (tag, color) = agent_tag(s.agent, th);
             let tag_style = if table_dimmed {
                 th.soft_dim()
@@ -254,7 +255,7 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
                 TableColumn::Updated => Cell::from(Span::styled(s.date_str(), text_style)),
                 TableColumn::Title => Cell::from(crate::ui::bookmarks::styled_title(
                     truncate_w(&app.session_display_title(s), layout.title_w),
-                    app.bookmarks.contains(s),
+                    bookmarked,
                     text_style,
                 )),
                 TableColumn::Q => Cell::from(Span::styled(
@@ -265,6 +266,11 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
                     Cell::from(Span::styled(format!("{:>5} ", s.size_str()), text_style))
                 }
             }))
+            .style(if bookmarked {
+                Style::default().bg(th.bookmark_bg)
+            } else {
+                Style::default()
+            })
         })
         .collect();
 

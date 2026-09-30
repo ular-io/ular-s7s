@@ -93,6 +93,9 @@ not evidence. Use a disposable session rather than a real one.
    resolved target with its source path, and exit 1.
 5. `s7s session delete <id> --yes` must remove the transcript; a following
    `session list` must no longer find it.
+   For a bookmarked target, verify its identity is removed from
+   `~/.config/s7s/bookmarks.json` while other identities remain. Repeat from the
+   TUI Detail view. A cancelled delete must retain both the session and bookmark.
 6. Remove the throwaway folder and any meta file the rename created.
 
 Exit codes to confirm: 0 on success, 1 for an unresolved ID, a missing profile,

@@ -245,10 +245,16 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
 - Without `--yes` nothing is removed. The resolved target is printed with its
   source path and the command exits 1, so a script cannot read the refusal as
   success.
-- Deletion runs through `session_delete::delete_session_artifacts`, shared with
-  the TUI delete action, so both obey the same profile scoping: auxiliary stores
-  are only touched under the owning profile's root, and are skipped entirely
+- Deletion runs through `session_delete::delete_session`, shared with the TUI
+  delete action. Its `delete_session_artifacts` step obeys profile scoping:
+  auxiliary agent stores are only touched under the owning profile's root,
+  and are skipped entirely
   when that profile is gone.
+- After transcript deletion, the shared boundary removes its s7s bookmark by
+  agent/profile/session identity. Cancelling or failing transcript deletion
+  retains the bookmark. Bookmark cleanup errors are reported as warnings after
+  a completed deletion; the unreadable store is preserved. See
+  [bookmarks.md](./bookmarks.md) for the persistence contract.
 - **Codex needs more than the rollout file.** Since 0.153 codex also keeps the
   thread row (title, first user message) in `threads` in `state_*.sqlite` and
   every turn in `thread_history_*.sqlite`, so removing the rollout alone left a

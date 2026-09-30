@@ -271,10 +271,21 @@ impl App {
             self.status_msg = Some("Delete target no longer exists".to_string());
             return;
         };
-        if let Err(err) = crate::session_delete::delete_session_artifacts(&self.profiles, &session)
-        {
-            self.status_msg = Some(format!("Delete failed: {err}"));
-            return;
+        let outcome = match crate::session_delete::delete_session(
+            &self.profiles,
+            &session,
+            &self.bookmarks_path,
+        ) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                self.status_msg = Some(format!("Delete failed: {err}"));
+                return;
+            }
+        };
+        if let Some(bookmarks) = outcome.bookmarks {
+            self.bookmarks = bookmarks;
+        } else {
+            self.bookmarks.set(&session, false);
         }
         self.sessions.remove(idx);
         self.rebuild_all_folders();
@@ -282,11 +293,11 @@ impl App {
         if self.screen == Screen::Detail {
             self.close_session_detail();
         }
-        self.status_msg = Some(format!(
-            "Deleted [{}] {}",
-            session.agent.label(),
-            session.title()
-        ));
+        let mut message = format!("Deleted [{}] {}", session.agent.label(), session.title());
+        if let Some(warning) = outcome.bookmark_warning {
+            message.push_str(&format!("; {warning}"));
+        }
+        self.status_msg = Some(message);
     }
 
     /// Persists the profile store, then rescans and incrementally fetches

@@ -82,6 +82,17 @@ impl BookmarkStore {
         Ok(store)
     }
 
+    /// Remove only this identity, retaining other instances' completed changes.
+    /// An absent entry does not create or rewrite a store.
+    pub(crate) fn remove(path: &Path, session: &Session) -> Result<Self> {
+        let mut store = Self::load(path)?;
+        if store.contains(session) {
+            store.set(session, false);
+            store.save(path)?;
+        }
+        Ok(store)
+    }
+
     fn save(&self, path: &Path) -> Result<()> {
         let parent = path.parent().context("bookmark store has no parent")?;
         fs::create_dir_all(parent)?;

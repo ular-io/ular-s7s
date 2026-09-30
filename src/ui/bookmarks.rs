@@ -279,6 +279,37 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_or_failing_deletion_keeps_the_session_and_bookmark() {
+        let (mut app, root) = app_with_two_deletable_sessions();
+        app.on_key_table(ctrl_b());
+        app.apply_effect();
+        let target = app.sessions[0].clone();
+        let saved = std::fs::read(&app.bookmarks_path).unwrap();
+
+        app.on_key_table(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        // Cancel is the default button.
+        app.on_key_delete_confirm(key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.pending_effect.is_none());
+        assert_eq!(std::fs::read(&app.bookmarks_path).unwrap(), saved);
+        assert_eq!(app.sessions.len(), 2);
+
+        let source = target.source_path.as_ref().unwrap();
+        std::fs::remove_file(source).unwrap();
+        std::fs::create_dir(source).unwrap();
+        app.pending_effect = Some(AppEffect::DeleteSession { idx: 0 });
+        app.apply_effect();
+        assert!(app
+            .status_msg
+            .as_deref()
+            .unwrap()
+            .starts_with("Delete failed:"));
+        assert_eq!(app.sessions.len(), 2);
+        assert!(app.bookmarks.contains(&target));
+        assert_eq!(std::fs::read(&app.bookmarks_path).unwrap(), saved);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn bookmarks_lead_in_activity_order_and_toggles_follow_the_same_session() {
         let temp = TempBookmarkStore::new();
         let mut app = app_with_context_chain();
@@ -349,6 +380,51 @@ mod tests {
             assert_eq!(buffer[(x + 2, y)].symbol(), " ");
             assert_eq!(buffer[(x + 3, y)].symbol(), "r");
             assert!(!buffer[(x + 3, y)].modifier.contains(Modifier::BOLD));
+        }
+    }
+
+    #[test]
+    fn bookmark_fill_covers_the_row_and_yields_to_selection_in_every_theme() {
+        let mut app = app_with_context_chain();
+        app.bookmarks.set(&app.sessions[2], true);
+        app.recompute();
+        for theme in crate::theme::builtin_themes() {
+            app.theme = theme;
+            for width in [160, 60] {
+                for focus in [Focus::Table, Focus::Preview] {
+                    app.focus = focus;
+                    for selected in [0, 1] {
+                        app.selected = selected;
+                        let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+                        terminal
+                            .draw(|f| crate::ui::session::render::draw_table(f, &app, f.area()))
+                            .unwrap();
+                        let buffer = terminal.backend().buffer();
+                        for row in 0..3 {
+                            let expected = if row == selected {
+                                if focus == Focus::Table {
+                                    app.theme.selection_bg
+                                } else {
+                                    app.theme.selection_inactive_bg
+                                }
+                            } else if row == 0 {
+                                app.theme.bookmark_bg
+                            } else {
+                                // This isolated table has no root background fill.
+                                ratatui::style::Color::Reset
+                            };
+                            for x in 1..width - 1 {
+                                assert_eq!(
+                                    buffer[(x, row as u16 + 2)].bg,
+                                    expected,
+                                    "theme={} focus={focus:?} selected={selected} row={row} x={x}",
+                                    app.theme.key
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

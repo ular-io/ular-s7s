@@ -148,6 +148,10 @@ fn detail_ctrl_r_opens_rename_for_detail_session() {
 #[test]
 fn detail_delete_returns_to_session_screen_with_next_selected() {
     let (mut app, root) = app_with_two_deletable_sessions();
+    app.on_key_table(key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.apply_effect();
+    let target = app.sessions[0].clone();
+    assert!(app.bookmarks.contains(&target));
     app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
     app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Detail);
@@ -173,6 +177,10 @@ fn detail_delete_returns_to_session_screen_with_next_selected() {
     assert_eq!(app.sessions[0].id, "s2.jsonl");
     assert_eq!(app.selected, 0);
     assert_eq!(app.focus, Focus::Table);
+    assert!(!app.bookmarks.contains(&target));
+    assert!(!crate::bookmarks::BookmarkStore::load(&app.bookmarks_path)
+        .unwrap()
+        .contains(&target));
 
     let _ = std::fs::remove_dir_all(&root);
 }

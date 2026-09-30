@@ -616,14 +616,24 @@ fn run_delete(args: &DeleteArgs) -> i32 {
         return 1;
     }
 
-    if let Err(err) = crate::session_delete::delete_session_artifacts(&profiles, &session) {
-        eprintln!("error: delete failed: {err}");
-        return 1;
-    }
+    let outcome = match crate::session_delete::delete_session(
+        &profiles,
+        &session,
+        &crate::config::bookmarks_path(),
+    ) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            eprintln!("error: delete failed: {err}");
+            return 1;
+        }
+    };
 
     println!("Deleted this session:");
     print_session_row(&session);
     println!("    file: {source}");
+    if let Some(warning) = outcome.bookmark_warning {
+        eprintln!("warning: session deleted; {warning}");
+    }
     0
 }
 
