@@ -208,9 +208,9 @@ fn space_toggles_folders_by_full_path() {
     on_workspace_screen(&mut app);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Right);
-    // Rows: Name, Includes, Excludes, then one row per session folder.
+    // Rows: Name, Includes, Excludes, Search, then one row per session folder.
     assert_eq!(app.workspace.folders.len(), 3);
-    for _ in 0..3 {
+    for _ in 0..4 {
         press(&mut app, KeyCode::Down);
     }
     let folder = app.workspace.cursor_folder().cloned().expect("folder row");
@@ -236,6 +236,158 @@ fn space_toggles_folders_by_full_path() {
         3,
         "no folder selected means every folder"
     );
+}
+
+/// Opens "Api" and puts the Detail cursor on the folder search row.
+fn on_folder_search(app: &mut App) {
+    on_workspace_screen(app);
+    press(app, KeyCode::Down);
+    press(app, KeyCode::Right);
+    for _ in 0..3 {
+        press(app, KeyCode::Down);
+    }
+    assert!(app.workspace_search_focused());
+}
+
+fn visible_folder_names(app: &App) -> Vec<String> {
+    app.workspace
+        .visible_folders()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn folder_search_row_takes_typing_without_enter_and_arrows_leave_it() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    // Letter shortcuts (j/k/q/g) and space are text on this row.
+    type_text(&mut app, "ro q");
+    assert_eq!(app.workspace.folder_query.value, "ro q");
+    assert!(!app.quit_armed);
+    assert_eq!(app.mode, UiMode::Table);
+    assert!(app.workspace_search_focused());
+    assert!(visible_folder_names(&app).is_empty());
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(visible_folder_names(&app), vec!["/tmp/root".to_string()]);
+
+    // ↓ leaves the row with the filter kept; space toggles the match.
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        app.workspace.cursor_folder(),
+        Some(&PathBuf::from("/tmp/root"))
+    );
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        app.workspaces.workspaces[0].folders,
+        vec![PathBuf::from("/tmp/root")]
+    );
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        app.workspace.cursor_folder(),
+        Some(&PathBuf::from("/tmp/root")),
+        "the cursor stays within the visible rows"
+    );
+
+    // ↑ returns to the row with the query selected; → drops the selection
+    // without leaving the pane, and typing resumes at the end.
+    press(&mut app, KeyCode::Up);
+    assert!(app.workspace_search_focused());
+    assert!(app.workspace.folder_query.select_all);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
+    assert!(!app.workspace.folder_query.select_all);
+    press(&mut app, KeyCode::Char('t'));
+    assert_eq!(app.workspace.folder_query.value, "rot");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.workspace.folder_query.value.is_empty());
+    assert_eq!(app.workspace.visible.len(), 3);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.workspace.cursor_field(),
+        Some(super::state::WorkspaceField::Excludes)
+    );
+}
+
+#[test]
+fn arriving_on_the_folder_search_selects_the_query_so_typing_replaces_it() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    type_text(&mut app, "leaf");
+    assert!(
+        !app.workspace.folder_query.select_all,
+        "typing never selects"
+    );
+    press(&mut app, KeyCode::Up);
+    assert!(!app.workspace.folder_query.select_all);
+    press(&mut app, KeyCode::Down);
+    assert!(app.workspace.folder_query.select_all);
+    press(&mut app, KeyCode::Char('m'));
+    assert_eq!(app.workspace.folder_query.value, "m");
+    assert!(!app.workspace.folder_query.select_all);
+}
+
+#[test]
+fn folder_search_arrows_move_the_text_cursor_and_never_the_pane() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    type_text(&mut app, "eaf");
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Down);
+    // ← collapses the selection to the start; typing then inserts there.
+    press(&mut app, KeyCode::Left);
+    assert!(!app.workspace.folder_query.select_all);
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(app.workspace.folder_query.value, "leaf");
+    for _ in 0..10 {
+        press(&mut app, KeyCode::Left);
+    }
+    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
+    assert!(app.workspace_search_focused());
+    press(&mut app, KeyCode::Delete);
+    assert_eq!(app.workspace.folder_query.value, "eaf");
+    press(&mut app, KeyCode::End);
+    for _ in 0..10 {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
+    press(&mut app, KeyCode::Home);
+    press(&mut app, KeyCode::Char('l'));
+    assert_eq!(app.workspace.folder_query.value, "leaf");
+    assert_eq!(visible_folder_names(&app), vec!["/tmp/leaf".to_string()]);
+
+    // Off the row, ←/→ move between panes again.
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.workspace.pane, WorkspacePane::Sessions);
+}
+
+#[test]
+fn folder_search_enter_jumps_to_the_first_match_and_scope_change_clears_it() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    type_text(&mut app, "leaf");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(
+        app.workspace.cursor_folder(),
+        Some(&PathBuf::from("/tmp/leaf"))
+    );
+
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Down);
+    assert!(app.workspace.folder_query.value.is_empty());
+    assert_eq!(app.workspace.visible.len(), 3);
+}
+
+#[test]
+fn paste_on_the_folder_search_row_filters_folders() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    app.on_paste("tmp/mid");
+    assert_eq!(app.workspace.folder_query.value, "tmp/mid");
+    assert_eq!(visible_folder_names(&app), vec!["/tmp/middle".to_string()]);
 }
 
 #[test]
@@ -433,6 +585,69 @@ fn workspace_screen_draws_three_panes_with_checked_folders() {
         .find(|l| l.contains("Api") && l.contains("Name"))
         .expect("first list row beside the Name row");
     assert_eq!(row.chars().nth(23), Some('│'));
+}
+
+#[test]
+fn folder_search_row_renders_query_and_empty_result() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    let text = rendered(&app, 140, 24);
+    assert!(
+        !text.contains("type to filter"),
+        "focused: no placeholder\n{text}"
+    );
+    assert!(text.contains("Type to filter folders"), "{text}");
+    press(&mut app, KeyCode::Up);
+    let text = rendered(&app, 140, 24);
+    assert!(text.contains("Search   type to filter"), "{text}");
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "zz");
+    let text = rendered(&app, 140, 24);
+    assert!(text.contains("Search   zz"), "{text}");
+    assert!(text.contains("No matching folders"), "{text}");
+    assert!(text.contains("0 of 3 folders"), "{text}");
+    assert!(!text.contains("[ ] leaf"), "{text}");
+}
+
+#[test]
+fn folder_search_row_paints_only_the_selected_text() {
+    let mut app = app_with_workspace();
+    on_folder_search(&mut app);
+    type_text(&mut app, "ro");
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Up);
+    let mut terminal = Terminal::new(TestBackend::new(140, 24)).expect("terminal");
+    terminal
+        .draw(|f| crate::ui::render::draw(f, &app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let y = (0..buf.area.height)
+        .find(|&y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("Search   ro")
+        })
+        .expect("search row");
+    let x = (0..buf.area.width)
+        .find(|&x| buf[(x, y)].symbol() == "S" && buf[(x + 9, y)].symbol() == "r")
+        .expect("search label");
+    let selection_bg = app.theme.selection_bg;
+    assert_ne!(buf[(x, y)].bg, selection_bg, "label is not highlighted");
+    assert_eq!(buf[(x + 9, y)].bg, selection_bg, "query text is selected");
+    assert_eq!(buf[(x + 10, y)].bg, selection_bg);
+    assert_ne!(
+        buf[(x + 11, y)].bg,
+        selection_bg,
+        "padding is not highlighted"
+    );
+
+    press(&mut app, KeyCode::Right);
+    terminal
+        .draw(|f| crate::ui::render::draw(f, &app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    assert_ne!(buf[(x + 9, y)].bg, selection_bg, "→ drops the selection");
 }
 
 #[test]

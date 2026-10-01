@@ -96,6 +96,10 @@ const HELP_WORKSPACE: &[(&str, &str)] = &[
         "List: rename · Detail: edit row · Sessions: resume",
     ),
     ("space", "Toggle folder (detail)"),
+    (
+        "type",
+        "Detail Search row: filter folders · ←/→ text cursor",
+    ),
     ("ctrl+d/del", "Delete workspace (list/detail)"),
     ("/", "Keyword search in the workspace's sessions"),
 ];

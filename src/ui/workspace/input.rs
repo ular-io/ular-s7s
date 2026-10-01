@@ -1,9 +1,9 @@
 //! Workspaces screen key handling and workspace mutations: opening a scope,
-//! pane focus, the in-place name/include/exclude edit, folder toggles, and
-//! creation/deletion. The Sessions pane delegates to the Session screen's table
-//! handler so its shortcuts stay identical.
+//! pane focus, the in-place name/include/exclude edit, the folder search,
+//! folder toggles, and creation/deletion. The Sessions pane delegates to the
+//! Session screen's table handler so its shortcuts stay identical.
 
-use super::state::{WorkspaceEdit, WorkspaceField, WorkspacePane, DETAIL_FIELDS};
+use super::state::{WorkspaceEdit, WorkspaceField, WorkspacePane, FIRST_FOLDER_ROW};
 use crate::ui::{App, Focus, Screen, TextInput, UiMode};
 use crate::workspaces::{Workspace, WorkspaceChange, WorkspaceStore};
 use std::collections::HashMap;
@@ -78,10 +78,12 @@ impl App {
         others.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
         rows.extend(others.into_iter().map(|(path, _)| path.to_path_buf()));
         self.workspace.folders = rows;
+        self.workspace.rebuild_visible();
 
         if let Some(prev) = previous {
-            if let Some(pos) = self.workspace.folders.iter().position(|f| *f == prev) {
-                self.workspace.detail_cursor = DETAIL_FIELDS.len() + pos;
+            let pos = self.workspace.visible_folders().position(|f| *f == prev);
+            if let Some(pos) = pos {
+                self.workspace.detail_cursor = FIRST_FOLDER_ROW + pos;
             }
         }
         let last = self.workspace.detail_rows().saturating_sub(1);
@@ -104,6 +106,7 @@ impl App {
     pub(crate) fn workspace_scope_changed(&mut self) {
         self.workspace.detail_cursor = 0;
         self.workspace.folder_scroll.set(0);
+        self.workspace.clear_folder_query();
         self.refresh_workspace_folders();
         self.selected = 0;
         self.recompute();
@@ -143,6 +146,11 @@ impl App {
             // pinned to the table so preview-only keys stay inert here.
             self.focus = Focus::Table;
             self.on_key_table(key);
+            return;
+        }
+        let was_on_search = self.workspace_search_focused();
+        if was_on_search && self.on_key_workspace_search(key) {
+            self.update_workspace_search_selection(was_on_search);
             return;
         }
 
@@ -193,6 +201,95 @@ impl App {
             }
             _ => {}
         }
+        self.update_workspace_search_selection(was_on_search);
+    }
+
+    /// True while the Detail cursor sits on the folder search row, which then
+    /// takes typed characters and pastes directly.
+    pub(crate) fn workspace_search_focused(&self) -> bool {
+        self.screen == Screen::Workspace
+            && self.mode == UiMode::Table
+            && self.workspace.pane == WorkspacePane::Detail
+            && self.workspace.cursor_on_search()
+            && self.workspaces.active_index().is_some()
+    }
+
+    /// Arriving on the Search row selects the whole query, so typing replaces
+    /// it; leaving drops the selection.
+    fn update_workspace_search_selection(&mut self, was_on_search: bool) {
+        let on_search = self.workspace_search_focused();
+        let query = &mut self.workspace.folder_query;
+        if on_search && !was_on_search {
+            query.select_all = !query.value.is_empty();
+            query.cursor = query.value.len();
+        } else if !on_search {
+            query.select_all = false;
+        }
+    }
+
+    /// Keys on the folder search row. Printable characters (including the
+    /// pane's letter shortcuts and space) edit the query and ←/→/Home/End move
+    /// its text cursor, so the row is left only with ↑/↓. ctrl combinations
+    /// fall through to the pane handler. Returns whether the key was consumed.
+    fn on_key_workspace_search(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let query = &mut self.workspace.folder_query;
+        match key.code {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                query.insert_char(c)
+            }
+            KeyCode::Backspace => query.backspace(),
+            KeyCode::Esc if !query.value.is_empty() => self.workspace.clear_folder_query(),
+            KeyCode::Enter => {
+                // Jump to the first match so space can toggle it right away.
+                if !self.workspace.visible.is_empty() {
+                    self.workspace.detail_cursor = FIRST_FOLDER_ROW;
+                }
+                return true;
+            }
+            // Text cursor keys stay in the query: the row never moves panes.
+            // A whole-query selection collapses to the matching edge first.
+            KeyCode::Left => {
+                query.move_left();
+                return true;
+            }
+            KeyCode::Right => {
+                query.move_right();
+                return true;
+            }
+            KeyCode::Home => {
+                query.home();
+                return true;
+            }
+            KeyCode::End => {
+                query.end();
+                return true;
+            }
+            // Deletes at the cursor instead of opening the delete dialog.
+            KeyCode::Delete => query.delete(),
+            _ => return false,
+        }
+        self.quit_armed = false;
+        self.status_msg = None;
+        self.workspace_folder_query_changed();
+        true
+    }
+
+    pub(crate) fn paste_into_workspace_search(&mut self, text: &str) {
+        let outcome = self.workspace.folder_query.insert_paste(text);
+        if outcome.inserted > 0 {
+            self.workspace_folder_query_changed();
+        }
+        self.note_paste_outcome(outcome);
+    }
+
+    fn workspace_folder_query_changed(&mut self) {
+        self.workspace.rebuild_visible();
+        self.workspace.folder_scroll.set(0);
     }
 
     fn workspace_pane_left(&mut self) {
@@ -251,6 +348,8 @@ impl App {
         // Open the new (still empty, so all-matching) scope without saving it.
         self.workspaces.set_active(Some(idx));
         self.workspace.detail_cursor = 0;
+        self.workspace.folder_scroll.set(0);
+        self.workspace.clear_folder_query();
         self.refresh_workspace_folders();
         self.selected = 0;
         self.recompute();

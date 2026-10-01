@@ -1,8 +1,11 @@
 //! Workspaces screen rendering: the workspace list, the Detail pane (fields,
-//! folder checklist, and a footer resolving the cursor row), the reused session
-//! table, and the deletion confirmation modal.
+//! folder search and checklist, and a footer resolving the cursor row), the
+//! reused session table, and the deletion confirmation modal.
 
-use super::state::{WorkspaceField, WorkspacePane, DETAIL_FIELDS};
+use super::state::{
+    folder_display_label, WorkspaceField, WorkspacePane, DETAIL_FIELDS, FIRST_FOLDER_ROW,
+    SEARCH_ROW,
+};
 use crate::theme::Theme;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
 use crate::ui::components::scrollbar::draw_vscrollbar;
@@ -217,6 +220,39 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         Span::styled(format!("· {scope}"), label_style),
     ]));
 
+    // Folder search row: typed into directly while the cursor is on it. It is
+    // an input, so the row is never highlighted: the hardware cursor marks it,
+    // and a whole-query selection paints only the text.
+    let query = &state.folder_query;
+    let search_focused = focused && cursor == Some(SEARCH_ROW) && app.mode == UiMode::Table;
+    let mut search_line = vec![Span::styled(pad_w(" Search", LABEL_W), label_style)];
+    if query.value.is_empty() {
+        // The placeholder would sit after the hardware cursor, so it shows
+        // only while the row is not focused.
+        if !search_focused {
+            search_line.push(Span::styled(
+                truncate_w("type to filter", value_w),
+                label_style,
+            ));
+        }
+    } else {
+        let (visible, _) = input_view(query, value_w);
+        let text_style = if search_focused && query.select_all {
+            Style::default().fg(th.selection_fg).bg(th.selection_bg)
+        } else {
+            Style::default()
+        };
+        search_line.push(Span::styled(visible, text_style));
+    }
+    if search_focused {
+        let (_, cursor_x) = input_view(query, value_w);
+        f.set_cursor_position((
+            inner.x + LABEL_W as u16 + cursor_x,
+            inner.y + lines.len() as u16,
+        ));
+    }
+    lines.push(Line::from(search_line));
+
     // Folder viewport: the footer (divider + path) is dropped before the list
     // would lose its last usable row.
     let head = lines.len();
@@ -225,7 +261,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         h if h > 2 => (h - 2, true),
         h => (h, false),
     };
-    let folder_cursor = cursor.and_then(|c| c.checked_sub(DETAIL_FIELDS.len()));
+    let folder_cursor = cursor.and_then(|c| c.checked_sub(FIRST_FOLDER_ROW));
     let scroll = follow(
         state.folder_scroll.get(),
         folder_cursor.unwrap_or(state.folder_scroll.get()),
@@ -233,14 +269,11 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     );
     state.folder_scroll.set(scroll);
     let label_w = w.saturating_sub(6);
-    for (i, folder) in state.folders.iter().enumerate().skip(scroll).take(view) {
+    let shown = state.visible.len();
+    for (i, folder) in state.visible_folders().enumerate().skip(scroll).take(view) {
         let checked = ws.is_some_and(|w| w.has_folder(folder));
         let mark = if checked { "[✓]" } else { "[ ]" };
-        let basename = folder
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| folder.to_string_lossy().into_owned());
-        let label = crate::scratch::folder_label(folder, &basename);
+        let label = folder_display_label(folder);
         let style = row_style(th, folder_cursor == Some(i), focused);
         let mark_style = if checked && !locked {
             Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
@@ -252,11 +285,17 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             Span::styled(mark, mark_style.patch(style)),
             Span::styled(" ", style),
             Span::styled(
-                pad_w(&truncate_w(label, label_w), label_w),
+                pad_w(&truncate_w(&label, label_w), label_w),
                 value_style.patch(style),
             ),
             Span::styled(" ", style),
         ]));
+    }
+    if shown == 0 && !query.value.is_empty() && view > 0 {
+        lines.push(Line::from(Span::styled(
+            truncate_w(" No matching folders", w),
+            th.soft_dim(),
+        )));
     }
     while lines.len() < head + view {
         lines.push(Line::from(""));
@@ -267,6 +306,15 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             "All sessions · cannot be edited".to_string()
         } else if let Some(folder) = state.cursor_folder().filter(|_| folder_cursor.is_some()) {
             display_path(folder)
+        } else if state.cursor_on_search() {
+            let total = state.folders.len();
+            if query.value.is_empty() {
+                "Type to filter folders · ↑↓ move".to_string()
+            } else if query.select_all {
+                format!("{shown}/{total} · type replaces · → edit")
+            } else {
+                format!("{shown} of {total} folders · esc clear")
+            }
         } else {
             match state.cursor_field() {
                 Some(WorkspaceField::Name) => "enter rename".to_string(),
@@ -281,14 +329,14 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         )));
     }
     f.render_widget(Paragraph::new(lines), inner);
-    if state.folders.len() > view && view > 0 {
+    if shown > view && view > 0 {
         let sb = Rect::new(
             area.x,
             inner.y + head as u16 - 1,
             area.width,
             view as u16 + 2,
         );
-        draw_vscrollbar(f, sb, focused, scroll, state.folders.len(), view, th);
+        draw_vscrollbar(f, sb, focused, scroll, shown, view, th);
     }
 }
 

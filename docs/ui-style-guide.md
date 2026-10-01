@@ -225,10 +225,21 @@ Additional rules:
   (`selection_inactive_bg`) when another pane has focus.
 - Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
   values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
-  `· N selected`, then `[✓]`/`[ ]` folder rows with bare basenames. A selected
-  mark is accent + bold, so selection does not rely on the mark alone.
+  `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
+  basenames. A selected mark is accent + bold, so selection does not rely on
+  the mark alone. A query with no match draws `No matching folders` in
+  `soft_dim()` in the list area.
+- The Search row is a text input, so the cursor row style is never applied to
+  it: the hardware cursor marks it, and a whole-query selection paints only the
+  query text with `selection_fg`/`selection_bg` (not the label or padding),
+  and only while the cursor is on the row, as with the combo-box selection
+  rule. Its label uses the field label column; an empty query reads
+  `type to filter` in `soft_dim()` only while the cursor is elsewhere, because
+  a focused row shows the hardware cursor where the placeholder would start.
 - The Detail footer (divider + one line) resolves the cursor row: the full path
-  of a folder row, or what a field does. It is dropped before the folder list
+  of a folder row, what a field does, or on the Search row the hint, the
+  `M of N folders · esc clear` match count, or while the query is selected
+  `M/N · type replaces · → edit`. It is dropped before the folder list
   would lose its last row, as with the folder dropdown footer.
 - "All" keeps the Detail pane visible but locked: every value `soft_dim()`, no
   cursor row, and the footer says `All sessions · cannot be edited`.

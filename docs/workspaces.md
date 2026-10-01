@@ -68,9 +68,25 @@ Words match through `filter::token_matches`, the same text as `/` search
   captured when the scope changes and kept while toggling, so `space` never
   moves the cursor. A stored folder with no remaining session still appears so
   it can be unchecked. `[✓]` = selected.
-- `ctrl+d`/`del` on List or Detail asks for confirmation (Cancel focused) and
-  removes only the workspace; the cursor stays on the same row. "All" can be
-  neither edited nor deleted.
+- A `Search` row sits between the `Folders` heading and the folder rows. It is
+  an ordinary cursor row (`SEARCH_ROW`), reached and left only with `↑`/`↓`;
+  while the cursor is on it, keys edit the query directly with no Enter and no
+  edit mode (`App::workspace_search_focused`). Typed characters include the
+  pane's letter shortcuts (`j`, `k`, `g`, `q`, …) and `space`; `←`/`→`/`Home`/
+  `End` move the text cursor and never change pane; Backspace/`Delete` delete
+  at the cursor; Esc clears a non-empty query; Enter moves to the first match;
+  paste inserts. ctrl combinations keep their pane meaning.
+- Arriving on the row with a non-empty query selects the whole query
+  (`TextInput::select_all`): typing or paste replaces it, Backspace/`Delete`
+  clear it, and `←`/`→` drop the selection to the start/end, keeping the text.
+  Leaving the row drops the selection.
+- Every whitespace-separated query word must occur, case-insensitively, in the
+  folder's full path or its displayed label. Non-matching rows are hidden, not
+  reordered; their selection is kept and still counted in `· N selected`. The
+  query is not stored and is cleared when the scope changes.
+- `ctrl+d`/`del` on List or Detail (`del` not on the Search row) asks for
+  confirmation (Cancel focused) and removes only the workspace; the cursor
+  stays on the same row. "All" can be neither edited nor deleted.
 - The Sessions pane forwards keys to the Session table handler (`on_key_table`)
   with `Focus::Table`, so `enter`, `ctrl+d` (delete *session*), `ctrl+r`,
   `ctrl+b`, `a`, `f`, `c`, `0`, `1..5` behave as on the Session screen.
@@ -128,12 +144,14 @@ See [ui-style-guide.md](./ui-style-guide.md) §Workspaces screen.
 ## Verification
 
 - `ui::workspace::tests` (navigation, scope, add/rename/cancel, live include/
-  exclude, folder toggles, delete, Sessions-pane delegation, search focus,
-  palette open/close, context jump, persistence, render), `workspaces::tests`
-  (matching, per-change commits, refused names, unreadable store),
+  exclude, folder toggles, folder search, delete, Sessions-pane delegation,
+  search focus, palette open/close, context jump, persistence, render),
+  `workspaces::tests` (matching, per-change commits, refused names, unreadable
+  store),
   `ui::reload::tests` (`ctrl+u` reload), and `store_lock::tests`.
-- Release PTY check (`s7s demo`): add a workspace, toggle folders, type
-  includes and watch the list, open/close via `ctrl+w`, restart and confirm the
-  scope is reopened, and check a narrow (80-column) terminal.
+- Release PTY check (`s7s demo`): add a workspace, toggle folders, filter
+  folders on the Search row and toggle a match, type includes and watch the
+  list, open/close via `ctrl+w`, restart and confirm the scope is reopened, and
+  check a narrow (80-column) terminal.
 - Two release instances on `s7s demo`: add a workspace in each without
   reloading, confirm `workspaces.json` holds both, then `ctrl+u` in each.
