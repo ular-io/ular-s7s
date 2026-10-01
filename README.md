@@ -34,6 +34,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
 - **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
+- **Workspaces**: Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it, and survives restarts.
 - **Project-Free Scratch Sessions**: Pick `[SCRATCH]` at the top of the New Session folder list to start an agent with no project attached — for a question or a quick check. It runs in a shared folder (`~/.config/s7s/scratch`) that is emptied on every start and carries a policy file telling the agent to ask you for a target directory before writing anything, so nothing important is left in a throwaway location.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
 - **Work Handoff**: Park a task you are not doing now in a new session (`s7s session handoff`). The parked session records the work order and stops without acting on it, and keeps a link back to the session it came from, so `ctrl+o` walks to the origin when the work is picked up later.
@@ -123,14 +124,16 @@ leaves the ordinary session list behind the dialog.
 | `f` | Folder modal (typing=filter, `space` toggle, `enter` apply) |
 | `c` | Copy to clipboard by focus (Table=session info / Preview=all user turns, full content). On the Detail view: Prompt=selected user turn / Work=work log + final answer |
 | `.` | Toggle Tool Logs (show/hide tool calls and results in the Detail view) |
-| `ctrl+u` | Update Session (reflect session list additions/changes + recheck usage) |
+| `ctrl+u` | Update Session (reflect session list additions/changes + recheck usage; also reloads workspaces, bookmarks, and profiles saved by another running s7s) |
 | `ctrl+n` | New Session (Profile/Model/Folder dialog; typing a bare name instead of a path offers to create a new project folder under `~/.config/s7s/projects`; the folder list starts with `[SCRATCH]` for a project-free session; a prefilled path starts selected, so typing replaces it and `→` keeps it for editing) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |
 | `ctrl+o` | Go to Context Source (move to the session the selected one was launched from; clears filters if they hide it) |
 | `ctrl+b` | Toggle Bookmark (show `Ⓑ  ` before the title; also available on Detail) |
+| `ctrl+w` | Open/close a workspace (the palette opens with `open workspace` typed; picking a row returns to this screen with that scope) |
 | `ctrl+r` | Rename Session |
 | `ctrl+d` / `del` | Confirm Delete Session |
 | `tab` / `shift+tab` | Toggle focus between left table ↔ right preview panel |
+| `←` (`h`) on the table | Go to the Workspaces screen |
 | `↑`/`↓` (`k`/`j`) | Table focus=move row / Preview focus=scroll body |
 | `g` / `G` (`home` / `end`) | Jump to start / end |
 | `pageup` / `pagedown` | Scroll preview body |
@@ -152,7 +155,28 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 | `ctrl+e` | Edit profile |
 | `ctrl+d` | Delete profile (default profile cannot be deleted, actual folder remains) |
 | `ctrl+u` | Refresh all profile usages (keeps showing previous value during refresh) |
-| `→` / `l` | Return to session screen |
+| `→` / `l` | Go to the Workspaces screen |
+
+### Workspaces Screen (`←` from the session list, `→` from Profile)
+
+Three panes: the workspace list (first row **All** = every session), the selected
+workspace's detail, and its sessions. The list cursor is the open workspace, so the
+session screen shows the same scope.
+
+| Key | Action |
+| :-- | :-- |
+| `←` / `→` (`h` / `l`) | Move between panes; `←` on the list goes to Profile, `→` on the sessions pane goes to the session screen |
+| `↑` / `↓`, `home` / `end` | List: open another workspace · Detail: move row · Sessions: move row |
+| `+` | Add a workspace; its name is ready to type, `enter` saves, `esc` discards it |
+| `enter` | List: rename · Detail: edit Name / Includes / Excludes in place (`enter` saves, `esc` restores) · Sessions: resume |
+| `space` | Detail: toggle a folder (`[✓]` = included; none checked = every folder) |
+| `ctrl+d` / `del` | List/Detail: delete the workspace after confirmation (sessions are untouched) · Sessions: delete the session |
+| `/` | Keyword search within the workspace's sessions |
+
+Includes require every word, excludes hide a session containing any word; both search
+the same text as `/`. Folders compare full paths, so two projects with the same folder
+name stay apart. Typing includes/excludes updates the list on every keystroke.
+Workspaces are stored in `~/.config/s7s/workspaces.json`.
 
 ## Session Bookmarks
 

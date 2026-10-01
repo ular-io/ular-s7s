@@ -110,15 +110,22 @@ fn refresh_prepare_never_marks_usage_loading_without_a_spawned_probe() {
 }
 
 #[test]
-fn left_right_switch_between_profile_and_session_screens() {
+fn left_right_switch_between_profile_workspace_and_session_screens() {
     let mut app = app_with_session();
 
-    // Session list (with table focus) -> Left key -> Profile list screen.
+    // Session list (with table focus) -> Left key -> Workspaces screen -> its list -> Profile.
     app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Workspace);
+    app.on_key_workspace(key(KeyCode::Left, KeyModifiers::NONE));
+    app.on_key_workspace(key(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Profile);
 
-    // Profile view -> Right key -> Session list screen (independent of selected profile).
+    // Profile view -> Right key -> Workspaces screen (independent of selected profile),
+    // and on through its panes to the Session list.
     app.on_key_profile_table(key(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Workspace);
+    app.on_key_workspace(key(KeyCode::Right, KeyModifiers::NONE));
+    app.on_key_workspace(key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Session);
     assert_eq!(app.focus, Focus::Table);
 }

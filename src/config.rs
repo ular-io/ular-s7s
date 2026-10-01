@@ -195,6 +195,12 @@ pub(crate) fn bookmarks_path() -> PathBuf {
     config_base_dir().join("bookmarks.json")
 }
 
+/// User-defined session scopes shown on the Workspaces screen (`crate::workspaces`).
+/// Unrelated to `session_workspaces_path`, which records captured session cwds.
+pub(crate) fn workspaces_path() -> PathBuf {
+    config_base_dir().join("workspaces.json")
+}
+
 /// Configuration directory: `~/.config/s7s`.
 ///
 /// Hardcoded rather than resolved via `dirs::config_dir()` so all app state

@@ -6,6 +6,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandId {
     OpenSessionWindow,
+    OpenWorkspaceWindow,
     OpenProfileWindow,
     ResumeSession,
     NewSession,
@@ -56,6 +57,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: None,
         aliases: &["go", "switch", "view", "list", "screen"],
         description: None,
+    },
+    CommandSpec {
+        id: CommandId::OpenWorkspaceWindow,
+        key: "open-workspace-window",
+        label: "Open Workspace Window",
+        shortcut: None,
+        aliases: &["go", "switch", "view", "list", "screen"],
+        description: Some("Edit workspaces: name, include/exclude words, folders"),
     },
     CommandSpec {
         id: CommandId::OpenProfileWindow,
@@ -233,7 +242,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Refresh Usage & Sessions",
         shortcut: Some("ctrl+u"),
         aliases: &["update", "reload", "sync", "rescan"],
-        description: Some("Rescan sessions and re-fetch usage for all profiles"),
+        description: Some(
+            "Rescan sessions, re-fetch usage, and reload workspaces/bookmarks/profiles saved elsewhere",
+        ),
     },
     CommandSpec {
         id: CommandId::ToggleToolLogs,
@@ -285,19 +296,64 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
-/// Presentation items in the palette (registry index and enablement state on active screen).
-#[derive(Debug, Clone, Copy)]
-pub struct QuickItem {
+/// What a palette row runs: a registry command, or a workspace scope switch
+/// generated from the user's workspaces (not part of `COMMANDS`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickAction {
     /// Index in `COMMANDS` registry.
-    pub spec_idx: usize,
+    Command(usize),
+    /// `Open Workspace <name>` (`Some(index)`) or `Close Workspace` (`None`).
+    Workspace(Option<usize>),
+}
+
+/// Presentation items in the palette (action, label, and enablement state on active screen).
+#[derive(Debug, Clone)]
+pub struct QuickItem {
+    pub action: QuickAction,
+    /// Display label; a registry command's is its `CommandSpec::label`.
+    pub label: String,
     pub enabled: bool,
 }
 
 impl QuickItem {
-    pub fn spec(&self) -> &'static CommandSpec {
-        &COMMANDS[self.spec_idx]
+    /// Registry spec of a command row (`None` for workspace rows).
+    pub fn spec(&self) -> Option<&'static CommandSpec> {
+        match self.action {
+            QuickAction::Command(idx) => Some(&COMMANDS[idx]),
+            QuickAction::Workspace(_) => None,
+        }
+    }
+
+    pub fn shortcut(&self) -> Option<&'static str> {
+        self.spec().and_then(|s| s.shortcut)
+    }
+
+    /// Footer text: the command's description, or why the row is disabled.
+    pub fn description(&self) -> &'static str {
+        match (&self.action, self.enabled) {
+            (QuickAction::Workspace(None), false) => "No workspace is open",
+            (_, false) => "Not available in this window",
+            (QuickAction::Command(_), true) => {
+                self.spec().and_then(|s| s.description).unwrap_or("")
+            }
+            (QuickAction::Workspace(Some(_)), true) => {
+                "Show only this workspace's sessions in the session list"
+            }
+            (QuickAction::Workspace(None), true) => "Show all sessions (no workspace)",
+        }
     }
 }
+
+/// Label of the palette row that returns to the "All" scope.
+pub const CLOSE_WORKSPACE_LABEL: &str = "Close Workspace";
+/// Prefix of the per-workspace palette rows (`Open Workspace <name>`).
+pub const OPEN_WORKSPACE_PREFIX: &str = "Open Workspace";
+/// Query `ctrl+w` prefills; it lists every workspace row first.
+pub const WORKSPACE_QUERY: &str = "open workspace ";
+
+/// Close Workspace answers the `open workspace` query as well, so it sits
+/// beside the open rows it undoes.
+const CLOSE_WORKSPACE_ALIASES: &[&str] = &["open", "all", "sessions", "exit"];
 
 /// Evaluates if all query tokens are substrings of the command label, aliases, or shortcut keys (AND match).
 fn matches(spec: &CommandSpec, tokens: &[String]) -> bool {
@@ -307,6 +363,48 @@ fn matches(spec: &CommandSpec, tokens: &[String]) -> bool {
             || spec.aliases.iter().any(|a| a.contains(t.as_str()))
             || spec.shortcut.is_some_and(|s| s.contains(t.as_str()))
     })
+}
+
+/// Workspace rows for a non-empty query (an empty `:` palette is unchanged):
+/// `Close Workspace` first, then `Open Workspace <name>` in list order, each
+/// kept when every query token matches its label (or Close's aliases). A
+/// disabled Close (no workspace open) sorts after the open rows.
+pub fn build_workspace_items(query: &str, names: &[&str], active: Option<usize>) -> Vec<QuickItem> {
+    let tokens: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    let hit = |label: &str, aliases: &[&str]| {
+        let label = label.to_lowercase();
+        tokens
+            .iter()
+            .all(|t| label.contains(t.as_str()) || aliases.iter().any(|a| a.contains(t.as_str())))
+    };
+    let close = hit(CLOSE_WORKSPACE_LABEL, CLOSE_WORKSPACE_ALIASES).then(|| QuickItem {
+        action: QuickAction::Workspace(None),
+        label: CLOSE_WORKSPACE_LABEL.to_string(),
+        enabled: active.is_some(),
+    });
+    let opens = names.iter().enumerate().filter_map(|(i, name)| {
+        let label = format!("{OPEN_WORKSPACE_PREFIX} {name}");
+        hit(&label, &[]).then_some(QuickItem {
+            action: QuickAction::Workspace(Some(i)),
+            label,
+            enabled: true,
+        })
+    });
+    let mut items: Vec<QuickItem> = Vec::new();
+    match close {
+        Some(close) if close.enabled => {
+            items.push(close);
+            items.extend(opens);
+        }
+        close => {
+            items.extend(opens);
+            items.extend(close);
+        }
+    }
+    items
 }
 
 /// Constructs presentation items filtered by query and sorted by history and enablement state.
@@ -335,7 +433,8 @@ pub fn build_items<F: Fn(CommandId) -> bool>(
             (
                 (!en, hist, idx),
                 QuickItem {
-                    spec_idx: idx,
+                    action: QuickAction::Command(idx),
+                    label: spec.label.to_string(),
                     enabled: en,
                 },
             )
@@ -350,7 +449,49 @@ mod tests {
     use super::*;
 
     fn spec_of(item: &QuickItem) -> &'static CommandSpec {
-        item.spec()
+        item.spec().expect("registry command")
+    }
+
+    fn labels(items: &[QuickItem]) -> Vec<&str> {
+        items.iter().map(|i| i.label.as_str()).collect()
+    }
+
+    #[test]
+    fn workspace_query_lists_close_then_every_open_row() {
+        let names = ["AAA", "bbb", "ccc"];
+        let items = build_workspace_items(WORKSPACE_QUERY, &names, Some(1));
+        assert_eq!(
+            labels(&items),
+            [
+                "Close Workspace",
+                "Open Workspace AAA",
+                "Open Workspace bbb",
+                "Open Workspace ccc"
+            ]
+        );
+        assert!(items.iter().all(|i| i.enabled));
+        // Narrowing by a name keeps only that row (Close has no such word).
+        let items = build_workspace_items("open workspace bb", &names, Some(1));
+        assert_eq!(labels(&items), ["Open Workspace bbb"]);
+    }
+
+    #[test]
+    fn close_workspace_is_disabled_and_last_while_all_is_open() {
+        let items = build_workspace_items(WORKSPACE_QUERY, &["AAA"], None);
+        assert_eq!(labels(&items), ["Open Workspace AAA", "Close Workspace"]);
+        assert!(!items[1].enabled);
+        assert_eq!(items[1].description(), "No workspace is open");
+    }
+
+    #[test]
+    fn empty_query_adds_no_workspace_rows() {
+        assert!(build_workspace_items("  ", &["AAA"], Some(0)).is_empty());
+    }
+
+    #[test]
+    fn workspace_query_also_matches_the_workspace_window_command() {
+        let items = build_items(WORKSPACE_QUERY, &[], |_| true);
+        assert_eq!(labels(&items), ["Open Workspace Window"]);
     }
 
     #[test]

@@ -56,18 +56,10 @@ impl Filter {
         // Keyword filter (AND tokens) - search_blob first, falls back to session id matching
         if !self.keyword.trim().is_empty() {
             let needle = normalize::nfc_lower(&self.keyword);
-            for token in needle.split_whitespace() {
-                if s.search_blob.contains(token) {
-                    continue;
-                }
-                // Assistant answers are a secondary target: a token found only in a
-                // past answer still matches (AND semantics across tokens preserved).
-                if s.assistant_blob.contains(token) {
-                    continue;
-                }
-                if token.len() >= ID_SEARCH_MIN_LEN && s.id.to_ascii_lowercase().contains(token) {
-                    continue;
-                }
+            if !needle
+                .split_whitespace()
+                .all(|token| token_matches(s, token))
+            {
                 return false;
             }
         }
@@ -112,6 +104,17 @@ impl Filter {
         }
         parts.join(", ")
     }
+}
+
+/// Whether one already-normalized (`nfc_lower`) keyword token occurs in the session:
+/// the user body/title/folder blob first, then past assistant answers (a token
+/// found only there still matches), then a partial session id for long tokens.
+/// Shared by the keyword filter and workspace include/exclude words so both
+/// search the same text.
+pub(crate) fn token_matches(s: &Session, token: &str) -> bool {
+    s.search_blob.contains(token)
+        || s.assistant_blob.contains(token)
+        || (token.len() >= ID_SEARCH_MIN_LEN && s.id.to_ascii_lowercase().contains(token))
 }
 
 /// Filters the session list and returns indices of matched sessions, preserving original order.

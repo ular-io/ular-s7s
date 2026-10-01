@@ -26,6 +26,8 @@ planning; backlog entries are not implementation authorization.
 | Work handoff (`src/session_handoff.rs`, `s7s session handoff`) | [session-context.md](./docs/session-context.md) §Handoff + [testing.md](./docs/testing.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Session bookmarks / Ctrl+B / bookmark filter (`src/bookmarks.rs`, `src/ui/bookmarks.rs`) | [bookmarks.md](./docs/bookmarks.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
+| Workspaces screen / open-workspace scope / `ctrl+w` palette rows (`src/workspaces.rs`, `src/ui/workspace/`) | [workspaces.md](./docs/workspaces.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
+| Multi-instance saving / `ctrl+u` reload of app-owned stores (`src/store_lock.rs`, `src/ui/reload.rs`) | [workspaces.md](./docs/workspaces.md) §Multiple running instances + [profiles.md](./docs/profiles.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |
 

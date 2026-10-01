@@ -111,6 +111,10 @@ drives the current decision. Avoid using bold for every value.
   assertions elsewhere on the screen.
 - Session/Detail operations include `<ctrl+b> Bookmark`; `ctrl+o` remains on the
   conditional Context Source heading and in Help. The Back action is palette-only.
+- The common column carries `<ctrl+w> Open Workspace` (five rows, the ceiling).
+- The Workspaces screen picks its two columns by focused pane: List and Detail
+  have their own (`SHORTCUTS_WORKSPACE_LIST` / `_DETAIL`); the Sessions pane
+  shows `SHORTCUTS_SESSION` because it takes the same keys.
 
 ## Dialogs and overlays
 
@@ -205,6 +209,42 @@ Additional rules:
 - The `table_layout` unit tests in `src/ui/session/render.rs` pin the
   thresholds and FOLDER bounds; `session_table_hides_optional_columns_on_narrow_terminals`
   checks the frame.
+
+## Workspaces screen
+
+- Three panes, left to right: `Workspaces` list, `Detail`, and the session
+  table (`session::render::draw_table_with`, the Session screen's table with
+  the caller's focus state). Each uses `titled_block_nav`; only the focused
+  pane is thick.
+- Widths include borders: list 24, Detail 40, sessions take the rest
+  (`workspace::render::pane_widths`). Below 104 columns the Detail pane shrinks
+  first, to 24, keeping 40 for the table; past that the table hides its
+  optional columns under the Session table rules below.
+- The list's first row is the fixed "All" scope, outside the stored list. The
+  list cursor is the open workspace, so its selected row stays highlighted
+  (`selection_inactive_bg`) when another pane has focus.
+- Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
+  values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
+  `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
+  basenames. A selected mark is accent + bold, so selection does not rely on
+  the mark alone. A query with no match draws `No matching folders` in
+  `soft_dim()` in the list area.
+- The Search row is a text input, so the cursor row style is never applied to
+  it: the hardware cursor marks it, and a whole-query selection paints only the
+  query text with `selection_fg`/`selection_bg` (not the label or padding),
+  and only while the cursor is on the row, as with the combo-box selection
+  rule. Its label uses the field label column; an empty query reads
+  `type to filter` in `soft_dim()` only while the cursor is elsewhere, because
+  a focused row shows the hardware cursor where the placeholder would start.
+- The Detail footer (divider + one line) resolves the cursor row: the full path
+  of a folder row, what a field does, or on the Search row the hint, the
+  `M of N folders · esc clear` match count, or while the query is selected
+  `M/N · type replaces · → edit`. It is dropped before the folder list
+  would lose its last row, as with the folder dropdown footer.
+- "All" keeps the Detail pane visible but locked: every value `soft_dim()`, no
+  cursor row, and the footer says `All sessions · cannot be edited`.
+- In-place edits draw the input inside the row (list name or Detail value) with
+  the hardware cursor; the status bar shows `enter save · esc cancel`.
 
 ## Width and root layout
 

@@ -87,6 +87,9 @@ impl App {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
             }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_workspace_palette();
+            }
             // Contextual New Session (matched before ordinary Ctrl+N; see on_key_table).
             KeyCode::Char('n') | KeyCode::Char('N')
                 if key.modifiers.contains(KeyModifiers::CONTROL)

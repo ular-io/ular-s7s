@@ -87,10 +87,28 @@ const SHORTCUTS_PROFILE: [&[(&str, &str)]; 2] = [
     ],
 ];
 
+/// Workspaces screen columns while the workspace list is focused. The Sessions
+/// pane reuses `SHORTCUTS_SESSION` because it takes the same keys.
+const SHORTCUTS_WORKSPACE_LIST: [&[(&str, &str)]; 2] = [
+    &[("/", "Search"), ("+", "Add Workspace")],
+    &[("enter", "Rename"), ("ctrl+d", "Delete Workspace")],
+];
+
+/// Workspaces screen columns while the Detail pane is focused.
+const SHORTCUTS_WORKSPACE_DETAIL: [&[(&str, &str)]; 2] = [
+    &[("/", "Search"), ("+", "Add Workspace")],
+    &[
+        ("enter", "Edit"),
+        ("space", "Toggle Folder"),
+        ("ctrl+d", "Delete Workspace"),
+    ],
+];
+
 /// Column 3 shared across all views (screen rotation, refreshes, help).
 const SHORTCUTS_COMMON: &[(&str, &str)] = &[
     (":", "Quick Command"),
     ("!", "Terminal Command"),
+    ("ctrl+w", "Open Workspace"),
     ("ctrl+u", "Refresh"),
     ("?", "Help"),
 ];
@@ -119,6 +137,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         super::profile::render::draw_profile_table(f, app, root[1]);
     } else if app.screen == Screen::Detail {
         super::detail::render::draw_detail(f, app, root[1]);
+    } else if app.screen == Screen::Workspace {
+        super::workspace::render::draw_workspace_screen(f, app, root[1]);
     } else if app.mode == UiMode::Keyword {
         // Keyword mode: overlays search prompt box on top of the main body (k9s-style).
         let body = Layout::default()
@@ -152,6 +172,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         UiMode::ThemeSelect => super::overlays::theme::draw_theme_select(f, app),
         UiMode::Help => super::overlays::help::draw_help(f, app),
         UiMode::Message => super::overlays::message::draw_message_modal(f, app),
+        UiMode::WorkspaceDeleteConfirm => {
+            super::workspace::render::draw_workspace_delete_confirm(f, app)
+        }
         _ => {}
     }
 }
@@ -384,6 +407,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Screen::Session => &SHORTCUTS_SESSION,
         Screen::Profile => &SHORTCUTS_PROFILE,
         Screen::Detail => &SHORTCUTS_DETAIL,
+        Screen::Workspace => match app.workspace.pane {
+            super::workspace::WorkspacePane::List => &SHORTCUTS_WORKSPACE_LIST,
+            super::workspace::WorkspacePane::Detail => &SHORTCUTS_WORKSPACE_DETAIL,
+            super::workspace::WorkspacePane::Sessions => &SHORTCUTS_SESSION,
+        },
     };
     let left_cols: [&[(&str, &str)]; 3] = [screen_cols[0], screen_cols[1], SHORTCUTS_COMMON];
     // Keys are padded to each column's widest `<key>` so action descriptions start at
@@ -832,8 +860,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             "enter open/select  ·  ↑↓ move focus  ·  tab focus  ·  space select  ·  → complete  ·  esc close",
             dim_style,
         ))
-    } else if app.mode == UiMode::Rename {
+    } else if matches!(app.mode, UiMode::Rename | UiMode::WorkspaceEdit) {
         Line::from(Span::styled("enter save  ·  esc cancel", dim_style))
+    } else if app.screen == Screen::Workspace
+        && app.mode == UiMode::Table
+        && !app.filter.is_active()
+    {
+        Line::from(Span::styled(
+            "←→ pane  ·  ↑↓ open workspace / move  ·  enter edit  ·  space toggle folder",
+            dim_style,
+        ))
     } else if app.filter.is_active() {
         Line::from(vec![
             Span::styled(" filter: ", Style::default().fg(th.on_accent).bg(th.accent)),
@@ -945,6 +981,7 @@ mod tests {
     use super::{
         input_view, pad_w, preview_turn_lines, truncate_w, usage_spans, PreviewTurnLine,
         SHORTCUTS_COMMON, SHORTCUTS_DETAIL, SHORTCUTS_PROFILE, SHORTCUTS_SESSION,
+        SHORTCUTS_WORKSPACE_DETAIL, SHORTCUTS_WORKSPACE_LIST,
     };
     use crate::ui::TextInput;
     use crate::usage::{ResetCountdown, UsageEntry, UsagePhase, UsageSnapshot, UsageWindow};
@@ -1209,6 +1246,8 @@ mod tests {
             .iter()
             .chain(SHORTCUTS_DETAIL.iter())
             .chain(SHORTCUTS_PROFILE.iter())
+            .chain(SHORTCUTS_WORKSPACE_LIST.iter())
+            .chain(SHORTCUTS_WORKSPACE_DETAIL.iter())
             .chain(std::iter::once(&SHORTCUTS_COMMON))
         {
             assert!(

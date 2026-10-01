@@ -11,7 +11,9 @@ Even for the same agent, if the config folder is different, it is a separate pro
 
 - `~/.config/s7s/profiles.json` (`config_base_dir()`, `src/config.rs` — hardcoded, all platforms)
 - This is a file owned and saved by the app (the configuration `config.toml` is manually edited by the user and is separate from profiles).
-- Since the OAuth token can be included in plain text, it is given **0600 permissions** when saved.
+- Since the OAuth token can be included in plain text, it is given **0600 permissions** when saved: the file is written as a `0600` temp file and renamed over the store (`store_lock::replace_file`), so a concurrent reader never sees a partial file.
+- Several running s7s instances share the file. TUI edits are saved as a `ProfileChange` (`Upsert`, `Remove`, `Shortcuts`) applied by id onto a freshly read file under `store_lock::with_store_lock` (`ProfileStore::commit`), so one instance never drops profiles another saved. `Shortcuts` writes this instance's header order; numbered profiles it has never loaded keep a shortcut after that order while slots remain. A file that cannot be parsed is not overwritten (the save fails with `failed to save profiles.json`).
+- The in-memory list is read at startup and on `ctrl+u` (`App::reload_shared_stores`, which keeps the selected profile by id and drops profile filters for removed profiles). There is no file watching. Startup still falls back to the builtins for an unreadable file; `ctrl+u` instead keeps the in-memory list and shows `Reload Failed`.
 - It seeds the default 3 (builtin) on first run. Builtin profiles cannot be deleted or have their agents changed, and even if they are manually edited out, they are re-seeded upon load.
 
 ## Meaning of the Path

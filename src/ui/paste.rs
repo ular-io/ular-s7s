@@ -26,6 +26,11 @@ impl App {
             UiMode::NewSession => self.paste_into_new_session(text),
             UiMode::QuickCommand => self.paste_into_quick(text),
             UiMode::FolderModal => self.paste_into_folder_query(text),
+            UiMode::WorkspaceEdit => self.paste_into_workspace_edit(text),
+            // The Workspaces Detail folder search takes input without an edit mode.
+            UiMode::Table if self.workspace_search_focused() => {
+                self.paste_into_workspace_search(text)
+            }
             // No editable field: a paste must not act as a key press.
             UiMode::Table
             | UiMode::AgentModal
@@ -35,7 +40,8 @@ impl App {
             | UiMode::ProjectDirConfirm
             | UiMode::ThemeSelect
             | UiMode::Help
-            | UiMode::Message => {}
+            | UiMode::Message
+            | UiMode::WorkspaceDeleteConfirm => {}
         }
     }
 
@@ -205,9 +211,16 @@ mod tests {
         assert_eq!(state.input.value, "refresh");
         // The list was refiltered by the pasted query, not left at "all commands".
         assert!(
-            state.items.iter().all(|i| i.spec().key == "refresh-all"),
+            state
+                .items
+                .iter()
+                .all(|i| i.spec().map(|s| s.key) == Some("refresh-all")),
             "palette matches recomputed: {:?}",
-            state.items.iter().map(|i| i.spec().key).collect::<Vec<_>>()
+            state
+                .items
+                .iter()
+                .map(|i| i.label.clone())
+                .collect::<Vec<_>>()
         );
         assert_eq!(app.mode, UiMode::QuickCommand);
     }

@@ -193,9 +193,23 @@ fn table_layout(area_width: u16, folder_label_w: usize) -> TableLayout {
 
 /// Left session table. Title exhibits `sessions[filter: count]`.
 pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
-    let th = &app.theme;
     let table_focus = app.focus == Focus::Table && app.mode == UiMode::Table;
     let table_dimmed = app.focus == Focus::Preview && app.mode == UiMode::Table;
+    draw_table_with(f, app, area, table_focus, table_dimmed, (true, true));
+}
+
+/// Session table with the caller's focus state, shared by the Session screen
+/// and the Workspaces screen's Sessions pane. `dimmed` fades the table while a
+/// neighbouring panel owns focus; `nav` = (left, right) arrow hints.
+pub(crate) fn draw_table_with(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    table_focus: bool,
+    table_dimmed: bool,
+    nav: (bool, bool),
+) {
+    let th = &app.theme;
     let header_style = if table_dimmed {
         th.soft_dim().add_modifier(Modifier::BOLD)
     } else {
@@ -283,15 +297,21 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    // sessions[filter: count] / sessions[count]
-    let title = if app.filter.is_active() {
-        format!(
-            " Session[{}: {}] ",
-            app.filter.describe_with(|id| app.profile_name(id)),
-            app.filtered.len()
+    // Session[workspace, filter: count] / Session[count]
+    let scope: Vec<String> = app
+        .active_workspace_name()
+        .map(str::to_string)
+        .into_iter()
+        .chain(
+            app.filter
+                .is_active()
+                .then(|| app.filter.describe_with(|id| app.profile_name(id))),
         )
-    } else {
+        .collect();
+    let title = if scope.is_empty() {
         format!(" Session[{}] ", app.filtered.len())
+    } else {
+        format!(" Session[{}: {}] ", scope.join(", "), app.filtered.len())
     };
 
     let row_highlight_bg = if table_focus {
@@ -314,7 +334,13 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         .style(table_style)
         .header(header)
         .column_spacing(1)
-        .block(titled_block_nav(&title, table_focus, true, true, th.accent))
+        .block(titled_block_nav(
+            &title,
+            table_focus,
+            nav.0,
+            nav.1,
+            th.accent,
+        ))
         .row_highlight_style(row_highlight_style)
         // Reserves 1 space to the left of all rows (padding). The highlighted row spans across this space.
         .highlight_symbol(" ");

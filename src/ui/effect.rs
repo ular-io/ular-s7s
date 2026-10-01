@@ -155,9 +155,12 @@ impl App {
             });
             return;
         }
+        self.status_msg = Some(Self::refresh_status_preparing());
+        // Pick up what other running s7s instances saved, before the scan and
+        // probes read the profile list.
+        self.reload_shared_stores();
         self.start_usage_fetch();
         self.start_models_fetch(true);
-        self.status_msg = Some(Self::refresh_status_preparing());
     }
 
     /// Status while the preparing frame is on screen (scan still pending).
@@ -307,9 +310,15 @@ impl App {
     /// config folder supports environment overrides; other agents get a
     /// manual-login status message instead.
     fn run_profile_saved(&mut self, id: String, name: String, request_login: bool) {
-        if let Err(e) = self.profiles.save() {
+        let saved = match self.profiles.find(&id).cloned() {
+            Some(profile) => {
+                self.persist_profile_changes(&[crate::profile::ProfileChange::Upsert(profile)])
+            }
+            None => Err("profile disappeared before saving".to_string()),
+        };
+        if let Err(e) = saved {
             if let Some(form) = self.profile_form.as_mut() {
-                form.error = Some(format!("failed to save profiles.json: {e}"));
+                form.error = Some(e);
             }
             // Restore profile form mode since this might have been invoked from
             // the config-directory confirmation modal.
