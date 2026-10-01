@@ -13,8 +13,10 @@ pub mod paste;
 pub mod profile;
 pub mod quick;
 pub(crate) mod refresh;
+pub(crate) mod reload;
 pub mod render;
 pub mod session;
+pub mod workspace;
 
 pub(crate) use components::input::{
     insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, PasteOutcome, TextInput,
@@ -49,6 +51,9 @@ pub enum Screen {
     Profile,
     /// Session details view (per-question workspace tasks/answers). Drill-down screen entered via → arrow key from search preview.
     Detail,
+    /// Workspaces view between Profile and Session: workspace list, its Detail
+    /// pane, and the session table scoped to the open workspace.
+    Workspace,
 }
 
 /// UI modes determining input event dispatching branches (TUI state machine).
@@ -90,6 +95,11 @@ pub enum UiMode {
     Help,
     /// Generic alert dialog (info / warning / error). Reverts to the prior UI mode upon dismissal.
     Message,
+    /// In-place edit of a workspace name / include / exclude value on the
+    /// Workspaces screen (no dialog; the field itself becomes the input).
+    WorkspaceEdit,
+    /// Workspace deletion confirmation modal.
+    WorkspaceDeleteConfirm,
 }
 
 /// Request to run a shell command in a session folder (`!` terminal mode).
@@ -118,9 +128,21 @@ pub struct App {
     pub cfg: Config,
     /// List of profiles (vector order corresponds to UI/header index numbers).
     pub profiles: ProfileStore,
+    /// `profiles.json` that edits are committed to and `ctrl+u` reloads from.
+    /// `None` in unit tests, which never touch the user's file.
+    pub(crate) profiles_path: Option<PathBuf>,
     pub sessions: Vec<Session>,
     pub(crate) bookmarks: crate::bookmarks::BookmarkStore,
     pub(crate) bookmarks_path: PathBuf,
+    /// User-defined session scopes; `active` narrows every session list.
+    pub(crate) workspaces: crate::workspaces::WorkspaceStore,
+    /// `None` disables saving (unit tests). A store that failed to load stays
+    /// on disk untouched: every save re-reads it and refuses to overwrite it.
+    pub(crate) workspaces_path: Option<PathBuf>,
+    /// Workspaces screen pane focus, Detail cursor, and in-place edit.
+    pub workspace: workspace::WorkspaceScreenState,
+    /// Workspace index pending deletion (present when mode == WorkspaceDeleteConfirm).
+    pub pending_workspace_delete: Option<usize>,
     pub all_folders: Vec<String>,
 
     pub filter: Filter,
@@ -273,12 +295,36 @@ impl App {
                 ),
             }
         };
+        let (workspaces, workspaces_path, workspace_error) = if cfg!(test) {
+            (crate::workspaces::WorkspaceStore::default(), None, None)
+        } else {
+            let path = crate::config::workspaces_path();
+            match crate::workspaces::WorkspaceStore::load(&path) {
+                Ok(store) => (store, Some(path), None),
+                Err(err) => (
+                    crate::workspaces::WorkspaceStore::default(),
+                    Some(path),
+                    Some(format!(
+                        "Workspaces unavailable (changes are not saved): {err}"
+                    )),
+                ),
+            }
+        };
+        let status_msg = match (bookmark_error, workspace_error) {
+            (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+            (a, b) => a.or(b),
+        };
         let mut app = App {
             cfg,
             profiles,
+            profiles_path: (!cfg!(test)).then(crate::profile::profiles_file_path),
             sessions,
             bookmarks,
             bookmarks_path,
+            workspaces,
+            workspaces_path,
+            workspace: workspace::WorkspaceScreenState::default(),
+            pending_workspace_delete: None,
             all_folders,
             filter: Filter::default(),
             keyword_cursor: 0,
@@ -305,7 +351,7 @@ impl App {
             folder_order: Vec::new(),
             folder_visible: Vec::new(),
             scan_info,
-            status_msg: bookmark_error,
+            status_msg,
             table_state: std::cell::RefCell::new(ratatui::widgets::TableState::default()),
             profile_selected: 0,
             profile_table_state: std::cell::RefCell::new(ratatui::widgets::TableState::default()),
@@ -340,14 +386,19 @@ impl App {
             background: BackgroundState::default(),
         };
         app.recompute();
+        app.refresh_workspace_folders();
         app
     }
 
-    /// Rebuilds the visible list, keeping activity order within each bookmark group.
+    /// Rebuilds the visible list (filters AND the open workspace), keeping
+    /// activity order within each bookmark group.
     fn rebuild_filtered(&mut self) {
         self.filtered = filter::apply_with_bookmarks(&self.sessions, &self.filter, |session| {
             self.bookmarks.contains(session)
         });
+        if let Some(ws) = self.workspaces.active_workspace() {
+            self.filtered.retain(|&idx| ws.matches(&self.sessions[idx]));
+        }
         self.filtered
             .sort_by_cached_key(|&idx| !self.bookmarks.contains(&self.sessions[idx]));
     }
@@ -373,7 +424,7 @@ impl App {
     /// detail target on Detail. The Profile screen has no focused session.
     pub(crate) fn focused_session_index(&self) -> Option<usize> {
         match self.screen {
-            Screen::Session => self.filtered.get(self.selected).copied(),
+            Screen::Session | Screen::Workspace => self.filtered.get(self.selected).copied(),
             Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
             Screen::Profile => None,
         }
@@ -643,6 +694,7 @@ impl App {
         all_folders.sort_unstable();
         all_folders.dedup();
         self.all_folders = all_folders;
+        self.refresh_workspace_folders();
     }
 
     // ---- Filter Operations ----

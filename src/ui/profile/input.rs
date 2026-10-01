@@ -3,9 +3,27 @@
 //! creation confirmation (including the login request emitted on save).
 
 use crate::model::Agent;
-use crate::ui::{App, FormFocus, MessageKind, ProfileFormState, Screen, TextInput, UiMode};
+use crate::ui::{App, FormFocus, MessageKind, ProfileFormState, TextInput, UiMode};
 
 impl App {
+    /// Applies `changes` onto the current profiles.json
+    /// (`ProfileStore::commit`), keeping profiles another running s7s saved.
+    pub(crate) fn persist_profile_changes(
+        &mut self,
+        changes: &[crate::profile::ProfileChange],
+    ) -> Result<(), String> {
+        let Some(path) = self.profiles_path.as_ref() else {
+            return Ok(());
+        };
+        crate::profile::ProfileStore::commit(path, changes)
+            .map_err(|e| format!("failed to save profiles.json: {e}"))
+    }
+
+    fn persist_profile_shortcuts(&mut self) -> Result<(), String> {
+        let change = self.profiles.shortcut_change();
+        self.persist_profile_changes(&[change])
+    }
+
     fn move_profile_selection(&mut self, delta: isize) {
         let len = self.profiles.profiles.len() as isize;
         if len == 0 {
@@ -31,8 +49,8 @@ impl App {
         {
             return;
         }
-        if let Err(e) = self.profiles.save() {
-            self.status_msg = Some(format!("failed to save profiles.json: {e}"));
+        if let Err(e) = self.persist_profile_shortcuts() {
+            self.status_msg = Some(e);
             return;
         }
         let assigned = self
@@ -76,8 +94,8 @@ impl App {
             }
             crate::profile::ShortcutToggle::Invalid => return,
         };
-        if let Err(e) = self.profiles.save() {
-            self.status_msg = Some(format!("failed to save profiles.json: {e}"));
+        if let Err(e) = self.persist_profile_shortcuts() {
+            self.status_msg = Some(e);
             return;
         }
         self.status_msg = Some(status);
@@ -308,8 +326,9 @@ impl App {
         }
         self.cancel_refresh_scan();
         let removed = self.profiles.profiles.remove(idx);
-        if let Err(e) = self.profiles.save() {
-            self.status_msg = Some(format!("failed to save profiles.json: {e}"));
+        let change = crate::profile::ProfileChange::Remove(removed.id.clone());
+        if let Err(e) = self.persist_profile_changes(&[change]) {
+            self.status_msg = Some(e);
         }
         self.sessions.retain(|s| s.profile_id != removed.id);
         self.filter.profile_ids.remove(&removed.id);
@@ -342,8 +361,13 @@ impl App {
             KeyCode::Char(':') => self.open_quick_command(),
             // No session selection on this screen; shows a status message explaining why.
             KeyCode::Char('!') => self.open_quick_terminal(),
-            // →: Switches to the session search view (simple transition, independent of selection).
-            KeyCode::Right | KeyCode::Char('l') => self.switch_screen(Screen::Session),
+            // →: Switches to the Workspaces screen (simple transition, independent of selection).
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.enter_workspace_screen(crate::ui::workspace::WorkspacePane::List)
+            }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_workspace_palette();
+            }
             KeyCode::Up | KeyCode::Char('k') => self.move_profile_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_profile_selection(1),
             KeyCode::Home | KeyCode::Char('g') => self.profile_selected = 0,

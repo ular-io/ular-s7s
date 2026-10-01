@@ -27,6 +27,7 @@ const HELP_GLOBAL: &[(&str, &str)] = &[
     ("q / ctrl+c", "Quit from table mode (press twice)"),
     (":", "Quick command palette"),
     ("!", "Terminal command in session folder"),
+    ("ctrl+w", "Open / close a workspace (palette)"),
     ("ctrl+u", "Update sessions and usage"),
     ("1..5", "Filter by numbered profile"),
     ("0", "Clear profile filter"),
@@ -82,7 +83,21 @@ const HELP_PROFILE: &[(&str, &str)] = &[
     ("ctrl+d", "Delete profile"),
     ("g/home", "Go to top"),
     ("G/end", "Go to bottom"),
-    ("→/l", "Return to session list"),
+    ("→/l", "Go to workspaces"),
+];
+
+const HELP_WORKSPACE: &[(&str, &str)] = &[
+    ("←/→", "Move between list, detail, and sessions"),
+    ("↑/↓", "List: open workspace · Detail: move row"),
+    ("g/home G/end", "First / last row"),
+    ("+", "Add workspace (name edit starts)"),
+    (
+        "enter",
+        "List: rename · Detail: edit row · Sessions: resume",
+    ),
+    ("space", "Toggle folder (detail)"),
+    ("ctrl+d/del", "Delete workspace (list/detail)"),
+    ("/", "Keyword search in the workspace's sessions"),
 ];
 
 // ---- Input ----
@@ -154,6 +169,7 @@ pub(crate) fn draw_help(f: &mut Frame, app: &App) {
     let col2 = help_lines(
         &[
             ("SESSION DETAIL", HELP_DETAIL),
+            ("WORKSPACES", HELP_WORKSPACE),
             ("PROFILE LIST", HELP_PROFILE),
         ],
         th,

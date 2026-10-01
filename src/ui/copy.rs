@@ -45,7 +45,8 @@ impl App {
     /// there is nothing to copy (no session/turn available).
     fn build_copy(&self) -> Option<(String, String)> {
         match self.screen {
-            Screen::Session => {
+            // The Workspaces screen's session pane pins `focus` to the table.
+            Screen::Session | Screen::Workspace => {
                 let s = self.current()?;
                 match self.focus {
                     Focus::Table => {

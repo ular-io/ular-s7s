@@ -148,9 +148,9 @@ fn colon_opens_quick_command() {
 
     // Screen transitions are driven by ←/→ keys; Esc does not change the active screen.
     app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
-    assert_eq!(app.screen, Screen::Profile);
-    app.on_key_profile_table(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.screen, Screen::Profile);
-    app.on_key_profile_table(key(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Workspace);
+    app.on_key_workspace(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.screen, Screen::Workspace);
+    app.on_key_workspace(key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Session);
 }

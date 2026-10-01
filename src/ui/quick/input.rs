@@ -2,7 +2,9 @@
 //! terminal window, mode switching, list navigation, terminal history recall,
 //! and dispatching a selected command to the same handler its hotkey invokes.
 
-use super::registry::{build_items, CommandId};
+use super::registry::{
+    build_items, build_workspace_items, CommandId, QuickAction, WORKSPACE_QUERY,
+};
 use super::state::{build_term_items, save_history, save_terminal_history, QuickMode, QuickState};
 use super::VIEWPORT;
 use crate::ui::{App, Screen, TerminalKind, TerminalRequest, UiMode};
@@ -17,6 +19,17 @@ impl App {
         self.quick_recompute();
         self.mode = UiMode::QuickCommand;
         self.status_msg = None;
+    }
+
+    /// `ctrl+w`: Opens the palette with the `open workspace` query typed, so the
+    /// workspace rows (`Close Workspace`, `Open Workspace <name>`) lead the list.
+    /// The query stays editable, e.g. to narrow by a workspace name.
+    pub(crate) fn open_workspace_palette(&mut self) {
+        self.open_quick_command();
+        if let Some(state) = self.quick.as_mut() {
+            state.input = crate::ui::TextInput::new(WORKSPACE_QUERY.to_string());
+        }
+        self.quick_recompute();
     }
 
     /// `!`: Opens the Quick Command window in terminal mode targeting the selected
@@ -37,11 +50,7 @@ impl App {
     /// list) or the detail target's cwd (Detail). None if no session is selected, the
     /// session has no folder, or the folder no longer exists on disk.
     fn terminal_target(&self) -> Option<std::path::PathBuf> {
-        let idx = match self.screen {
-            Screen::Session => self.filtered.get(self.selected).copied(),
-            Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
-            Screen::Profile => None,
-        }?;
+        let idx = self.focused_session_index()?;
         let cwd = &self.sessions.get(idx)?.cwd;
         (!cwd.as_os_str().is_empty() && cwd.is_dir()).then(|| cwd.clone())
     }
@@ -52,11 +61,7 @@ impl App {
     /// changed value would only make the list wrong
     /// (see [`crate::ui::overlays::change_folder`]).
     fn change_folder_candidate(&self) -> Option<usize> {
-        let idx = match self.screen {
-            Screen::Session => self.filtered.get(self.selected).copied(),
-            Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
-            Screen::Profile => None,
-        }?;
+        let idx = self.focused_session_index()?;
         (self.sessions.get(idx)?.agent != crate::model::Agent::Antigravity).then_some(idx)
     }
 
@@ -90,7 +95,16 @@ impl App {
             return;
         };
         let query = state.input.value.clone();
-        let items = build_items(&query, &self.quick_history, |id| self.quick_enabled(id));
+        let names: Vec<&str> = self
+            .workspaces
+            .workspaces
+            .iter()
+            .map(|w| w.name.as_str())
+            .collect();
+        let mut items = build_workspace_items(&query, &names, self.workspaces.active_index());
+        items.extend(build_items(&query, &self.quick_history, |id| {
+            self.quick_enabled(id)
+        }));
         if let Some(state) = self.quick.as_mut() {
             state.items = items;
             state.cursor = 0;
@@ -116,17 +130,14 @@ impl App {
         use CommandId::*;
         match id {
             OpenSessionWindow => self.screen != Screen::Session,
+            OpenWorkspaceWindow => self.screen != Screen::Workspace,
             OpenProfileWindow => self.screen != Screen::Profile,
             // Contextual New Session needs a focused source session (Session/Detail only).
             ResumeSession
             | NewSessionWithContext
             | RenameSession
             | DeleteSession
-            | ToggleBookmark => match self.screen {
-                Screen::Session => self.filtered.get(self.selected).is_some(),
-                Screen::Detail => self.detail.is_some(),
-                Screen::Profile => false,
-            },
+            | ToggleBookmark => self.focused_session_index().is_some(),
             // Both move the session list cursor; Profile has no focused session,
             // which already excludes the jump and is why Back is gated explicitly.
             GoToContextSource => self.can_jump_to_context_source(),
@@ -144,9 +155,12 @@ impl App {
                 self.screen == Screen::Profile && !self.profiles.profiles.is_empty()
             }
             SearchSessions | FilterByAgent | FilterByFolder | FilterBookmarkedSessions => {
-                self.screen == Screen::Session
+                matches!(self.screen, Screen::Session | Screen::Workspace)
             }
-            ClearFilters => self.screen == Screen::Session && self.filter.is_active(),
+            ClearFilters => {
+                matches!(self.screen, Screen::Session | Screen::Workspace)
+                    && self.filter.is_active()
+            }
             ToggleToolLogs => self.screen == Screen::Detail,
             RefreshAll | EditConfig | ChangeTheme | OpenHelp | ExitApp => true,
         }
@@ -196,7 +210,7 @@ impl App {
                 self.mode = UiMode::Table;
             }
             KeyCode::Enter => {
-                let Some(item) = state.items.get(state.cursor).copied() else {
+                let Some(item) = state.items.get(state.cursor).cloned() else {
                     return;
                 };
                 if !item.enabled {
@@ -204,8 +218,16 @@ impl App {
                 }
                 self.quick = None;
                 self.mode = UiMode::Table;
-                self.quick_record_history(item.spec().key);
-                self.quick_execute(item.spec().id);
+                match item.action {
+                    // Workspace rows are generated per workspace, so they stay out
+                    // of the history keyed by registry commands.
+                    QuickAction::Workspace(idx) => self.open_workspace_from_palette(idx),
+                    QuickAction::Command(_) => {
+                        let spec = item.spec().expect("registry command");
+                        self.quick_record_history(spec.key);
+                        self.quick_execute(spec.id);
+                    }
+                }
             }
             KeyCode::Up => Self::quick_move_cursor(state, -1),
             KeyCode::Down => Self::quick_move_cursor(state, 1),
@@ -387,13 +409,12 @@ impl App {
     fn quick_execute(&mut self, id: CommandId) {
         use CommandId::*;
         // Session index mapping back to `sessions` list from search or details views.
-        let session_idx = match self.screen {
-            Screen::Session => self.filtered.get(self.selected).copied(),
-            Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
-            Screen::Profile => None,
-        };
+        let session_idx = self.focused_session_index();
         match id {
             OpenSessionWindow => self.switch_screen(Screen::Session),
+            OpenWorkspaceWindow => {
+                self.enter_workspace_screen(crate::ui::workspace::WorkspacePane::List)
+            }
             OpenProfileWindow => self.switch_screen(Screen::Profile),
             ResumeSession => {
                 if let Some(idx) = session_idx {

@@ -180,7 +180,7 @@ impl App {
             .unwrap_or((0, None));
         // Session view opens with the OK button focused for a quick start; other screens
         // (Detail) keep the Profile dropdown focused.
-        let focus_ok = self.screen == Screen::Session;
+        let focus_ok = matches!(self.screen, Screen::Session | Screen::Workspace);
         self.open_new_session_modal(profile_idx, dir, focus_ok, context);
     }
 

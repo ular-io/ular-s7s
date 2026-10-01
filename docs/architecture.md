@@ -44,7 +44,8 @@ ProfileStore
 - `filter.rs` applies keyword, agent, folder, and profile filters. The keyword
   index includes user text, title, folder, last assistant text, and sufficiently
   long session-ID tokens.
-- `ui::App::rebuild_filtered` applies the bookmark filter and stably groups
+- `ui::App::rebuild_filtered` applies the bookmark filter, then the open
+  workspace's scope (`workspaces::Workspace::matches`), and stably groups
   bookmarked indices first. Each group preserves the scan's activity order;
   the parsed session vector and CLI projections are not reordered.
 
@@ -100,6 +101,7 @@ discrete request fields drained by `runtime`.
 | --- | --- |
 | Shared frame, header, status, shared render helpers | `ui/render.rs` |
 | Session list/search/preview | `ui/session/` |
+| Workspaces screen (list, Detail pane, scoped session table) | `ui/workspace/` |
 | Detail screen | `ui/detail/` |
 | New Session dialog | `ui/new_session/` |
 | Profile screen/forms | `ui/profile/` |
@@ -192,6 +194,7 @@ without a project.
 | `~/.config/s7s/{quick,terminal}_history.json` | app | JSON |
 | `~/.config/s7s/session_workspaces.json` | app | JSON; cwd captured for s7s-created sessions whose agent store omits it |
 | `~/.config/s7s/bookmarks.json` | app | versioned JSON; bookmarks keyed by agent/profile/session identity |
+| `~/.config/s7s/workspaces.json` | app | versioned JSON; user-defined session scopes and the open one (unrelated to `session_workspaces.json`) |
 | `~/.config/s7s/projects/` | app/user | directories |
 | `~/.config/s7s/scratch/` | app | shared working directory, emptied on every launch |
 | `<OS cache>/s7s/index.bin` | app | versioned bincode, mode `0600` |
@@ -200,6 +203,12 @@ without a project.
 Rule: user-edited configuration is TOML; app-owned state is JSON; the session
 index is a disposable cache.
 
+Several s7s instances may run at once. `profiles.json` and `workspaces.json`
+are saved per change: lock (`store_lock::with_store_lock`), re-read, apply the
+change by id, atomic replace. `bookmarks.json` re-reads before each toggle.
+None is watched; an instance reloads all three only at startup and on `ctrl+u`
+(`ui/reload.rs`). Theme, histories, and `models.json` are not reloaded.
+
 ## Cross-cutting change map
 
 | Change | Primary source | Required contract |
@@ -207,6 +216,7 @@ index is a disposable cache.
 | Scan, list, filter | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | `session-context.md` when turn selection changes |
 | Rename/title | `rename.rs`, `title.rs`, parser title paths | `session-title-compat.md` |
 | Session bookmarks | `bookmarks.rs`, `ui/bookmarks.rs`, `filter.rs` | `bookmarks.md` |
+| Workspaces | `workspaces.rs`, `ui/workspace/*`, `ui/quick/registry.rs` | `workspaces.md` |
 | Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli.rs`) | `session-context.md` §Delete |
 | Work handoff | `session_handoff.rs`, `config.rs` (`handoff_instruction`) | `session-context.md` §Handoff |
 | Detailed context/CLI | `session_context/*`, `session_cli.rs` | `session-context.md` |

@@ -16,6 +16,7 @@ use ratatui::{
     widgets::{List, ListItem, Padding, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// `:`/`!` Quick Command window modal (command palette / terminal command mode).
 /// Width is around 120 cells (downscaled on smaller terminals),
@@ -166,7 +167,6 @@ pub(crate) fn draw_quick_command(f: &mut Frame, app: &App) {
             .skip(state.scroll)
             .take(view)
             .map(|(i, item)| {
-                let spec = item.spec();
                 let selected = i == state.cursor;
                 let (label_style, sc_style) = match (selected, item.enabled) {
                     (true, true) => {
@@ -181,14 +181,15 @@ pub(crate) fn draw_quick_command(f: &mut Frame, app: &App) {
                     (false, true) => (Style::default().add_modifier(Modifier::BOLD), th.soft_dim()),
                     (false, false) => (th.soft_dim(), th.soft_dim()),
                 };
-                let label = format!(" {}", spec.label);
+                let label = format!(" {}", item.label);
                 // Keyboard shortcuts are right-aligned (with 1 padding cell within the highlighted area).
                 // Residual center width is padded via label_style to color the highlighted row evenly.
-                let shortcut = spec
-                    .shortcut
+                let shortcut = item
+                    .shortcut()
                     .map(|sc| format!("({sc}) "))
                     .unwrap_or_default();
-                let pad = w.saturating_sub(label.len() + shortcut.len());
+                let label = truncate_w(&label, w.saturating_sub(shortcut.len()));
+                let pad = w.saturating_sub(label.width() + shortcut.len());
                 ListItem::new(Line::from(vec![
                     Span::styled(label, label_style),
                     Span::styled(" ".repeat(pad), label_style),
@@ -210,14 +211,7 @@ pub(crate) fn draw_quick_command(f: &mut Frame, app: &App) {
         state
             .items
             .get(state.cursor)
-            .map(|item| {
-                if item.enabled {
-                    item.spec().description.unwrap_or("")
-                } else {
-                    "Not available in this window"
-                }
-            })
-            .map(str::to_string)
+            .map(|item| item.description().to_string())
     };
     if let Some(desc) = desc.filter(|d| !d.is_empty()) {
         f.render_widget(

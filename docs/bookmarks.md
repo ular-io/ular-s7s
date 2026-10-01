@@ -25,7 +25,8 @@
   apply the same priority. A toggle immediately reorders the list while keeping
   the cursor on the same session. Its preview scroll/expansion is preserved
   unless removing a bookmark excludes the session from the active filter.
-- **Filter Bookmarked Sessions** is a palette-only toggle on Session. It combines
+- **Filter Bookmarked Sessions** is a palette-only toggle on Session (and the
+  Workspaces screen, whose session table it filters too). It combines
   with keyword, agent, folder, and profile filters using AND, preserves activity
   ordering within the bookmarked group, and adds `bookmarked` to the table's
   filter description. `0`, the ordinary clear-filter action, and list-focus
@@ -55,7 +56,8 @@
   only after persistence succeeds. A failed write leaves the marker unchanged.
 - Each toggle re-reads completed changes from other app instances. Simultaneous
   writes are not locked; the last atomic write wins. The active app does not poll
-  the bookmark file for external changes.
+  the bookmark file for external changes; `ctrl+u` reloads it
+  (`App::reload_shared_stores`), keeping the cursor on the same session.
 - Records for unavailable sessions are retained, since a missing session may
   belong to a temporarily unscanned profile. They never create rows in the list.
 - A successful TUI or `s7s session delete --yes` deletion removes the matching

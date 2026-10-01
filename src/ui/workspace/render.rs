@@ -1,0 +1,362 @@
+//! Workspaces screen rendering: the workspace list, the Detail pane (fields,
+//! folder checklist, and a footer resolving the cursor row), the reused session
+//! table, and the deletion confirmation modal.
+
+use super::state::{WorkspaceField, WorkspacePane, DETAIL_FIELDS};
+use crate::theme::Theme;
+use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
+use crate::ui::components::scrollbar::draw_vscrollbar;
+use crate::ui::components::text::{pad_w, truncate_w};
+use crate::ui::render::{centered_fixed_rect, display_path, input_view};
+use crate::ui::{App, UiMode};
+use crate::workspaces::ALL_WORKSPACE_NAME;
+use ratatui::{
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Padding, Paragraph, Wrap},
+    Frame,
+};
+
+/// Pane widths including borders. The list and Detail panes are capped; the
+/// session table takes the rest and hides optional columns on its own.
+const LIST_MAX_W: u16 = 24;
+const DETAIL_MAX_W: u16 = 40;
+/// Session table width protected before the Detail pane may shrink.
+const SESSIONS_MIN_W: u16 = 40;
+const DETAIL_MIN_W: u16 = 24;
+/// Detail field label column (`" Includes "`).
+const LABEL_W: usize = 10;
+
+/// `(list, detail, sessions)` widths for a body `total` cells wide. A narrow
+/// terminal shrinks the Detail pane first, down to `DETAIL_MIN_W`; past that
+/// the session table gives up its optional columns.
+pub(crate) fn pane_widths(total: u16) -> (u16, u16, u16) {
+    let list = LIST_MAX_W.min(total);
+    let rest = total - list;
+    let detail = if rest >= DETAIL_MAX_W + SESSIONS_MIN_W {
+        DETAIL_MAX_W
+    } else {
+        rest.saturating_sub(SESSIONS_MIN_W)
+            .max(DETAIL_MIN_W)
+            .min(rest)
+    };
+    (list, detail, rest - detail)
+}
+
+pub(crate) fn draw_workspace_screen(f: &mut Frame, app: &App, area: Rect) {
+    let body = if app.mode == UiMode::Keyword {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(3)])
+            .split(area);
+        crate::ui::session::render::draw_search_prompt(f, app, rows[0]);
+        rows[1]
+    } else {
+        area
+    };
+    let (list_w, detail_w, _) = pane_widths(body.width);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(list_w),
+            Constraint::Length(detail_w),
+            Constraint::Min(0),
+        ])
+        .split(body);
+    let active = matches!(app.mode, UiMode::Table | UiMode::WorkspaceEdit);
+    let pane = app.workspace.pane;
+    draw_list(f, app, cols[0], active && pane == WorkspacePane::List);
+    draw_detail(f, app, cols[1], active && pane == WorkspacePane::Detail);
+    crate::ui::session::render::draw_table_with(
+        f,
+        app,
+        cols[2],
+        app.mode == UiMode::Table && pane == WorkspacePane::Sessions,
+        false,
+        (true, true),
+    );
+}
+
+/// Selected-row style shared by both panes, mirroring the session table.
+fn row_style(th: &Theme, selected: bool, focused: bool) -> Style {
+    match (selected, focused) {
+        (true, true) => Style::default()
+            .bg(th.selection_bg)
+            .fg(th.selection_fg)
+            .add_modifier(Modifier::BOLD),
+        (true, false) => Style::default().bg(th.selection_inactive_bg),
+        _ => Style::default(),
+    }
+}
+
+/// Keeps `cursor` inside a `view`-row window, returning the new offset.
+fn follow(scroll: usize, cursor: usize, view: usize) -> usize {
+    if view == 0 {
+        0
+    } else if cursor < scroll {
+        cursor
+    } else if cursor >= scroll + view {
+        cursor + 1 - view
+    } else {
+        scroll
+    }
+}
+
+fn draw_list(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let th = &app.theme;
+    let block = titled_block_nav(" Workspaces ", focused, true, true, th.accent);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width < 3 || inner.height == 0 {
+        return;
+    }
+    let names: Vec<&str> = std::iter::once(ALL_WORKSPACE_NAME)
+        .chain(app.workspaces.workspaces.iter().map(|w| w.name.as_str()))
+        .collect();
+    let cursor = app.workspaces.active_index().map_or(0, |i| i + 1);
+    let view = inner.height as usize;
+    let scroll = follow(app.workspace.list_scroll.get(), cursor, view);
+    app.workspace.list_scroll.set(scroll);
+
+    // One-cell margins on both sides; the selected highlight spans them.
+    let text_w = (inner.width as usize).saturating_sub(2);
+    let edit = app
+        .workspace
+        .edit
+        .as_ref()
+        .filter(|e| e.in_list && app.mode == UiMode::WorkspaceEdit);
+    let mut lines = Vec::new();
+    for (row, name) in names.iter().enumerate().skip(scroll).take(view) {
+        let style = row_style(th, row == cursor, focused);
+        let text = match edit.filter(|_| row == cursor) {
+            Some(edit) => {
+                let (visible, cursor_x) = input_view(&edit.input, text_w);
+                let y = inner.y + (row - scroll) as u16;
+                f.set_cursor_position((inner.x + 1 + cursor_x, y));
+                visible
+            }
+            None => truncate_w(name, text_w),
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {} ", pad_w(&text, text_w)),
+            style,
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    draw_vscrollbar(f, area, focused, scroll, names.len(), view, th);
+}
+
+fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let th = &app.theme;
+    let ws = app.workspaces.active_workspace();
+    let locked = ws.is_none();
+    let block = titled_block_nav(" Detail ", focused, true, true, th.accent);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width < LABEL_W as u16 + 2 || inner.height == 0 {
+        return;
+    }
+    let state = &app.workspace;
+    let w = inner.width as usize;
+    let value_w = w.saturating_sub(LABEL_W + 1);
+    let edit = state
+        .edit
+        .as_ref()
+        .filter(|e| !e.in_list && app.mode == UiMode::WorkspaceEdit);
+    // A locked ("All") pane is never focusable, so no cursor row is drawn there.
+    let cursor = (!locked).then_some(state.detail_cursor);
+    let label_style = th.soft_dim();
+    let value_style = if locked {
+        th.soft_dim()
+    } else {
+        Style::default()
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (row, field) in DETAIL_FIELDS.iter().enumerate() {
+        let (label, value) = match field {
+            WorkspaceField::Name => ("Name", ws.map_or(ALL_WORKSPACE_NAME, |w| &w.name)),
+            WorkspaceField::Includes => ("Includes", ws.map_or("", |w| &w.includes)),
+            WorkspaceField::Excludes => ("Excludes", ws.map_or("", |w| &w.excludes)),
+        };
+        let style = row_style(th, cursor == Some(row), focused);
+        let editing = edit.filter(|e| e.field == *field && cursor == Some(row));
+        let value_span = match editing {
+            Some(edit) => {
+                let (visible, cursor_x) = input_view(&edit.input, value_w);
+                f.set_cursor_position((inner.x + LABEL_W as u16 + cursor_x, inner.y + row as u16));
+                Span::styled(pad_w(&visible, value_w), style)
+            }
+            None if value.trim().is_empty() => {
+                Span::styled(pad_w("(none)", value_w), label_style.patch(style))
+            }
+            None => Span::styled(
+                pad_w(&truncate_w(value, value_w), value_w),
+                value_style.patch(style),
+            ),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                pad_w(&format!(" {label}"), LABEL_W),
+                label_style.patch(style),
+            ),
+            value_span,
+            Span::styled(" ", style),
+        ]));
+    }
+    lines.push(divider(w, th));
+    let selected = ws.map_or(0, |w| w.folders.len());
+    let scope = if selected == 0 {
+        "all folders".to_string()
+    } else {
+        format!("{selected} selected")
+    };
+    lines.push(Line::from(vec![
+        Span::styled(" Folders ", label_style.add_modifier(Modifier::BOLD)),
+        Span::styled(format!("· {scope}"), label_style),
+    ]));
+
+    // Folder viewport: the footer (divider + path) is dropped before the list
+    // would lose its last usable row.
+    let head = lines.len();
+    let total_h = inner.height as usize;
+    let (view, footer) = match total_h.saturating_sub(head) {
+        h if h > 2 => (h - 2, true),
+        h => (h, false),
+    };
+    let folder_cursor = cursor.and_then(|c| c.checked_sub(DETAIL_FIELDS.len()));
+    let scroll = follow(
+        state.folder_scroll.get(),
+        folder_cursor.unwrap_or(state.folder_scroll.get()),
+        view,
+    );
+    state.folder_scroll.set(scroll);
+    let label_w = w.saturating_sub(6);
+    for (i, folder) in state.folders.iter().enumerate().skip(scroll).take(view) {
+        let checked = ws.is_some_and(|w| w.has_folder(folder));
+        let mark = if checked { "[✓]" } else { "[ ]" };
+        let basename = folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| folder.to_string_lossy().into_owned());
+        let label = crate::scratch::folder_label(folder, &basename);
+        let style = row_style(th, folder_cursor == Some(i), focused);
+        let mark_style = if checked && !locked {
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+        } else {
+            th.soft_dim()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" ", style),
+            Span::styled(mark, mark_style.patch(style)),
+            Span::styled(" ", style),
+            Span::styled(
+                pad_w(&truncate_w(label, label_w), label_w),
+                value_style.patch(style),
+            ),
+            Span::styled(" ", style),
+        ]));
+    }
+    while lines.len() < head + view {
+        lines.push(Line::from(""));
+    }
+    if footer {
+        lines.push(divider(w, th));
+        let note = if locked {
+            "All sessions · cannot be edited".to_string()
+        } else if let Some(folder) = state.cursor_folder().filter(|_| folder_cursor.is_some()) {
+            display_path(folder)
+        } else {
+            match state.cursor_field() {
+                Some(WorkspaceField::Name) => "enter rename".to_string(),
+                Some(WorkspaceField::Includes) => "Sessions must contain every word".to_string(),
+                Some(WorkspaceField::Excludes) => "Sessions with any word are hidden".to_string(),
+                None => String::new(),
+            }
+        };
+        lines.push(Line::from(Span::styled(
+            truncate_w(&format!(" {note}"), w),
+            th.soft_dim(),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    if state.folders.len() > view && view > 0 {
+        let sb = Rect::new(
+            area.x,
+            inner.y + head as u16 - 1,
+            area.width,
+            view as u16 + 2,
+        );
+        draw_vscrollbar(f, sb, focused, scroll, state.folders.len(), view, th);
+    }
+}
+
+fn divider(w: usize, th: &Theme) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(w), Style::default().fg(th.dim)))
+}
+
+/// Workspace deletion confirmation. Sessions are untouched: a workspace is
+/// only a saved filter.
+pub(crate) fn draw_workspace_delete_confirm(f: &mut Frame, app: &App) {
+    let th = &app.theme;
+    let name = app
+        .pending_workspace_delete
+        .and_then(|idx| app.workspaces.workspaces.get(idx))
+        .map(|w| w.name.clone())
+        .unwrap_or_else(|| "?".to_string());
+    let area = centered_fixed_rect(70, 9, f.area());
+    let block = modal_block(" Delete Workspace ", th.error).padding(Padding::new(1, 1, 1, 0));
+    let inner = render_modal(f, area, block, th);
+    let inner_w = inner.width as usize;
+    let content = vec![
+        Line::from(Span::styled(
+            truncate_w(&name, inner_w),
+            Style::default().fg(th.error).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Only the workspace is removed. Its sessions are not deleted.",
+            th.soft_dim(),
+        )),
+    ];
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new(content).wrap(Wrap { trim: false }), rows[0]);
+    let (focused_style, unfocused) = button_styles(th);
+    let (cancel_style, delete_style) = if app.delete_ok_focused {
+        (unfocused, focused_style)
+    } else {
+        (focused_style, unfocused)
+    };
+    let buttons = Line::from(vec![
+        Span::styled("  Delete  ", delete_style),
+        Span::raw("     "),
+        Span::styled("  Cancel  ", cancel_style),
+    ]);
+    f.render_widget(
+        Paragraph::new(buttons).alignment(Alignment::Center),
+        rows[2],
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pane_widths;
+
+    #[test]
+    fn panes_keep_their_caps_and_shrink_detail_first() {
+        assert_eq!(pane_widths(200), (24, 40, 136));
+        assert_eq!(pane_widths(104), (24, 40, 40));
+        assert_eq!(pane_widths(100), (24, 36, 40));
+        // Detail stops at its minimum; the session table absorbs the rest.
+        assert_eq!(pane_widths(70), (24, 24, 22));
+        assert_eq!(pane_widths(30), (24, 6, 0));
+    }
+}

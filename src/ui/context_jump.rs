@@ -31,6 +31,8 @@ pub(crate) struct JumpOrigin {
     agent: Agent,
     id: String,
     filter: Filter,
+    /// Open workspace id at the origin; a jump may have to close it.
+    workspace: Option<String>,
 }
 
 impl App {
@@ -85,6 +87,7 @@ impl App {
             agent: origin.agent,
             id: origin.id.clone(),
             filter: self.filter.clone(),
+            workspace: self.workspaces.active.clone(),
         };
 
         self.context_jump_origins.push(entry);
@@ -111,6 +114,7 @@ impl App {
             else {
                 continue;
             };
+            self.restore_active_workspace(origin.workspace.as_deref());
             self.filter = origin.filter;
             self.keyword_cursor = self.filter.keyword.len();
             self.recompute();
@@ -135,6 +139,10 @@ impl App {
             self.filter = Filter::default();
             self.keyword_cursor = 0;
             self.recompute();
+        }
+        // An open workspace may still exclude the target; "All" never does.
+        if !self.filtered.contains(&idx) {
+            self.set_active_workspace(None);
         }
         let Some(pos) = self.filtered.iter().position(|&i| i == idx) else {
             return cleared;

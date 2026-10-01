@@ -3,6 +3,11 @@
 //! Even for the same agent type, different config folders denote separate profiles (supporting multiple subscriptions).
 //! The profile list is owned and saved by the app in `~/.config/s7s/profiles.json`.
 //! If the file is missing, the default 3 builtin profiles are seeded at each agent's default root.
+//!
+//! Several s7s instances may share the file. The TUI saves each edit as a
+//! [`ProfileChange`] applied by id onto a freshly read copy under a lock
+//! ([`ProfileStore::commit`]), so one instance never drops another's profiles;
+//! its in-memory list is replaced from disk only at startup and on `ctrl+u`.
 
 use crate::config::{config_base_dir, expand};
 use crate::model::Agent;
@@ -144,6 +149,22 @@ pub struct ProfileStore {
     pub profiles: Vec<Profile>,
 }
 
+/// One persisted profile edit, applied by id onto the current file contents.
+#[derive(Debug, Clone)]
+pub enum ProfileChange {
+    /// Replace the profile with this id, or append it when absent.
+    Upsert(Profile),
+    /// Remove a non-builtin profile.
+    Remove(String),
+    /// Header shortcut order as this instance sees it (`ordered`). Numbered
+    /// profiles this instance has never loaded (`known` lacks them, i.e. another
+    /// instance added them) keep a shortcut after `ordered` while slots remain.
+    Shortcuts {
+        ordered: Vec<String>,
+        known: Vec<String>,
+    },
+}
+
 impl ProfileStore {
     /// Loads profiles.json. If missing, seeds the default 3 builtin profiles and saves immediately.
     /// Missing builtin profiles (e.g. deleted via manual edits) are restored on reload.
@@ -157,13 +178,29 @@ impl ProfileStore {
         store
     }
 
+    /// Startup load: an unreadable file yields the builtins (previous behavior).
     fn load_from(path: &Path) -> Self {
-        let mut profiles = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|data| serde_json::from_str::<ProfilesFile>(&data).ok())
-            .map(|f| f.profiles)
-            .unwrap_or_default();
+        Self::load_checked(path).unwrap_or_else(|_| Self::normalized(Vec::new()))
+    }
 
+    /// Loads profiles.json, reporting a read or parse failure instead of
+    /// replacing it with the builtins. A missing file is the seeded default.
+    /// Used by `ctrl+u` reloads and by [`Self::commit`], which must not
+    /// overwrite a file it could not read.
+    pub fn load_checked(path: &Path) -> anyhow::Result<Self> {
+        let profiles = match std::fs::read_to_string(path) {
+            Ok(data) => {
+                serde_json::from_str::<ProfilesFile>(&data)
+                    .map_err(|e| anyhow::anyhow!("parse {}: {e}", path.display()))?
+                    .profiles
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Self::normalized(profiles))
+    }
+
+    fn normalized(mut profiles: Vec<Profile>) -> Self {
         // Expand if `~/` is present in the raw path (handles manual configuration edits).
         for p in &mut profiles {
             if let Some(s) = p.path.to_str() {
@@ -201,22 +238,69 @@ impl ProfileStore {
         self.save_to(&profiles_file_path())
     }
 
+    /// Atomic replace with a `0600` file from the start (it holds raw tokens),
+    /// so a concurrently reloading instance never reads a partial file.
     fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let file = ProfilesFile {
             version: 1,
             profiles: self.profiles.clone(),
         };
         let data = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
-        std::fs::write(path, data)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        crate::store_lock::replace_file(path, &data).map_err(std::io::Error::other)
+    }
+
+    fn apply(&mut self, change: &ProfileChange) {
+        match change {
+            ProfileChange::Upsert(profile) => {
+                match self.profiles.iter_mut().find(|p| p.id == profile.id) {
+                    Some(stored) => *stored = profile.clone(),
+                    None => self.profiles.push(profile.clone()),
+                }
+                normalize_table_order(&mut self.profiles);
+            }
+            ProfileChange::Remove(id) => self.profiles.retain(|p| p.builtin || &p.id != id),
+            ProfileChange::Shortcuts { ordered, known } => {
+                let mut ids: Vec<String> = ordered
+                    .iter()
+                    .filter(|id| self.find(id).is_some())
+                    .cloned()
+                    .collect();
+                let unseen: Vec<String> = self
+                    .numbered_profiles()
+                    .into_iter()
+                    .filter(|p| !known.contains(&p.id) && !ids.contains(&p.id))
+                    .map(|p| p.id.clone())
+                    .collect();
+                ids.extend(unseen);
+                ids.truncate(MAX_PROFILE_SHORTCUTS);
+                apply_shortcut_ids(&mut self.profiles, &ids);
+            }
         }
-        Ok(())
+        normalize_shortcuts(&mut self.profiles);
+    }
+
+    /// Re-reads `path` under the store lock, applies `changes`, and writes it
+    /// back. An unreadable file is left untouched (error).
+    pub fn commit(path: &Path, changes: &[ProfileChange]) -> anyhow::Result<()> {
+        crate::store_lock::with_store_lock(path, || {
+            let mut store = Self::load_checked(path)?;
+            for change in changes {
+                store.apply(change);
+            }
+            store.save_to(path).map_err(Into::into)
+        })
+    }
+
+    /// [`ProfileChange::Shortcuts`] describing this store's current order.
+    pub fn shortcut_change(&self) -> ProfileChange {
+        ProfileChange::Shortcuts {
+            ordered: self
+                .numbered_profiles()
+                .into_iter()
+                .map(|p| p.id.clone())
+                .collect(),
+            known: self.profiles.iter().map(|p| p.id.clone()).collect(),
+        }
     }
 
     /// Looks up a profile by ID.

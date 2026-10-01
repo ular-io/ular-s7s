@@ -83,6 +83,9 @@ impl App {
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
             }
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_workspace_palette();
+            }
             // Contextual New Session must match BEFORE ordinary Ctrl+N: terminals
             // with the enhanced keyboard protocol report the SHIFT modifier
             // (possibly with 'N'), legacy terminals send plain Ctrl+N instead.
@@ -110,12 +113,13 @@ impl App {
             KeyCode::Char('0') => self.clear_all_filters(),
             // ←/→ (h/l): Moves focus between the left table and the right preview column.
             // Pressing → again while preview is focused enters the session details screen.
-            // Pressing ← while the table (session list) is focused moves to the profile list screen.
+            // Pressing ← while the table (session list) is focused moves to the Workspaces
+            // screen, landing on its session pane (the column nearest this one).
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.focus == Focus::Preview {
                     self.focus = Focus::Table;
                 } else {
-                    self.switch_screen(Screen::Profile);
+                    self.enter_workspace_screen(crate::ui::workspace::WorkspacePane::Sessions);
                 }
             }
             KeyCode::Right | KeyCode::Char('l') => {
@@ -192,6 +196,19 @@ impl App {
 
     /// Handles key inputs in Keyword search mode.
     pub fn on_key_keyword(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        self.on_key_keyword_input(key);
+        // On the Workspaces screen a confirmed search hands focus to the session
+        // pane it filters; Esc returns to the pane the search was opened from.
+        if self.screen == Screen::Workspace
+            && self.mode == UiMode::Table
+            && matches!(key.code, KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab)
+        {
+            self.workspace.pane = crate::ui::workspace::WorkspacePane::Sessions;
+        }
+    }
+
+    fn on_key_keyword_input(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
         // Defensively clamp cursor within string bounds.
         self.keyword_cursor = self.keyword_cursor.min(self.filter.keyword.len());
