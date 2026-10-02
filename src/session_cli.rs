@@ -195,9 +195,10 @@ pub struct RenameArgs {
 #[derive(Args, Debug)]
 #[command(after_help = "\
 IRREVERSIBLE:
-  The transcript file is removed, not archived, and s7s keeps no copy. For
-  Antigravity the conversation metadata entry and the sqlite sidecars go too.
-  There is no undo.
+  The transcript files are removed, not archived, and s7s keeps no copy. For
+  Codex that is every rollout file of the thread (a rewind splits it) plus its
+  rows in the state and thread-history databases; for Antigravity the
+  conversation metadata entry and the sqlite sidecars go too. There is no undo.
 
 CONFIRMATION:
   Without --yes nothing is deleted: the target is printed and the command exits

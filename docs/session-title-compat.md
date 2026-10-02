@@ -111,7 +111,10 @@ in `title::resolve`.
 
 ### Read paths
 
-- session body: `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`
+- session body: `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`;
+  after a rewind (0.159+) the thread continues in
+  `rollout-<timestamp>-<sessionId>_<segmentId>.jsonl`, the file `threads.rollout_path`
+  points to (see [session-context.md](./session-context.md) §Codex)
   (an archived session's rollout moves to `~/.codex/archived_sessions/`, which s7s
   does not scan — archived threads drop out of the list without needing a filter)
 - title column: `threads.name` in `~/.codex/state_*.sqlite`

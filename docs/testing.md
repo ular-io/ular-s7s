@@ -119,7 +119,7 @@ not evidence. Use a disposable session rather than a real one.
    `agent-name` events appended, plus `name`/`nameSource` in
    `~/.claude/sessions/<id>.json`).
 4. `s7s session delete <id>` **without** `--yes` must remove nothing, print the
-   resolved target with its source path, and exit 1.
+   resolved target with every file it would delete, and exit 1.
 5. `s7s session delete <id> --yes` must remove the transcript; a following
    `session list` must no longer find it.
    For a bookmarked target, verify its identity is removed from
@@ -199,7 +199,7 @@ agent. Delete each one afterwards.
 - Re-derive the app-server contract after a codex upgrade: `codex app-server generate-json-schema --out <dir>`, then grep `ClientRequest` for the methods s7s sends (`thread/name/set` and `thread/delete` on 0.155.0)
 - `local_thread_catalog` in `~/.codex/sqlite/codex-*.db` is **not** an s7s target for either action — that database has no `threads` table, codex leaves a renamed row stale and marks a deleted one `missing_candidate` on its next scan
 - Verify any changes in the behavior of non-interactive `codex exec resume <id> "/rename ..."`
-- **Delete** must empty every store, not just the rollout file. After `s7s session delete <id> --yes`, confirm all four are clear: the rollout file, `threads` in `state_*.sqlite`, `thread_items` / `thread_turns` / `thread_realtime_items` / `thread_history_projection_state` in `thread_history_*.sqlite`, and the records for that id in `session_index.jsonl`
+- **Delete** must empty every store, not just the rollout file. After `s7s session delete <id> --yes`, confirm all four are clear: every rollout file of the thread (a rewound thread has an earlier file besides the `_<segment id>` one), `threads` in `state_*.sqlite`, `thread_items` / `thread_turns` / `thread_realtime_items` / `thread_history_projection_state` in `thread_history_*.sqlite`, and the records for that id in `session_index.jsonl`
 - Exercise the delete fallback as well: `ULAR_CODEX_BIN=/nonexistent s7s session delete <id> --yes` must still clear the same four
 
 ### Antigravity

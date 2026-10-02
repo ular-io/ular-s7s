@@ -272,11 +272,11 @@ s7s session rename <SESSION_ID> <TITLE> [--agent <AGENT>] [--profile <ID>]
 s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
 ```
 
-- Irreversible: the transcript file is removed, not archived, and s7s keeps no
-  copy.
-- Without `--yes` nothing is removed. The resolved target is printed with its
-  source path and the command exits 1, so a script cannot read the refusal as
-  success.
+- Irreversible: the transcript files are removed, not archived, and s7s keeps
+  no copy.
+- Without `--yes` nothing is removed. The resolved target is printed with every
+  transcript file it would delete (`session_delete::transcript_files`) and the
+  command exits 1, so a script cannot read the refusal as success.
 - Deletion runs through `session_delete::delete_session`, shared with the TUI
   delete action. Its `delete_session_artifacts` step obeys profile scoping:
   auxiliary agent stores are only touched under the owning profile's root,
@@ -300,8 +300,7 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
   there may turn a completed delete into an error.
 - **Codex rewind segments** are all removed: `session_delete::transcript_files`
   returns every rollout of the thread under the store root, the listed newest
-  segment plus the earlier files that still hold the thread's turns. The
-  dry-run output lists each file.
+  segment plus the earlier files that still hold the thread's turns.
 - **Antigravity** additionally drops `annotations/<id>.pbtxt`, the file s7s
   itself writes on rename, plus the `cache/conversation_metadata.json` entry and
   the sqlite sidecars.
