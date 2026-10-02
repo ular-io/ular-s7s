@@ -68,9 +68,9 @@ authoritative matrix; the essentials:
   is empty afterwards, not just the rollout file ([testing.md](./docs/testing.md) Codex section).
 - **Usage parsing**: `--usage-probe` cross-check against the real CLI screen (do not misread absolute times vs. countdowns).
 - **Model list**: `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs accept invalid model names — agy silently falls back — so s7s owns list accuracy).
-- **Rewind/backtrack parsing** (claude `parentUuid`, codex `thread_rolled_back`,
-  agy replayed user step indices): rewind in the real CLI and compare the
-  saved-file diff against the s7s preview. Agy truncates its DB but may retain
+- **Rewind/backtrack parsing** (claude `parentUuid`, codex rollout segments /
+  legacy `thread_rolled_back`, agy replayed user step indices): rewind in the
+  real CLI and compare the saved-file diff against the s7s preview. Agy truncates its DB but may retain
   the abandoned transcript suffix, which must be reduced before detail and
   assistant-search parsing.
 - **Context / list turn selection**: `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade.
@@ -86,13 +86,17 @@ authoritative matrix; the essentials:
   real-kitty `ctrl+shift+n`). Current gaps are tracked in
   [backlog.md](./docs/backlog.md); the detailed procedures live in
   [testing.md](./docs/testing.md).
-- **Codex rewrote its rollout event stream in 0.147** and one consequence is still
-  open: whether the `thread_rolled_back` marker survived the move to the
-  `item_completed` item stream. If it was renamed, rolled-back turns reappear in
-  both the list and the detail view. Verify with a real esc-esc rewind
-  ([testing.md](./docs/testing.md) rewind row) — as of 0.155.0 no rollout on disk
-  carries the marker, and the app-server protocol names the request
-  `thread/rollback`, so the stored form is still unconfirmed.
+- **Codex 0.159 stores a rewind as a new rollout segment**, not as a
+  `thread_rolled_back` marker: `rollout-<ts>-<thread id>_<segment id>.jsonl`,
+  whose `session_meta.history_base` names the ordinal the thread's history is
+  cut at (observed from the VS Code extension on 0.159.2 and 0.160.0; the
+  app-server request is now `thread/revert`). The earlier file keeps the
+  abandoned turns. `parser/codex/segments.rs` folds the files back into one
+  session; without it the thread is listed twice and `s7s session show <id>`
+  fails as ambiguous. Still unconfirmed: whether the terminal TUI's esc-esc
+  rewind writes the same form, and how `end_ordinal_exclusive` behaves across a
+  second rewind (no chained segment seen on disk yet). The legacy marker is
+  still decoded for older rollouts.
 - **Codex 0.153's migration into `thread_history_*.sqlite` has now run on a real
   store** (0.155.0: 506 of 532 threads at `history_mode = paginated`). It is a
   projection, not a replacement: each row keeps the rollout byte offset it was

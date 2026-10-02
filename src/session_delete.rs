@@ -11,6 +11,9 @@
 //! session's turns are also projected into `thread_history_*.sqlite`, and its
 //! title and first user message live in `threads` in `state_*.sqlite`. Deleting
 //! only the rollout file left the text of a deleted session readable in both.
+//! Since 0.159 a rewound thread is also split across several rollout files
+//! (`parser::codex::segments`); the listed session is the newest one, and the
+//! earlier files still hold the thread's turns, so all of them are removed.
 //!
 //! Deletion is irreversible: the session transcript is removed, not archived.
 
@@ -70,8 +73,12 @@ pub fn delete_session_artifacts(profiles: &ProfileStore, session: &Session) -> R
         }
     }
 
+    let transcripts = transcript_files(session);
     remove_file_best_effort(source_path)
         .with_context(|| format!("remove {}", source_path.display()))?;
+    for path in transcripts.iter().filter(|p| *p != source_path) {
+        let _ = remove_file_best_effort(path);
+    }
 
     // Best-effort auxiliary cleanup; skipped when the owning profile is gone
     // (never touch another profile's store).
@@ -105,6 +112,22 @@ pub fn delete_session_artifacts(profiles: &ProfileStore, session: &Session) -> R
     );
 
     Ok(())
+}
+
+/// Every transcript file the session is read from: the source itself, plus
+/// the earlier rollout segments of a rewound codex thread, oldest first.
+pub fn transcript_files(session: &Session) -> Vec<PathBuf> {
+    let Some(source) = session.source_path.as_ref() else {
+        return Vec::new();
+    };
+    let mut files = match session.agent {
+        Agent::Codex => crate::parser::codex::segments::thread_files(source, &session.id),
+        Agent::Claude | Agent::Antigravity => Vec::new(),
+    };
+    if !files.contains(source) {
+        files.push(source.clone());
+    }
+    files
 }
 
 /// Removes every stored trace of one codex thread outside its rollout file.
@@ -456,6 +479,29 @@ mod tests {
         assert!(!index.contains("thread-1"));
         assert!(index.contains("thread-2"));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A rewound thread lists its newest segment; the earlier rollout still
+    /// holds the thread's turns and has to go with it.
+    #[test]
+    fn codex_delete_removes_every_rollout_segment_of_the_thread() {
+        use crate::parser::codex::segments::tests::{temp_sessions, write_rewound_thread, THREAD};
+        let sessions_dir = temp_sessions("delete");
+        let root = sessions_dir.parent().unwrap().to_path_buf();
+        let (first, segment) = write_rewound_thread(&sessions_dir);
+        let other = sessions_dir.join(
+            "2026/10/02/rollout-2026-10-02T09-00-00-01a0aaaa-0000-7000-8000-000000000000.jsonl",
+        );
+        fs::write(&other, "{}\n").expect("write other");
+
+        let session = session(Agent::Codex, THREAD, &segment);
+        assert_eq!(transcript_files(&session), [first.clone(), segment.clone()]);
+        delete_session_artifacts(&store(Agent::Codex, &root), &session).expect("delete");
+
+        assert!(!segment.exists(), "listed segment must be gone");
+        assert!(!first.exists(), "earlier segment must be gone");
+        assert!(other.exists(), "another thread's rollout must survive");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -80,6 +80,22 @@ share `parser::{clean_turn, is_noise_turn}`.
 - The decoder accepts current `item_completed` user messages and compatible
   older `event_msg`/`response_item` forms without double-counting mirrored data.
 - Each consumer applies `thread_rolled_back` truncation in file order.
+- Both consumers read a rollout through `parser/codex/segments.rs::read_rollout`.
+  Since 0.159 a rewind starts a new file for the same thread,
+  `rollout-<ts>-<thread id>_<segment id>.jsonl`, whose leading `session_meta`
+  carries `history_base { thread_id, end_ordinal_exclusive, end_byte_offset }`.
+  The logical stream is the earlier file's records with `ordinal` below
+  `end_ordinal_exclusive` (inherited `session_meta` dropped, so the segment's
+  own meta sets id and cwd), then the segment. The earlier file is resolved by
+  name within the store root (newest file of that thread created before the
+  segment, recursively). A missing earlier file degrades to the segment alone.
+- The scanner (`Segments::scan`) lists only the newest file of a thread that
+  has a segment; earlier files are skipped. The listed session's cache
+  freshness, creation time and size cover the earlier files too.
+- Verified on two real 0.159.2/0.160.0 threads: the folded Q list matches the
+  app server's `thread/turns/list` for the rewound thread (10 == 10). Codex
+  groups a message sent while a turn is running into that turn; s7s counts it
+  as a separate question, independent of segments.
 - Image-only inputs without accepted text do not create user turns.
 - Assistant text is accepted from legacy `agent_message`, `response_item`
   assistant messages, and completed `AgentMessage` items. Some completed items
@@ -282,6 +298,10 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
   `session_index.jsonl`. The second pass is not conditional on the first: every
   statement is a no-op on rows the app server already removed, and no failure
   there may turn a completed delete into an error.
+- **Codex rewind segments** are all removed: `session_delete::transcript_files`
+  returns every rollout of the thread under the store root, the listed newest
+  segment plus the earlier files that still hold the thread's turns. The
+  dry-run output lists each file.
 - **Antigravity** additionally drops `annotations/<id>.pbtxt`, the file s7s
   itself writes on rename, plus the `cache/conversation_metadata.json` entry and
   the sqlite sidecars.

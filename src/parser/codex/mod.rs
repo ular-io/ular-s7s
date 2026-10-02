@@ -16,8 +16,12 @@
 //! the number of most recent turns discarded, then the replacement turn follows. Turns dropped
 //! by the rollback are removed from the preview. Verified against codex CLI 0.144.4 — the
 //! rollback happens in the same rollout file (no fork file is created).
+//!
+//! Codex 0.159 records a rewind as a new rollout segment instead; see [`segments`]. Every
+//! rollout is read through [`segments::read_rollout`], so a segment parses as its whole thread.
 
 pub(crate) mod events;
+pub(crate) mod segments;
 
 use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, session_updated_at_ms};
 use crate::model::{Agent, Session};
@@ -169,7 +173,7 @@ pub fn parse_file(
     source_mtime_ms: i64,
     meta_map: Option<&HashMap<String, TitleMeta>>,
 ) -> Option<Session> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = segments::read_rollout(path).ok()?;
 
     let mut id: Option<String> = None;
     let mut cwd: Option<String> = None;
@@ -327,7 +331,15 @@ pub fn parse_file(
 
 /// Extracts UUID from the filename if session_meta is missing.
 /// `rollout-2026-06-07T21-18-12-019ea204-eb92-7663-957f-16fcad90e789` -> last 5 dash-separated groups.
+/// A segment name's `_<segment id>` suffix is not part of the thread id.
 fn extract_uuid_from_name(path: &Path) -> String {
+    if let Some((id, _)) = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(segments::thread_id_from_name)
+    {
+        return id.to_string();
+    }
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())

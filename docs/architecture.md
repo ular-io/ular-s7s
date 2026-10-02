@@ -57,7 +57,7 @@ assistant and tool records.
 | Agent | List parser | Detailed parser | Active-path rule |
 | --- | --- | --- | --- |
 | Claude | `parser/claude/` | `session_context/claude.rs` | shared `events` decoder and `parentUuid` chain reduction |
-| Codex | `parser/codex/` | `session_context/codex.rs` | shared `events` decoder; consumers apply `thread_rolled_back` truncation |
+| Codex | `parser/codex/` | `session_context/codex.rs` | shared `events` decoder; `segments::read_rollout` folds rewind segments; consumers apply legacy `thread_rolled_back` truncation |
 | Antigravity | `parser/antigravity.rs` over SQLite | `session_context/antigravity.rs` over transcript JSONL | DB step bound and replayed user-step suffix reduction |
 
 All parsers use `parser::{clean_turn, is_noise_turn}`. Claude and Codex event
