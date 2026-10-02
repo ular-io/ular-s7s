@@ -130,7 +130,9 @@ impl App {
         use CommandId::*;
         match id {
             OpenSessionWindow => self.screen != Screen::Session,
-            OpenWorkspaceWindow => self.screen != Screen::Workspace,
+            OpenWorkspaceWindow => {
+                !(self.screen == Screen::Session && self.focus == crate::ui::Focus::Workspaces)
+            }
             OpenProfileWindow => self.screen != Screen::Profile,
             // Contextual New Session needs a focused source session (Session/Detail only).
             ResumeSession
@@ -412,9 +414,7 @@ impl App {
         let session_idx = self.focused_session_index();
         match id {
             OpenSessionWindow => self.switch_screen(Screen::Session),
-            OpenWorkspaceWindow => {
-                self.enter_workspace_screen(crate::ui::workspace::WorkspacePane::List)
-            }
+            OpenWorkspaceWindow => self.open_workspace_pane(),
             OpenProfileWindow => self.switch_screen(Screen::Profile),
             ResumeSession => {
                 if let Some(idx) = session_idx {

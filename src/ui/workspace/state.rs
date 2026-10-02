@@ -1,5 +1,6 @@
-//! Workspaces screen state: the focused pane, the Detail pane cursor, its
-//! stable folder rows and their search, and the in-place text edit. The
+//! Workspace state shared by the Session screen's workspace pane and the
+//! Workspaces screen: the `[NEW WORKSPACE]` row flag, the Detail pane cursor,
+//! its stable folder rows and their search, and the in-place text edit. The
 //! workspace list cursor is not stored here — it is `WorkspaceStore::active`,
 //! so the list row the user sits on is always the scope the session lists show.
 
@@ -7,14 +8,6 @@ use crate::ui::TextInput;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-/// Panes of the Workspaces screen, left to right. Moved between with ←/→.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspacePane {
-    List,
-    Detail,
-    Sessions,
-}
 
 /// Editable text attributes of a workspace (the Detail pane's first rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,21 +34,19 @@ pub struct WorkspaceEdit {
     /// Index into `WorkspaceStore::workspaces`.
     pub workspace: usize,
     pub field: WorkspaceField,
-    /// Name edit drawn in the list pane (after `+` or Enter on a list row)
-    /// rather than on the Detail pane's Name row.
-    pub in_list: bool,
     pub input: TextInput,
     /// Value before the edit, restored by Esc. Include/exclude edits apply
     /// live so the session list follows each keystroke.
     pub original: String,
-    /// Workspace added by `+` and not yet saved: Esc removes it again and
-    /// reopens `previous_active`.
+    /// Workspace added from `[NEW WORKSPACE]` and not yet saved: Esc removes
+    /// it again and returns to that row.
     pub created: bool,
-    pub previous_active: Option<String>,
 }
 
 pub struct WorkspaceScreenState {
-    pub pane: WorkspacePane,
+    /// The workspace pane cursor is on `[NEW WORKSPACE]`, below the stored
+    /// workspaces. "All" is open meanwhile, and the flag counts only while it is.
+    pub new_row: bool,
     /// Detail row: `0..DETAIL_FIELDS.len()` are fields, `SEARCH_ROW` is the
     /// folder search, and from `FIRST_FOLDER_ROW` on the rows index `visible`.
     pub detail_cursor: usize,
@@ -80,7 +71,7 @@ pub struct WorkspaceScreenState {
 impl Default for WorkspaceScreenState {
     fn default() -> Self {
         Self {
-            pane: WorkspacePane::List,
+            new_row: false,
             detail_cursor: 0,
             folders: Vec::new(),
             folder_counts: HashMap::new(),

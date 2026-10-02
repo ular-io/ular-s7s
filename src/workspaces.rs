@@ -1,6 +1,7 @@
 //! User-defined session workspaces: named, s7s-owned scopes over the session
-//! index (include words, exclude words, and a folder set). The Workspaces screen
-//! edits them, and the open workspace narrows every session list in the TUI.
+//! index (include words, exclude words, and a folder set). The Session screen's
+//! workspace pane opens, adds, and deletes them and the Workspaces screen edits
+//! one; the open workspace narrows every session list in the TUI.
 //!
 //! Not to be confused with `session_workspace` (cwd facts captured for
 //! s7s-created sessions) or the scratch workspace (`scratch.rs`): this module

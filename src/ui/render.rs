@@ -5,7 +5,7 @@ use super::components::modal::{
     backdrop_dimmed, button_styles, dim_backdrop, modal_block, render_modal,
 };
 use super::components::text::{pad_w, truncate_w, truncate_w_with_ellipsis};
-use super::{next_grapheme_boundary, App, Screen, TextInput, UiMode};
+use super::{next_grapheme_boundary, App, Focus, Screen, TextInput, UiMode};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -87,20 +87,23 @@ const SHORTCUTS_PROFILE: [&[(&str, &str)]; 2] = [
     ],
 ];
 
-/// Workspaces screen columns while the workspace list is focused. The Sessions
-/// pane reuses `SHORTCUTS_SESSION` because it takes the same keys.
+/// Session screen columns while its workspace pane is focused.
 const SHORTCUTS_WORKSPACE_LIST: [&[(&str, &str)]; 2] = [
     &[("/", "Search"), ("+", "Add Workspace")],
-    &[("enter", "Rename"), ("ctrl+d", "Delete Workspace")],
+    &[
+        ("enter", "Edit Workspace"),
+        ("ctrl+d", "Delete Workspace"),
+        ("esc", "Close List"),
+    ],
 ];
 
-/// Workspaces screen columns while the Detail pane is focused.
+/// Workspaces screen columns (only its Detail pane takes keys).
 const SHORTCUTS_WORKSPACE_DETAIL: [&[(&str, &str)]; 2] = [
-    &[("/", "Search"), ("+", "Add Workspace")],
+    &[("/", "Search")],
     &[
         ("enter", "Edit"),
         ("space", "Toggle Folder"),
-        ("ctrl+d", "Delete Workspace"),
+        ("esc", "Back"),
     ],
 ];
 
@@ -404,14 +407,11 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .clamp(12, 18);
     let agent_col_w = 4 + name_w as u16 + 39;
     let screen_cols: &[&[(&str, &str)]; 2] = match app.screen {
+        Screen::Session if app.focus == Focus::Workspaces => &SHORTCUTS_WORKSPACE_LIST,
         Screen::Session => &SHORTCUTS_SESSION,
         Screen::Profile => &SHORTCUTS_PROFILE,
         Screen::Detail => &SHORTCUTS_DETAIL,
-        Screen::Workspace => match app.workspace.pane {
-            super::workspace::WorkspacePane::List => &SHORTCUTS_WORKSPACE_LIST,
-            super::workspace::WorkspacePane::Detail => &SHORTCUTS_WORKSPACE_DETAIL,
-            super::workspace::WorkspacePane::Sessions => &SHORTCUTS_SESSION,
-        },
+        Screen::Workspace => &SHORTCUTS_WORKSPACE_DETAIL,
     };
     let left_cols: [&[(&str, &str)]; 3] = [screen_cols[0], screen_cols[1], SHORTCUTS_COMMON];
     // Keys are padded to each column's widest `<key>` so action descriptions start at
@@ -557,15 +557,46 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(logo_lines), logo_area);
 }
 
-/// Body: left session table and right preview panel.
-fn draw_body(f: &mut Frame, app: &App, area: Rect) {
+/// Narrowest Prompt panel kept beside the session table while the workspace
+/// pane is open; below it the Prompt is hidden and the table takes its width.
+const PROMPT_MIN_W: u16 = 40;
+
+/// Session screen body areas: `(workspace pane, table, prompt)`. The table and
+/// Prompt split 58/42 whatever is left of the workspace pane.
+pub(crate) fn body_layout(area: Rect, pane_open: bool) -> (Option<Rect>, Rect, Option<Rect>) {
+    let (pane, rest) = if pane_open {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(super::workspace::render::LIST_MAX_W),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        (Some(cols[0]), cols[1])
+    } else {
+        (None, area)
+    };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
+        .split(rest);
+    if pane_open && cols[1].width < PROMPT_MIN_W {
+        return (pane, rest, None);
+    }
+    (pane, cols[0], Some(cols[1]))
+}
 
-    super::session::render::draw_table(f, app, cols[0]);
-    super::session::render::draw_preview(f, app, cols[1]);
+/// Body: the workspace pane while it has focus, the session table, and the
+/// preview panel.
+fn draw_body(f: &mut Frame, app: &App, area: Rect) {
+    let (pane, table, prompt) = body_layout(area, app.focus == Focus::Workspaces);
+    if let Some(pane) = pane {
+        super::workspace::render::draw_workspace_pane(f, app, pane);
+    }
+    super::session::render::draw_table(f, app, table);
+    if let Some(prompt) = prompt {
+        super::session::render::draw_preview(f, app, prompt);
+    }
 }
 
 /// Formats path string, substituting home directory prefix with `~`.
@@ -867,7 +898,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         && !app.filter.is_active()
     {
         Line::from(Span::styled(
-            "←→ pane  ·  ↑↓ open workspace / move  ·  enter edit  ·  space toggle folder",
+            "↑↓ move  ·  enter edit  ·  space toggle folder  ·  esc back",
+            dim_style,
+        ))
+    } else if app.screen == Screen::Session
+        && app.focus == Focus::Workspaces
+        && app.mode == UiMode::Table
+        && !app.filter.is_active()
+    {
+        Line::from(Span::styled(
+            "↑↓ open workspace  ·  enter edit  ·  + new  ·  →/esc close  ·  ← profiles",
             dim_style,
         ))
     } else if app.filter.is_active() {
@@ -1235,6 +1275,28 @@ mod tests {
         let narrow =
             super::context_source_lines(&src, Some(&source_session), false, 20, &th, false);
         assert_eq!(heading_of(&narrow), "● Context Source");
+    }
+
+    #[test]
+    fn workspace_pane_shrinks_the_body_and_hides_a_narrow_prompt() {
+        use ratatui::layout::Rect;
+        let area = |w| Rect::new(0, 0, w, 20);
+        let (pane, table, prompt) = super::body_layout(area(140), true);
+        assert_eq!(pane.map(|p| p.width), Some(24));
+        assert_eq!(table.x, 24);
+        assert!(prompt.is_some_and(|p| p.width >= super::PROMPT_MIN_W));
+
+        // 76 cells left: a 42% Prompt would be under 40, so the table takes all.
+        let (pane, table, prompt) = super::body_layout(area(100), true);
+        assert_eq!(pane.map(|p| p.width), Some(24));
+        assert_eq!((table.x, table.width), (24, 76));
+        assert!(prompt.is_none());
+
+        // Without the pane the Prompt always shows.
+        let (pane, table, prompt) = super::body_layout(area(80), false);
+        assert!(pane.is_none());
+        assert_eq!(table.x, 0);
+        assert!(prompt.is_some());
     }
 
     /// The header is a fixed five rows and each hotkey column renders as one

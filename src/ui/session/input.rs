@@ -11,7 +11,7 @@
 //! private methods reachable from this descendant module without widening.
 
 use crate::ui::{
-    insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, App, Focus, Screen, UiMode,
+    insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, App, Focus, UiMode,
 };
 
 impl App {
@@ -35,6 +35,9 @@ impl App {
     /// Handles key inputs in the main table navigation view.
     pub fn on_key_table(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
+        if self.focus == Focus::Workspaces {
+            return self.on_key_workspace_pane(key);
+        }
         let is_quit_key = matches!(key.code, KeyCode::Char('q'))
             || (matches!(key.code, KeyCode::Char('c'))
                 && key.modifiers.contains(KeyModifiers::CONTROL));
@@ -113,13 +116,13 @@ impl App {
             KeyCode::Char('0') => self.clear_all_filters(),
             // ←/→ (h/l): Moves focus between the left table and the right preview column.
             // Pressing → again while preview is focused enters the session details screen.
-            // Pressing ← while the table (session list) is focused moves to the Workspaces
-            // screen, landing on its session pane (the column nearest this one).
+            // Pressing ← while the table (session list) is focused shows the workspace
+            // pane on its left, focused.
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.focus == Focus::Preview {
                     self.focus = Focus::Table;
                 } else {
-                    self.enter_workspace_screen(crate::ui::workspace::WorkspacePane::Sessions);
+                    self.open_workspace_pane();
                 }
             }
             KeyCode::Right | KeyCode::Char('l') => {
@@ -197,14 +200,12 @@ impl App {
     /// Handles key inputs in Keyword search mode.
     pub fn on_key_keyword(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
+        let origin = self.focus;
         self.on_key_keyword_input(key);
-        // On the Workspaces screen a confirmed search hands focus to the session
-        // pane it filters; Esc returns to the pane the search was opened from.
-        if self.screen == Screen::Workspace
-            && self.mode == UiMode::Table
-            && matches!(key.code, KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab)
-        {
-            self.workspace.pane = crate::ui::workspace::WorkspacePane::Sessions;
+        // Esc returns to the workspace pane the search was opened from; a
+        // confirmed search hands focus to the session list, closing the pane.
+        if key.code == KeyCode::Esc && origin == Focus::Workspaces {
+            self.focus = origin;
         }
     }
 

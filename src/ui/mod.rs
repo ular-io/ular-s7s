@@ -140,7 +140,8 @@ pub struct App {
     /// `None` disables saving (unit tests). A store that failed to load stays
     /// on disk untouched: every save re-reads it and refuses to overwrite it.
     pub(crate) workspaces_path: Option<PathBuf>,
-    /// Workspaces screen pane focus, Detail cursor, and in-place edit.
+    /// Workspace pane `[NEW WORKSPACE]` row, Workspaces screen Detail cursor,
+    /// and in-place edit.
     pub workspace: workspace::WorkspaceScreenState,
     /// Workspace index pending deletion (present when mode == WorkspaceDeleteConfirm).
     pub pending_workspace_delete: Option<usize>,
@@ -721,6 +722,11 @@ impl App {
         self.status_msg = None;
         if screen != Screen::Detail {
             self.detail = None;
+        }
+        // The workspace pane closes when its screen is left, so returning to
+        // the Session screen lands on the session list unless told otherwise.
+        if screen != Screen::Session && self.focus == Focus::Workspaces {
+            self.focus = Focus::Table;
         }
         if screen == Screen::Profile {
             self.profile_selected = self

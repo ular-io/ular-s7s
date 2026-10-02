@@ -194,12 +194,12 @@ fn table_layout(area_width: u16, folder_label_w: usize) -> TableLayout {
 /// Left session table. Title exhibits `sessions[filter: count]`.
 pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
     let table_focus = app.focus == Focus::Table && app.mode == UiMode::Table;
-    let table_dimmed = app.focus == Focus::Preview && app.mode == UiMode::Table;
+    let table_dimmed = app.focus != Focus::Table && app.mode == UiMode::Table;
     draw_table_with(f, app, area, table_focus, table_dimmed, (true, true));
 }
 
 /// Session table with the caller's focus state, shared by the Session screen
-/// and the Workspaces screen's Sessions pane. `dimmed` fades the table while a
+/// and the Workspaces screen's display-only copy. `dimmed` fades the table while a
 /// neighbouring panel owns focus; `nav` = (left, right) arrow hints.
 pub(crate) fn draw_table_with(
     f: &mut Frame,
