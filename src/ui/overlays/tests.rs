@@ -161,6 +161,57 @@ fn folder_modal_prioritizes_selected_folders_only_when_opened() {
 }
 
 #[test]
+fn folder_modal_lists_each_group_by_latest_activity() {
+    let mut app = app_with_dated_folders();
+    app.open_folder_modal();
+    assert_eq!(
+        app.folder_modal.as_ref().expect("folder modal").labels,
+        vec!["middle", "root", "leaf"]
+    );
+
+    app.on_key_folder_modal(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.filter.folders.insert("leaf".to_string());
+    app.filter.folders.insert("root".to_string());
+    app.open_folder_modal();
+    assert_eq!(
+        app.folder_modal.as_ref().expect("folder modal").labels,
+        vec!["root", "leaf", "middle"]
+    );
+}
+
+#[test]
+fn folder_modal_counts_what_each_folder_alone_would_list() {
+    let mut app = app_with_dated_folders();
+    // The folder filter itself is left out, so a selection never zeroes the rest.
+    app.filter.folders.insert("leaf".to_string());
+    app.open_folder_modal();
+    let counts = |app: &App, name: &str| app.folder_counts.get(name).copied().unwrap_or(0);
+    assert_eq!(
+        (
+            counts(&app, "leaf"),
+            counts(&app, "middle"),
+            counts(&app, "root")
+        ),
+        (1, 1, 1)
+    );
+
+    // Every other condition applies: the keyword keeps only the leaf session.
+    app.on_key_folder_modal(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.filter.keyword = "leaf".to_string();
+    app.open_folder_modal();
+    assert_eq!(
+        (
+            counts(&app, "leaf"),
+            counts(&app, "middle"),
+            counts(&app, "root")
+        ),
+        (1, 0, 0)
+    );
+    let labels = &app.folder_modal.as_ref().expect("folder modal").labels;
+    assert_eq!(labels.len(), 3, "folders with no match stay listed as (0)");
+}
+
+#[test]
 fn folder_modal_search_preserves_the_order_captured_at_open() {
     let mut app = app_with_profiles();
     app.filter.folders.insert("tmp".to_string());
@@ -310,14 +361,24 @@ fn modal_list_item_renders_checkmark_mark() {
     );
     let app = empty_app();
 
-    let selected_item = super::filters::modal_list_item(0, &m.labels[0], &m, 40, &app.theme);
-    let unselected_item = super::filters::modal_list_item(1, &m.labels[1], &m, 40, &app.theme);
+    let selected_item = super::filters::modal_list_item(0, &m.labels[0], None, &m, 40, &app.theme);
+    let unselected_item =
+        super::filters::modal_list_item(1, &m.labels[1], None, &m, 40, &app.theme);
 
     let selected_debug = format!("{selected_item:?}");
     let unselected_debug = format!("{unselected_item:?}");
 
     assert!(selected_debug.contains("[✓] Option A"));
     assert!(unselected_debug.contains("[ ] Option B"));
+
+    // Folder rows add the count as its own dim span at the right edge.
+    let counted = super::filters::modal_list_item(1, &m.labels[1], Some(3), &m, 20, &app.theme);
+    let counted_debug = format!("{counted:?}");
+    assert!(
+        counted_debug.contains("\"[ ] Option B    \""),
+        "{counted_debug}"
+    );
+    assert!(counted_debug.contains("\" (3)\""), "{counted_debug}");
 }
 
 // ---- Change Folder ----
@@ -380,6 +441,54 @@ fn change_folder_enqueues_the_effect_for_an_existing_folder() {
         }
         other => panic!("expected ChangeSessionFolder, got {other:?}"),
     }
+}
+
+#[test]
+fn change_folder_lists_folders_by_latest_activity_then_scratch() {
+    let mut app = app_with_dated_folders();
+    app.open_change_folder_at(0);
+    let state = app.change_folder.as_ref().expect("dialog");
+    assert_eq!(
+        state.folders,
+        vec![
+            PathBuf::from("/tmp/middle"),
+            PathBuf::from("/tmp/root"),
+            PathBuf::from("/tmp/leaf"),
+            crate::scratch::dir(),
+        ]
+    );
+}
+
+#[test]
+fn change_folder_rows_end_with_a_session_count() {
+    let mut app = app_with_dated_folders();
+    app.sessions[1].cwd = PathBuf::from("/tmp/leaf");
+    app.open_change_folder_at(0);
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("terminal");
+    terminal
+        .draw(|f| crate::ui::render::draw(f, &app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let rows: Vec<String> = (0..buf.area.height)
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    let leaf = rows
+        .iter()
+        .find(|r| r.contains("/tmp/leaf ") && r.contains(" ("))
+        .expect("leaf pick-list row (the input row also shows the path)");
+    assert!(leaf.contains(" (2)"), "{leaf}");
+    let scratch = crate::scratch::dir().to_string_lossy().into_owned();
+    let scratch_row = rows
+        .iter()
+        .find(|r| r.contains(&scratch))
+        .expect("scratch row");
+    assert!(scratch_row.contains(" (0)"), "{scratch_row}");
+    // Both counts end in the same column.
+    assert_eq!(
+        leaf.find("(2)").map(|x| x + 3),
+        scratch_row.find("(0)").map(|x| x + 3)
+    );
 }
 
 #[test]

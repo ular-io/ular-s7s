@@ -149,9 +149,14 @@ Additional rules:
 
 ### Dropdown rows
 
-- The profile and model lists carry a `soft_dim()` note beside each label. The
-  folder list does not: a note on every row doubles the ink without raising the
-  density of the value being scanned. Its labels stay bare basenames.
+- The profile and model lists carry a `soft_dim()` note beside each label.
+- Every folder list (folder dropdown, Change Folder pick list, folder filter,
+  Workspaces Detail) ends each row with its session count as ` (N)`, right
+  aligned and in `soft_dim()` (`text::count_note` + `text::fit_before_note`).
+  Both the brackets and the dim color are required: several folder rows are
+  already dim (unmatched rows, an unfocused pane), and a folder name can end in
+  a number (`release 2`). A narrow row truncates the label and never drops the
+  count. Folder labels themselves stay bare basenames.
 - The folder dropdown resolves the focused row instead, in a footer inside the
   popup: a `┠─┨` divider joined to the thick side borders, then the full path in
   `soft_dim()`. The footer is what makes basename rows distinguishable before
@@ -233,9 +238,9 @@ Additional rules:
 - Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
   values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
   `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
-  basenames. A selected mark is accent + bold, so selection does not rely on
-  the mark alone. A query with no match draws `No matching folders` in
-  `soft_dim()` in the list area.
+  basenames and a right-aligned ` (N)` session count. A selected mark is
+  accent + bold, so selection does not rely on the mark alone. A query with no
+  match draws `No matching folders` in `soft_dim()` in the list area.
 - The Search row is a text input, so the cursor row style is never applied to
   it: the hardware cursor marks it, and a whole-query selection paints only the
   query text with `selection_fg`/`selection_bg` (not the label or padding),

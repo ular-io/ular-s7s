@@ -401,6 +401,30 @@ fn reopening_a_workspace_lists_its_folders_first() {
 }
 
 #[test]
+fn selected_folders_come_first_each_group_by_latest_activity() {
+    let mut app = app_with_workspace();
+    for s in &mut app.sessions {
+        s.updated_at_ms = match s.id.as_str() {
+            "leaf" => 1,
+            "middle" => 3,
+            _ => 2,
+        };
+    }
+    // Selected oldest first, plus a stored folder with no session left.
+    app.workspaces.workspaces[0].folders = vec![
+        PathBuf::from("/tmp/gone"),
+        PathBuf::from("/tmp/leaf"),
+        PathBuf::from("/tmp/root"),
+    ];
+    on_workspace_screen(&mut app);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        visible_folder_names(&app),
+        vec!["/tmp/root", "/tmp/leaf", "/tmp/gone", "/tmp/middle"]
+    );
+}
+
+#[test]
 fn all_is_neither_editable_nor_deletable() {
     let mut app = app_with_workspace();
     on_workspace_screen(&mut app);
@@ -585,6 +609,29 @@ fn workspace_screen_draws_three_panes_with_checked_folders() {
         .find(|l| l.contains("Api") && l.contains("Name"))
         .expect("first list row beside the Name row");
     assert_eq!(row.chars().nth(23), Some('│'));
+}
+
+#[test]
+fn detail_folder_rows_end_with_a_session_count_even_when_narrow() {
+    let mut app = app_with_workspace();
+    app.sessions[1].cwd = PathBuf::from("/tmp/leaf");
+    // A stored folder with no session left still shows its (0).
+    app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/gone")];
+    on_workspace_screen(&mut app);
+    press(&mut app, KeyCode::Down);
+    for width in [140, 80] {
+        let text = rendered(&app, width, 24);
+        let leaf = text
+            .lines()
+            .find(|l| l.contains("[ ] leaf"))
+            .expect("leaf row");
+        assert!(leaf.contains("(2) │"), "{width}: {leaf}");
+        let gone = text
+            .lines()
+            .find(|l| l.contains("[✓] gone"))
+            .expect("gone row");
+        assert!(gone.contains("(0) │"), "{width}: {gone}");
+    }
 }
 
 #[test]

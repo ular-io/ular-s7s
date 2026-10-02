@@ -165,6 +165,21 @@ pub(crate) fn app_with_context_chain() -> App {
     )
 }
 
+/// `app_with_context_chain` with distinct activity times: middle is the newest,
+/// then root, then leaf, so latest-activity order differs from name order.
+pub(crate) fn app_with_dated_folders() -> App {
+    let mut app = app_with_context_chain();
+    for s in &mut app.sessions {
+        s.updated_at_ms = match s.id.as_str() {
+            "middle" => 3,
+            "root" => 2,
+            _ => 1,
+        };
+    }
+    app.rebuild_all_folders();
+    app
+}
+
 pub(crate) fn app_with_cwd(cwd: &str) -> App {
     App::new(
         Config::load(),

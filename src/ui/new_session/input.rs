@@ -59,14 +59,9 @@ impl App {
         let profile_idx = profile_idx.min(self.profiles.profiles.len() - 1);
         // The scratch workspace is the fixed first dropdown row, so it must not also
         // appear as an ordinary folder once sessions have been started there.
-        let mut folders: Vec<PathBuf> = self
-            .sessions
-            .iter()
-            .map(|s| s.cwd.clone())
-            .filter(|p| !p.as_os_str().is_empty() && !crate::scratch::is_scratch(p))
-            .collect();
-        folders.sort_unstable();
-        folders.dedup();
+        let mut folders = crate::ui::cwds_by_latest(&self.sessions);
+        folders.retain(|p| !crate::scratch::is_scratch(p));
+        let folder_counts = crate::ui::cwd_counts(&self.sessions);
 
         // Initial focus: OK button when requested (Session view), else Folder for profile
         // screens (empty path), otherwise the Profile dropdown.
@@ -93,6 +88,7 @@ impl App {
                 _ => TextInput::new(String::new()),
             },
             folders,
+            folder_counts,
             ordered: Vec::new(),
             match_count: 0,
             folder_cursor: None,

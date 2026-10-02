@@ -6,7 +6,6 @@
 use super::state::{WorkspaceEdit, WorkspaceField, WorkspacePane, FIRST_FOLDER_ROW};
 use crate::ui::{App, Focus, Screen, TextInput, UiMode};
 use crate::workspaces::{Workspace, WorkspaceChange, WorkspaceStore};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 impl App {
@@ -54,30 +53,26 @@ impl App {
     }
 
     /// Rebuilds the Detail pane folder rows for the open workspace: its selected
-    /// folders in selection order, then every other session folder by latest
-    /// activity. A cursor on a folder row stays on the same folder.
+    /// folders first, then every other session folder, each group by latest
+    /// activity. A selected folder with no session sorts last in its group. A
+    /// cursor on a folder row stays on the same folder.
     pub(crate) fn refresh_workspace_folders(&mut self) {
         let previous = self.workspace.cursor_folder().cloned();
-        let mut rows: Vec<PathBuf> = self
+        let selected: Vec<PathBuf> = self
             .workspaces
             .active_workspace()
             .map(|w| w.folders.clone())
             .unwrap_or_default();
-        let mut latest: HashMap<&std::path::Path, i64> = HashMap::new();
-        for s in &self.sessions {
-            if s.cwd.as_os_str().is_empty() {
-                continue;
-            }
-            let at = latest.entry(s.cwd.as_path()).or_insert(i64::MIN);
-            *at = (*at).max(s.updated_at_ms);
-        }
-        let mut others: Vec<(&std::path::Path, i64)> = latest
-            .into_iter()
-            .filter(|(path, _)| !rows.iter().any(|r| r == path))
-            .collect();
-        others.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-        rows.extend(others.into_iter().map(|(path, _)| path.to_path_buf()));
+        let (mut rows, others): (Vec<PathBuf>, Vec<PathBuf>) =
+            crate::ui::cwds_by_latest(&self.sessions)
+                .into_iter()
+                .partition(|path| selected.contains(path));
+        let mut gone: Vec<PathBuf> = selected.into_iter().filter(|f| !rows.contains(f)).collect();
+        gone.sort();
+        rows.extend(gone);
+        rows.extend(others);
         self.workspace.folders = rows;
+        self.workspace.folder_counts = crate::ui::cwd_counts(&self.sessions);
         self.workspace.rebuild_visible();
 
         if let Some(prev) = previous {

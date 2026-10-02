@@ -223,6 +223,22 @@ fn new_session_folder_list_excludes_the_scratch_workspace() {
 }
 
 #[test]
+fn new_session_folder_list_is_ordered_by_latest_activity() {
+    let mut app = app_with_profiles();
+    // Name order would put "/" first.
+    app.sessions[1].updated_at_ms = 1;
+    app.screen = Screen::Profile;
+
+    app.on_key_profile_table(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+
+    let state = app.new_session.as_ref().expect("new session dialog");
+    assert_eq!(
+        state.folders,
+        vec![PathBuf::from("/tmp"), PathBuf::from("/")]
+    );
+}
+
+#[test]
 fn new_session_space_selects_folder_and_keeps_dropdown_open() {
     let mut app = app_with_profiles();
     app.screen = Screen::Profile;
