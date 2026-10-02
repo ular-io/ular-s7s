@@ -112,9 +112,9 @@ drives the current decision. Avoid using bold for every value.
 - Session/Detail operations include `<ctrl+b> Bookmark`; `ctrl+o` remains on the
   conditional Context Source heading and in Help. The Back action is palette-only.
 - The common column carries `<ctrl+w> Open Workspace` (five rows, the ceiling).
-- The Workspaces screen picks its two columns by focused pane: List and Detail
-  have their own (`SHORTCUTS_WORKSPACE_LIST` / `_DETAIL`); the Sessions pane
-  shows `SHORTCUTS_SESSION` because it takes the same keys.
+- The Session screen shows `SHORTCUTS_WORKSPACE_LIST` instead of
+  `SHORTCUTS_SESSION` while its workspace pane has focus; the Workspaces screen
+  shows `SHORTCUTS_WORKSPACE_DETAIL`.
 
 ## Dialogs and overlays
 
@@ -215,26 +215,46 @@ Additional rules:
   thresholds and FOLDER bounds; `session_table_hides_optional_columns_on_narrow_terminals`
   checks the frame.
 
+## Workspace pane
+
+- The Session screen's workspace pane is drawn left of the session table only
+  while it has focus (`render::body_layout`). It is 24 cells wide including
+  borders (`workspace::render::LIST_MAX_W`); the table and Prompt split the rest
+  58/42 as usual. When that leaves the Prompt under `PROMPT_MIN_W` (40) cells,
+  the Prompt is hidden and the table takes its width: the pane exists to show
+  which sessions a workspace holds. The Prompt never has focus while the pane
+  is shown, so hiding it moves no focus.
+- The pane is a focused `titled_block_nav` with both arrows (`←` Profile,
+  `→` close). The session table fades as for a focused Prompt (`soft_dim()`
+  rows, inactive selection); the Prompt keeps its plain unfocused frame.
+- Rows: the fixed "All" first, the stored workspaces, then the fixed
+  `[NEW WORKSPACE]` last, all outside the stored list. The bracketed upper-case
+  label is what distinguishes the fixed option from workspace names, as with
+  `[SCRATCH]`. The cursor row is the open workspace (or `[NEW WORKSPACE]`,
+  showing "All").
+- While an overlay or the search prompt owns input the pane is drawn unfocused
+  and undimmed, like the other workspace panes.
+
 ## Workspaces screen
 
 - Three panes, left to right: `Workspaces` list, `Detail`, and the session
   table (`session::render::draw_table_with`, the Session screen's table with
-  the caller's focus state). Each uses `titled_block_nav`; only the focused
-  pane is thick.
-- The panes without focus follow the Prompt-focused Session rule
+  the caller's focus state). Each uses `titled_block_nav`. Only Detail takes
+  keys, so it is the only thick pane and draws no arrows (`←`/`→` do not leave
+  it); the list (without `[NEW WORKSPACE]`) and the table are display-only.
+- The list and table follow the Prompt-focused Session rule
   (`workspace::render::row_style`): every row and the table header use
   `soft_dim()`, and a selected row keeps `selection_inactive_bg`, `soft_dim()`,
-  and a weak `REVERSED` signal. A checked folder mark drops its accent but stays
-  bold. While an overlay or the search prompt owns input no pane is focused or
-  dimmed, so a selected row reads `selection_inactive_bg` + `selection_fg` +
-  bold, as the unfocused session table does.
+  and a weak `REVERSED` signal. While an overlay or the search prompt owns
+  input no pane is focused or dimmed, so a selected row reads
+  `selection_inactive_bg` + `selection_fg` + bold, as the unfocused session
+  table does.
 - Widths include borders: list 24, Detail 40, sessions take the rest
   (`workspace::render::pane_widths`). Below 104 columns the Detail pane shrinks
   first, to 24, keeping 40 for the table; past that the table hides its
-  optional columns under the Session table rules below.
-- The list's first row is the fixed "All" scope, outside the stored list. The
-  list cursor is the open workspace, so its selected row stays highlighted
-  (the dimmed selection above) when another pane has focus.
+  optional columns under the Session table rules above.
+- The list's first row is the fixed "All" scope, outside the stored list. Its
+  selected row is the workspace being edited.
 - Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
   values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
   `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
@@ -253,10 +273,12 @@ Additional rules:
   `M of N folders · esc clear` match count, or while the query is selected
   `M/N · type replaces · → edit`. It is dropped before the folder list
   would lose its last row, as with the folder dropdown footer.
-- "All" keeps the Detail pane visible but locked: every value `soft_dim()`, no
-  cursor row, and the footer says `All sessions · cannot be edited`.
-- In-place edits draw the input inside the row (list name or Detail value) with
-  the hardware cursor; the status bar shows `enter save · esc cancel`.
+- The screen never shows "All" (Enter on it does nothing, and a scope change
+  to it returns to the pane). `draw_detail` still draws a locked pane for it —
+  every value `soft_dim()`, no cursor row, footer `All sessions · cannot be
+  edited` — rather than assuming that.
+- In-place edits draw the input inside the Detail row with the hardware cursor;
+  the status bar shows `enter save · esc cancel`.
 
 ## Width and root layout
 

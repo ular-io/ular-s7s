@@ -146,11 +146,11 @@ fn colon_opens_quick_command() {
     assert_eq!(app.mode, UiMode::Table);
     assert!(app.quick.is_none());
 
-    // Screen transitions are driven by ←/→ keys; Esc does not change the active screen.
+    // Screen transitions are driven by ←/→ keys; Esc in the workspace pane
+    // only closes the pane.
     app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
-    assert_eq!(app.screen, Screen::Workspace);
-    app.on_key_workspace(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.screen, Screen::Workspace);
-    app.on_key_workspace(key(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.focus, crate::ui::Focus::Workspaces);
+    app.on_key_table(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, crate::ui::Focus::Table);
 }

@@ -98,7 +98,6 @@ impl App {
 mod tests {
     use crate::profile::{ProfileChange, ProfileStore};
     use crate::ui::test_support::*;
-    use crate::ui::workspace::WorkspacePane;
     use crate::ui::{App, UiMode};
     use crate::workspaces::{Workspace, WorkspaceChange, WorkspaceStore};
     use std::path::PathBuf;
@@ -110,6 +109,14 @@ mod tests {
         app.workspaces_path = Some(root.path.with_file_name("workspaces.json"));
         app.profiles_path = Some(root.path.with_file_name("profiles.json"));
         app
+    }
+
+    /// Workspace pane `+` then Enter: a new workspace with its name in edit.
+    fn start_new_workspace(app: &mut App) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        app.open_workspace_pane();
+        app.on_key_table(key(KeyCode::Char('+'), KeyModifiers::NONE));
+        app.on_key_table(key(KeyCode::Enter, KeyModifiers::NONE));
     }
 
     fn names(app: &App) -> Vec<String> {
@@ -159,11 +166,7 @@ mod tests {
 
         // This instance still lists none of them; adding and moving the cursor
         // must not drop "Theirs" from the file.
-        app.enter_workspace_screen(WorkspacePane::List);
-        app.on_key_workspace(key(
-            crossterm::event::KeyCode::Char('+'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        start_new_workspace(&mut app);
         app.on_key_workspace_edit(key(
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,
@@ -182,11 +185,7 @@ mod tests {
         let theirs = Workspace::new("theirs".into(), "New Workspace".into());
         WorkspaceStore::commit(&path, &[WorkspaceChange::Upsert(theirs)]).unwrap();
 
-        app.enter_workspace_screen(WorkspacePane::List);
-        app.on_key_workspace(key(
-            crossterm::event::KeyCode::Char('+'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        start_new_workspace(&mut app);
         app.on_key_workspace_edit(key(
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,

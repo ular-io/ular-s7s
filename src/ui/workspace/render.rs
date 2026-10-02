@@ -1,10 +1,10 @@
-//! Workspaces screen rendering: the workspace list, the Detail pane (fields,
-//! folder search and checklist, and a footer resolving the cursor row), the
-//! reused session table, and the deletion confirmation modal.
+//! Workspace rendering: the workspace list (the Session screen's workspace
+//! pane, and a display-only copy on the Workspaces screen), the Detail pane
+//! (fields, folder search and checklist, and a footer resolving the cursor
+//! row), the reused session table, and the deletion confirmation modal.
 
 use super::state::{
-    folder_display_label, WorkspaceField, WorkspacePane, DETAIL_FIELDS, FIRST_FOLDER_ROW,
-    SEARCH_ROW,
+    folder_display_label, WorkspaceField, DETAIL_FIELDS, FIRST_FOLDER_ROW, SEARCH_ROW,
 };
 use crate::theme::Theme;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
@@ -22,8 +22,11 @@ use ratatui::{
 };
 
 /// Pane widths including borders. The list and Detail panes are capped; the
-/// session table takes the rest and hides optional columns on its own.
-const LIST_MAX_W: u16 = 24;
+/// session table takes the rest and hides optional columns on its own. The
+/// Session screen's workspace pane uses the same list width.
+pub(crate) const LIST_MAX_W: u16 = 24;
+/// Fixed last row of the workspace pane, outside the stored list.
+pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
 const DETAIL_MAX_W: u16 = 40;
 /// Session table width protected before the Detail pane may shrink.
 const SESSIONS_MIN_W: u16 = 40;
@@ -67,25 +70,38 @@ pub(crate) fn draw_workspace_screen(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(0),
         ])
         .split(body);
+    // Only the Detail pane takes keys here. As on the Session and Detail
+    // screens, the other panes fade while it owns focus; an overlay or the
+    // search prompt leaves none focused or dimmed.
     let active = matches!(app.mode, UiMode::Table | UiMode::WorkspaceEdit);
-    let pane = app.workspace.pane;
-    // As on the Session and Detail screens, the panes that do not own focus fade
-    // while one does; an overlay or the search prompt leaves none focused or dimmed.
-    let state = |p: WorkspacePane| PaneFocus {
-        focused: active && pane == p,
-        dimmed: active && pane != p,
+    let display_only = PaneFocus {
+        focused: false,
+        dimmed: active,
     };
-    draw_list(f, app, cols[0], state(WorkspacePane::List));
-    draw_detail(f, app, cols[1], state(WorkspacePane::Detail));
-    let sessions = state(WorkspacePane::Sessions);
+    draw_list(f, app, cols[0], display_only, false);
+    let detail = PaneFocus {
+        focused: active,
+        dimmed: false,
+    };
+    draw_detail(f, app, cols[1], detail);
     crate::ui::session::render::draw_table_with(
         f,
         app,
         cols[2],
-        sessions.focused && app.mode == UiMode::Table,
-        sessions.dimmed,
-        (true, true),
+        false,
+        display_only.dimmed,
+        (false, false),
     );
+}
+
+/// The Session screen's workspace pane: the list with `[NEW WORKSPACE]` last,
+/// focused while it takes keys.
+pub(crate) fn draw_workspace_pane(f: &mut Frame, app: &App, area: Rect) {
+    let pane = PaneFocus {
+        focused: app.mode == UiMode::Table,
+        dimmed: false,
+    };
+    draw_list(f, app, area, pane, true);
 }
 
 #[derive(Clone, Copy)]
@@ -130,7 +146,10 @@ fn follow(scroll: usize, cursor: usize, view: usize) -> usize {
     }
 }
 
-fn draw_list(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
+/// "All" first, then the stored workspaces, then `[NEW WORKSPACE]` when
+/// `with_new_row` (the Session screen's pane; the Workspaces screen's copy
+/// only shows which workspace is being edited).
+fn draw_list(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus, with_new_row: bool) {
     let th = &app.theme;
     let focused = pane.focused;
     let block = titled_block_nav(" Workspaces ", focused, true, true, th.accent);
@@ -141,33 +160,24 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
     }
     let names: Vec<&str> = std::iter::once(ALL_WORKSPACE_NAME)
         .chain(app.workspaces.workspaces.iter().map(|w| w.name.as_str()))
+        .chain(with_new_row.then_some(NEW_WORKSPACE_LABEL))
         .collect();
-    let cursor = app.workspaces.active_index().map_or(0, |i| i + 1);
+    let cursor = if with_new_row {
+        app.workspace_pane_cursor()
+    } else {
+        app.workspaces.active_index().map_or(0, |i| i + 1)
+    };
     let view = inner.height as usize;
     let scroll = follow(app.workspace.list_scroll.get(), cursor, view);
     app.workspace.list_scroll.set(scroll);
 
     // One-cell margins on both sides; the selected highlight spans them.
     let text_w = (inner.width as usize).saturating_sub(2);
-    let edit = app
-        .workspace
-        .edit
-        .as_ref()
-        .filter(|e| e.in_list && app.mode == UiMode::WorkspaceEdit);
     let mut lines = Vec::new();
     for (row, name) in names.iter().enumerate().skip(scroll).take(view) {
         let style = row_style(th, row == cursor, pane);
-        let text = match edit.filter(|_| row == cursor) {
-            Some(edit) => {
-                let (visible, cursor_x) = input_view(&edit.input, text_w);
-                let y = inner.y + (row - scroll) as u16;
-                f.set_cursor_position((inner.x + 1 + cursor_x, y));
-                visible
-            }
-            None => truncate_w(name, text_w),
-        };
         lines.push(Line::from(Span::styled(
-            format!(" {} ", pad_w(&text, text_w)),
+            format!(" {} ", pad_w(&truncate_w(name, text_w), text_w)),
             style,
         )));
     }
@@ -180,7 +190,8 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
     let focused = pane.focused;
     let ws = app.workspaces.active_workspace();
     let locked = ws.is_none();
-    let block = titled_block_nav(" Detail ", focused, true, true, th.accent);
+    // ←/→ do not leave this pane (Esc does), so no arrows on its frame.
+    let block = titled_block_nav(" Detail ", focused, false, false, th.accent);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width < LABEL_W as u16 + 2 || inner.height == 0 {
@@ -192,7 +203,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
     let edit = state
         .edit
         .as_ref()
-        .filter(|e| !e.in_list && app.mode == UiMode::WorkspaceEdit);
+        .filter(|_| app.mode == UiMode::WorkspaceEdit);
     // A locked ("All") pane is never focusable, so no cursor row is drawn there.
     let cursor = (!locked).then_some(state.detail_cursor);
     let label_style = th.soft_dim();

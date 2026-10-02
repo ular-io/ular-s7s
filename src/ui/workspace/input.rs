@@ -1,28 +1,55 @@
-//! Workspaces screen key handling and workspace mutations: opening a scope,
-//! pane focus, the in-place name/include/exclude edit, the folder search,
-//! folder toggles, and creation/deletion. The Sessions pane delegates to the
-//! Session screen's table handler so its shortcuts stay identical.
+//! Workspace key handling and mutations: the Session screen's workspace pane
+//! (opening a scope, `[NEW WORKSPACE]`, deletion), the Workspaces screen's
+//! Detail pane (the in-place name/include/exclude edit, the folder search, and
+//! folder toggles), and moving between the two.
 
-use super::state::{WorkspaceEdit, WorkspaceField, WorkspacePane, FIRST_FOLDER_ROW};
+use super::state::{WorkspaceEdit, WorkspaceField, FIRST_FOLDER_ROW};
 use crate::ui::{App, Focus, Screen, TextInput, UiMode};
 use crate::workspaces::{Workspace, WorkspaceChange, WorkspaceStore};
 use std::path::PathBuf;
 
 impl App {
-    /// Shows the Workspaces screen with `pane` focused. The Detail pane is
-    /// skipped while "All" is open because it has nothing to edit.
-    pub(crate) fn enter_workspace_screen(&mut self, pane: WorkspacePane) {
-        self.switch_screen(Screen::Workspace);
-        self.focus = Focus::Table;
-        self.refresh_workspace_folders();
-        self.workspace.pane = self.reachable_pane(pane);
+    /// Shows the workspace pane on the Session screen, focused, with its
+    /// cursor on the open workspace.
+    pub(crate) fn open_workspace_pane(&mut self) {
+        if self.screen != Screen::Session {
+            self.switch_screen(Screen::Session);
+        }
+        self.focus = Focus::Workspaces;
+        self.workspace.new_row = false;
     }
 
-    fn reachable_pane(&self, pane: WorkspacePane) -> WorkspacePane {
-        if pane == WorkspacePane::Detail && self.workspaces.active_index().is_none() {
-            WorkspacePane::List
-        } else {
-            pane
+    /// Hides the workspace pane and hands focus to the session table.
+    fn close_workspace_pane(&mut self) {
+        self.focus = Focus::Table;
+        self.workspace.new_row = false;
+    }
+
+    /// Shows the Workspaces screen for the open workspace, with its Detail
+    /// pane at the top. "All" has nothing to edit and never gets here.
+    fn enter_workspace_screen(&mut self) {
+        self.switch_screen(Screen::Workspace);
+        self.workspace.detail_cursor = 0;
+        self.workspace.folder_scroll.set(0);
+        self.workspace.clear_folder_query();
+        self.refresh_workspace_folders();
+    }
+
+    /// Esc on the Workspaces screen: back to the Session screen with the
+    /// workspace pane focused on the same workspace.
+    fn leave_workspace_screen(&mut self) {
+        self.switch_screen(Screen::Session);
+        self.focus = Focus::Workspaces;
+        self.workspace.new_row = false;
+    }
+
+    /// Row of the workspace pane cursor: 0 = "All", then the stored
+    /// workspaces, then `[NEW WORKSPACE]`.
+    pub(crate) fn workspace_pane_cursor(&self) -> usize {
+        match self.workspaces.active_index() {
+            Some(i) => i + 1,
+            None if self.workspace.new_row => self.workspaces.workspaces.len() + 1,
+            None => 0,
         }
     }
 
@@ -105,7 +132,11 @@ impl App {
         self.refresh_workspace_folders();
         self.selected = 0;
         self.recompute();
-        self.workspace.pane = self.reachable_pane(self.workspace.pane);
+        // The Workspaces screen edits one workspace; once "All" is open (the
+        // edited one was cancelled or deleted elsewhere) there is nothing left.
+        if self.screen == Screen::Workspace && self.workspaces.active_index().is_none() {
+            self.leave_workspace_screen();
+        }
     }
 
     /// Restores a workspace by id (context-source Back). An id that no longer
@@ -127,22 +158,73 @@ impl App {
         });
     }
 
-    /// Handles keys on the Workspaces screen in table mode.
-    pub fn on_key_workspace(&mut self, key: crossterm::event::KeyEvent) {
+    /// Handles keys in the Session screen's workspace pane (`Focus::Workspaces`).
+    /// The cursor opens the row's workspace; Enter edits it on the Workspaces
+    /// screen; →/Esc close the pane and ← goes on to the Profile screen.
+    pub(crate) fn on_key_workspace_pane(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
-        let pane = self.workspace.pane;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let pane_key = matches!(
-            key.code,
-            KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
-        ) || key.code == KeyCode::Char('+');
-        if pane == WorkspacePane::Sessions && !pane_key {
-            // Same shortcuts as the Session screen's list; its focus model is
-            // pinned to the table so preview-only keys stay inert here.
-            self.focus = Focus::Table;
-            self.on_key_table(key);
+        let is_quit_key =
+            matches!(key.code, KeyCode::Char('q')) || (key.code == KeyCode::Char('c') && ctrl);
+        if is_quit_key {
+            self.arm_quit();
             return;
         }
+        self.quit_armed = false;
+        self.status_msg = None;
+        match key.code {
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char(':') => self.open_quick_command(),
+            KeyCode::Char('!') => self.open_quick_terminal(),
+            KeyCode::Char('/') => {
+                self.mode = UiMode::Keyword;
+                self.keyword_cursor = self.filter.keyword.len();
+            }
+            KeyCode::Char('w') if ctrl => self.open_workspace_palette(),
+            KeyCode::Char('u') if ctrl => {
+                self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
+            }
+            KeyCode::Char('+') => self.workspace_pane_move(isize::MAX),
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.close_workspace_pane();
+                self.switch_screen(Screen::Profile);
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Esc => self.close_workspace_pane(),
+            KeyCode::Up | KeyCode::Char('k') => self.workspace_pane_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.workspace_pane_move(1),
+            KeyCode::Home | KeyCode::Char('g') => self.workspace_pane_move(isize::MIN),
+            KeyCode::End | KeyCode::Char('G') => self.workspace_pane_move(isize::MAX),
+            KeyCode::Enter if self.workspace.new_row => self.add_workspace(),
+            KeyCode::Enter if self.workspaces.active_index().is_some() => {
+                self.enter_workspace_screen()
+            }
+            KeyCode::Char('d') if ctrl => self.open_workspace_delete(),
+            KeyCode::Delete => self.open_workspace_delete(),
+            _ => {}
+        }
+    }
+
+    /// Moves the workspace pane cursor, opening the row's workspace.
+    /// `isize::MIN`/`MAX` jump to "All"/`[NEW WORKSPACE]`, which shows "All".
+    fn workspace_pane_move(&mut self, delta: isize) {
+        let new_row = self.workspaces.workspaces.len() + 1;
+        let next = (self.workspace_pane_cursor() as isize)
+            .saturating_add(delta)
+            .clamp(0, new_row as isize) as usize;
+        self.workspace.new_row = next == new_row;
+        let idx = if self.workspace.new_row {
+            None
+        } else {
+            next.checked_sub(1)
+        };
+        self.set_active_workspace(idx);
+    }
+
+    /// Handles keys on the Workspaces screen in table mode. Only its Detail
+    /// pane takes keys; Esc returns to the Session screen's workspace pane.
+    pub fn on_key_workspace(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let was_on_search = self.workspace_search_focused();
         if was_on_search && self.on_key_workspace_search(key) {
             self.update_workspace_search_selection(was_on_search);
@@ -173,26 +255,20 @@ impl App {
                 let idx = self.filtered.get(self.selected).copied();
                 self.open_new_session_modal_for_session(idx, false);
             }
-            KeyCode::Char('+') => self.add_workspace(),
-            KeyCode::Left | KeyCode::Char('h') => self.workspace_pane_left(),
-            KeyCode::Right | KeyCode::Char('l') => self.workspace_pane_right(),
-            KeyCode::Up | KeyCode::Char('k') => self.workspace_move(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.workspace_move(1),
-            KeyCode::Home | KeyCode::Char('g') => self.workspace_move(isize::MIN),
-            KeyCode::End | KeyCode::Char('G') => self.workspace_move(isize::MAX),
-            KeyCode::Enter => match pane {
-                WorkspacePane::List => self.begin_workspace_edit(WorkspaceField::Name, true),
-                _ => {
-                    if let Some(field) = self.workspace.cursor_field() {
-                        self.begin_workspace_edit(field, false);
-                    }
+            KeyCode::Up | KeyCode::Char('k') => self.workspace_detail_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.workspace_detail_move(1),
+            KeyCode::Home | KeyCode::Char('g') => self.workspace_detail_move(isize::MIN),
+            KeyCode::End | KeyCode::Char('G') => self.workspace_detail_move(isize::MAX),
+            KeyCode::Enter => {
+                if let Some(field) = self.workspace.cursor_field() {
+                    self.begin_workspace_edit(field);
                 }
-            },
-            KeyCode::Char(' ') if pane == WorkspacePane::Detail => self.toggle_workspace_folder(),
-            KeyCode::Char('d') if ctrl => self.open_workspace_delete(),
-            KeyCode::Delete => self.open_workspace_delete(),
+            }
+            KeyCode::Char(' ') => self.toggle_workspace_folder(),
+            // Entered with Enter, left with Esc: ←/→ do not leave the screen.
             KeyCode::Esc => {
-                self.status_msg = Some("Press q or ctrl+c twice to quit".to_string());
+                self.leave_workspace_screen();
+                return;
             }
             _ => {}
         }
@@ -204,7 +280,6 @@ impl App {
     pub(crate) fn workspace_search_focused(&self) -> bool {
         self.screen == Screen::Workspace
             && self.mode == UiMode::Table
-            && self.workspace.pane == WorkspacePane::Detail
             && self.workspace.cursor_on_search()
             && self.workspaces.active_index().is_some()
     }
@@ -287,82 +362,39 @@ impl App {
         self.workspace.folder_scroll.set(0);
     }
 
-    fn workspace_pane_left(&mut self) {
-        self.workspace.pane = match self.workspace.pane {
-            WorkspacePane::List => {
-                self.switch_screen(Screen::Profile);
-                return;
-            }
-            WorkspacePane::Detail => WorkspacePane::List,
-            WorkspacePane::Sessions => self.reachable_pane(WorkspacePane::Detail),
-        };
-    }
-
-    fn workspace_pane_right(&mut self) {
-        self.workspace.pane = match self.workspace.pane {
-            WorkspacePane::List if self.workspaces.active_index().is_some() => {
-                WorkspacePane::Detail
-            }
-            WorkspacePane::List | WorkspacePane::Detail => WorkspacePane::Sessions,
-            WorkspacePane::Sessions => {
-                // Continue to the full Session screen with the same scope and row.
-                self.switch_screen(Screen::Session);
-                self.focus = Focus::Table;
-                return;
-            }
-        };
-    }
-
-    /// Moves the cursor of the focused List/Detail pane. `isize::MIN`/`MAX`
-    /// jump to the first/last row. On the list this opens the row's workspace.
-    fn workspace_move(&mut self, delta: isize) {
-        let (current, len) = match self.workspace.pane {
-            WorkspacePane::List => (
-                self.workspaces.active_index().map_or(0, |i| i + 1),
-                self.workspaces.workspaces.len() + 1,
-            ),
-            WorkspacePane::Detail => (self.workspace.detail_cursor, self.workspace.detail_rows()),
-            WorkspacePane::Sessions => return,
-        };
-        let next = (current as isize)
+    /// Moves the Detail cursor. `isize::MIN`/`MAX` jump to the first/last row.
+    fn workspace_detail_move(&mut self, delta: isize) {
+        let last = self.workspace.detail_rows().saturating_sub(1);
+        self.workspace.detail_cursor = (self.workspace.detail_cursor as isize)
             .saturating_add(delta)
-            .clamp(0, len.saturating_sub(1) as isize) as usize;
-        match self.workspace.pane {
-            WorkspacePane::List => self.set_active_workspace(next.checked_sub(1)),
-            _ => self.workspace.detail_cursor = next,
-        }
+            .clamp(0, last as isize) as usize;
     }
 
-    /// `+`: appends "New Workspace", opens it, and starts editing its name in
-    /// the list. The workspace is saved only when the name is confirmed.
+    /// Enter on `[NEW WORKSPACE]`: appends "New Workspace", opens it, and
+    /// shows it on the Workspaces screen with its Name row in edit. The
+    /// workspace is saved only when the name is confirmed.
     fn add_workspace(&mut self) {
-        let previous_active = self.workspaces.active.clone();
         let ws = Workspace::new(self.workspaces.new_id(), self.workspaces.next_new_name());
         self.workspaces.workspaces.push(ws);
         let idx = self.workspaces.workspaces.len() - 1;
         // Open the new (still empty, so all-matching) scope without saving it.
         self.workspaces.set_active(Some(idx));
-        self.workspace.detail_cursor = 0;
-        self.workspace.folder_scroll.set(0);
-        self.workspace.clear_folder_query();
-        self.refresh_workspace_folders();
+        self.workspace.new_row = false;
         self.selected = 0;
         self.recompute();
-        self.workspace.pane = WorkspacePane::List;
+        self.enter_workspace_screen();
         let name = self.workspaces.workspaces[idx].name.clone();
         self.workspace.edit = Some(WorkspaceEdit {
             workspace: idx,
             field: WorkspaceField::Name,
-            in_list: true,
             input: TextInput::selected(name.clone()),
             original: name,
             created: true,
-            previous_active,
         });
         self.mode = UiMode::WorkspaceEdit;
     }
 
-    fn begin_workspace_edit(&mut self, field: WorkspaceField, in_list: bool) {
+    fn begin_workspace_edit(&mut self, field: WorkspaceField) {
         let Some(idx) = self.workspaces.active_index() else {
             self.status_msg = Some("The All workspace cannot be edited".to_string());
             return;
@@ -376,11 +408,9 @@ impl App {
         self.workspace.edit = Some(WorkspaceEdit {
             workspace: idx,
             field,
-            in_list,
             input: TextInput::new(value.clone()),
             original: value,
             created: false,
-            previous_active: None,
         });
         self.mode = UiMode::WorkspaceEdit;
     }
@@ -494,12 +524,11 @@ impl App {
             if edit.workspace < self.workspaces.workspaces.len() {
                 self.workspaces.workspaces.remove(edit.workspace);
             }
-            let previous = edit
-                .previous_active
-                .as_deref()
-                .and_then(|id| self.workspaces.workspaces.iter().position(|w| w.id == id));
-            self.workspaces.set_active(previous);
+            // Back to the `[NEW WORKSPACE]` row it was created from, which
+            // shows "All"; the scope change leaves the Workspaces screen.
+            self.workspaces.set_active(None);
             self.workspace_scope_changed();
+            self.workspace.new_row = true;
             return;
         }
         if let Some(ws) = self.workspaces.workspaces.get_mut(edit.workspace) {
@@ -528,7 +557,11 @@ impl App {
 
     fn open_workspace_delete(&mut self) {
         let Some(idx) = self.workspaces.active_index() else {
-            self.status_msg = Some("The All workspace cannot be deleted".to_string());
+            self.status_msg = Some(if self.workspace.new_row {
+                "Select a workspace to delete".to_string()
+            } else {
+                "The All workspace cannot be deleted".to_string()
+            });
             return;
         };
         self.pending_workspace_delete = Some(idx);

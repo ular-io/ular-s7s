@@ -133,7 +133,7 @@ leaves the ordinary session list behind the dialog.
 | `ctrl+r` | Rename Session |
 | `ctrl+d` / `del` | Confirm Delete Session |
 | `tab` / `shift+tab` | Toggle focus between left table ↔ right preview panel |
-| `←` (`h`) on the table | Go to the Workspaces screen |
+| `←` (`h`) on the table | Show the workspace list on the left (see below) |
 | `↑`/`↓` (`k`/`j`) | Table focus=move row / Preview focus=scroll body |
 | `g` / `G` (`home` / `end`) | Jump to start / end |
 | `pageup` / `pagedown` | Scroll preview body |
@@ -155,23 +155,35 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 | `ctrl+e` | Edit profile |
 | `ctrl+d` | Delete profile (default profile cannot be deleted, actual folder remains) |
 | `ctrl+u` | Refresh all profile usages (keeps showing previous value during refresh) |
-| `→` / `l` | Go to the Workspaces screen |
+| `→` / `l` | Go to the session list (the workspace list stays closed) |
 
-### Workspaces Screen (`←` from the session list, `→` from Profile)
+### Workspaces (`←` from the session list)
 
-Three panes: the workspace list (first row **All** = every session), the selected
-workspace's detail, and its sessions. The list cursor is the open workspace, so the
-session screen shows the same scope.
+`←` on the session list opens the workspace list on its left; the session list and
+Prompt stay, narrower (the Prompt is hidden when it would be under 40 columns). The
+first row **All** = every session, the last row `[NEW WORKSPACE]` adds one. The list
+cursor is the open workspace, so the session list follows it as you move.
 
 | Key | Action |
 | :-- | :-- |
-| `←` / `→` (`h` / `l`) | Move between panes; `←` on the list goes to Profile, `→` on the sessions pane goes to the session screen |
-| `↑` / `↓`, `home` / `end` | List: open another workspace · Detail: move row · Sessions: move row |
-| `+` | Add a workspace; its name is ready to type, `enter` saves, `esc` discards it |
-| `enter` | List: rename · Detail: edit Name / Includes / Excludes in place (`enter` saves, `esc` restores) · Sessions: resume |
-| `space` | Detail: toggle a folder (`[✓]` = included; none checked = every folder) |
-| `ctrl+d` / `del` | List/Detail: delete the workspace after confirmation (sessions are untouched) · Sessions: delete the session |
-| `/` | Keyword search within the workspace's sessions |
+| `↑` / `↓`, `home` / `end` | Open another workspace (`[NEW WORKSPACE]` shows All) |
+| `+` | Go to `[NEW WORKSPACE]` |
+| `enter` | Edit the workspace on the Workspaces screen (nothing on All). On `[NEW WORKSPACE]`: add one and type its name there |
+| `ctrl+d` / `del` | Delete the workspace after confirmation (sessions are untouched) |
+| `→` / `l`, `esc` | Close the list and return to the session list |
+| `←` / `h` | Go to Profile |
+| `/` | Keyword search (`esc` returns to the list, `enter` to the session list) |
+
+The Workspaces screen edits one workspace in its Detail pane, beside the list and
+its sessions. `esc` returns to the workspace list; `←`/`→` do not leave it.
+
+| Key | Action |
+| :-- | :-- |
+| `↑` / `↓`, `home` / `end` | Move row |
+| `enter` | Edit Name / Includes / Excludes in place (`enter` saves, `esc` restores; a new workspace's name `esc` discards it) |
+| `space` | Toggle a folder (`[✓]` = included; none checked = every folder) |
+| Search row | Type to filter folders; `esc` clears the filter first |
+| `esc` | Back to the workspace list |
 
 Includes require every word, excludes hide a session containing any word; both search
 the same text as `/`. Folders compare full paths, so two projects with the same folder

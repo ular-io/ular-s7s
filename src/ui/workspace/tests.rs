@@ -1,6 +1,5 @@
-use super::WorkspacePane;
 use crate::ui::test_support::*;
-use crate::ui::{App, Screen, UiMode};
+use crate::ui::{App, Focus, Screen, UiMode};
 use crate::workspaces::{Workspace, WorkspaceStore};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{backend::TestBackend, Terminal};
@@ -51,8 +50,18 @@ fn app_with_workspace() -> App {
     app
 }
 
-fn on_workspace_screen(app: &mut App) {
-    app.enter_workspace_screen(WorkspacePane::List);
+/// `←` from the session list: the workspace pane, focused.
+fn on_pane(app: &mut App) {
+    press(app, KeyCode::Left);
+    assert_eq!(app.focus, Focus::Workspaces);
+}
+
+/// Opens "Api" in the pane and edits it on the Workspaces screen.
+fn on_api_detail(app: &mut App) {
+    on_pane(app);
+    press(app, KeyCode::Down);
+    press(app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Workspace);
 }
 
 fn visible_ids(app: &App) -> Vec<String> {
@@ -63,97 +72,128 @@ fn visible_ids(app: &App) -> Vec<String> {
 }
 
 #[test]
-fn screens_chain_profile_workspaces_sessions() {
+fn left_opens_the_pane_right_and_esc_close_it_and_profile_returns_without_it() {
     let mut app = app_with_workspace();
-    app.screen = Screen::Profile;
-    press(&mut app, KeyCode::Right);
-    assert_eq!(app.screen, Screen::Workspace);
-    assert_eq!(app.workspace.pane, WorkspacePane::List);
-
-    // "All" has nothing to edit, so → skips the Detail pane.
-    press(&mut app, KeyCode::Right);
-    assert_eq!(app.workspace.pane, WorkspacePane::Sessions);
-    press(&mut app, KeyCode::Right);
+    on_pane(&mut app);
     assert_eq!(app.screen, Screen::Session);
-
-    // ← from the session list lands on the Workspaces screen's session pane.
-    press(&mut app, KeyCode::Left);
-    assert_eq!(app.screen, Screen::Workspace);
-    assert_eq!(app.workspace.pane, WorkspacePane::Sessions);
-    press(&mut app, KeyCode::Left);
-    assert_eq!(app.workspace.pane, WorkspacePane::List);
-
-    // With a real workspace open the Detail pane is reachable.
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Right);
-    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
-    press(&mut app, KeyCode::Left);
+    assert_eq!(app.focus, Focus::Table);
+    on_pane(&mut app);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Table);
+    assert_eq!(app.mode, UiMode::Table);
+
+    on_pane(&mut app);
     press(&mut app, KeyCode::Left);
     assert_eq!(app.screen, Screen::Profile);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Table, "no workspace pane from Profile");
 }
 
 #[test]
-fn list_cursor_is_the_scope_of_the_session_screen() {
+fn pane_cursor_is_the_scope_and_the_new_row_shows_all() {
     let mut app = app_with_workspace();
     app.workspaces.workspaces[0].includes = "leaf".into();
-    on_workspace_screen(&mut app);
+    on_pane(&mut app);
     assert_eq!(app.filtered.len(), 3, "All lists every session");
 
     press(&mut app, KeyCode::Down);
     assert_eq!(app.active_workspace_name(), Some("Api"));
     assert_eq!(visible_ids(&app), ["leaf"]);
+    assert_eq!(app.screen, Screen::Session, "moving opens no Detail");
 
-    app.switch_screen(Screen::Session);
-    assert_eq!(
-        visible_ids(&app),
-        ["leaf"],
-        "the Session screen keeps the scope"
-    );
-
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Home);
+    press(&mut app, KeyCode::Down);
+    assert!(app.workspace.new_row);
+    assert_eq!(app.workspace_pane_cursor(), 2);
     assert_eq!(app.active_workspace_name(), None);
     assert_eq!(app.filtered.len(), 3);
-    press(&mut app, KeyCode::End);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.workspace_pane_cursor(), 2, "the new row is last");
+
+    press(&mut app, KeyCode::Home);
+    assert!(!app.workspace.new_row);
+    assert_eq!(app.workspace_pane_cursor(), 0);
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(app.workspace_pane_cursor(), 2, "+ goes to the new row");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.active_workspace_name(), Some("Api"));
+
+    // Closing the pane keeps the scope for the session list.
+    press(&mut app, KeyCode::Right);
+    assert_eq!(visible_ids(&app), ["leaf"]);
+}
+
+#[test]
+fn enter_edits_a_workspace_on_the_workspaces_screen_and_esc_returns_to_the_pane() {
+    let mut app = app_with_workspace();
+    on_pane(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Session, "Enter on All does nothing");
+    assert_eq!(app.mode, UiMode::Table);
+
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Workspace);
+    assert_eq!(
+        app.workspace.cursor_field(),
+        Some(super::state::WorkspaceField::Name)
+    );
+
+    // Entered with Enter, left with Esc: ←/→ stay on the screen.
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.screen, Screen::Workspace);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Workspaces);
     assert_eq!(app.active_workspace_name(), Some("Api"));
 }
 
 #[test]
-fn plus_adds_a_workspace_with_its_name_in_edit() {
+fn new_row_enter_adds_a_workspace_with_its_name_in_edit() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
+    on_pane(&mut app);
     press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Workspace);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
     assert_eq!(app.active_workspace_name(), Some("New Workspace"));
     let edit = app.workspace.edit.as_ref().expect("edit");
-    assert!(edit.in_list && edit.created);
+    assert!(edit.created);
+    assert_eq!(edit.field, super::state::WorkspaceField::Name);
 
     // The prefilled name is selected: typing replaces it.
     type_text(&mut app, "Web");
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(app.screen, Screen::Workspace, "folders are picked next");
     assert_eq!(app.active_workspace_name(), Some("Web"));
     assert_eq!(app.workspaces.workspaces.len(), 2);
     assert_eq!(app.status_msg.as_deref(), Some("Workspace added: Web"));
 }
 
 #[test]
-fn esc_drops_an_unsaved_new_workspace_and_reopens_the_previous_scope() {
+fn esc_drops_an_unsaved_new_workspace_and_returns_to_the_new_row() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
+    on_pane(&mut app);
     press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Workspaces);
     assert_eq!(app.workspaces.workspaces.len(), 1);
-    assert_eq!(app.active_workspace_name(), Some("Api"));
+    assert_eq!(app.active_workspace_name(), None);
+    assert_eq!(app.workspace_pane_cursor(), 2);
 }
 
 #[test]
 fn duplicate_empty_and_reserved_names_are_rejected() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
+    on_pane(&mut app);
     press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Enter);
     for name in ["api", "  ", "all"] {
         type_text(&mut app, name);
         press(&mut app, KeyCode::Enter);
@@ -166,9 +206,7 @@ fn duplicate_empty_and_reserved_names_are_rejected() {
 #[test]
 fn include_and_exclude_words_filter_while_typing_and_esc_restores() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Right);
+    on_api_detail(&mut app);
     press(&mut app, KeyCode::Down); // Includes
     press(&mut app, KeyCode::Enter);
     type_text(&mut app, "lea");
@@ -176,6 +214,7 @@ fn include_and_exclude_words_filter_while_typing_and_esc_restores() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.workspaces.workspaces[0].includes, "");
     assert_eq!(app.filtered.len(), 3);
+    assert_eq!(app.screen, Screen::Workspace, "Esc ends the edit first");
 
     press(&mut app, KeyCode::Down); // Excludes
     press(&mut app, KeyCode::Enter);
@@ -188,12 +227,9 @@ fn include_and_exclude_words_filter_while_typing_and_esc_restores() {
 #[test]
 fn detail_name_row_renames_in_place() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Right);
+    on_api_detail(&mut app);
     press(&mut app, KeyCode::Enter);
-    let edit = app.workspace.edit.as_ref().expect("edit");
-    assert!(!edit.in_list);
+    assert!(app.workspace.edit.is_some());
     press(&mut app, KeyCode::Backspace);
     type_text(&mut app, "IS");
     // Names are not live: the stored name changes only on Enter.
@@ -205,9 +241,7 @@ fn detail_name_row_renames_in_place() {
 #[test]
 fn space_toggles_folders_by_full_path() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Right);
+    on_api_detail(&mut app);
     // Rows: Name, Includes, Excludes, Search, then one row per session folder.
     assert_eq!(app.workspace.folders.len(), 3);
     for _ in 0..4 {
@@ -240,9 +274,7 @@ fn space_toggles_folders_by_full_path() {
 
 /// Opens "Api" and puts the Detail cursor on the folder search row.
 fn on_folder_search(app: &mut App) {
-    on_workspace_screen(app);
-    press(app, KeyCode::Down);
-    press(app, KeyCode::Right);
+    on_api_detail(app);
     for _ in 0..3 {
         press(app, KeyCode::Down);
     }
@@ -289,19 +321,20 @@ fn folder_search_row_takes_typing_without_enter_and_arrows_leave_it() {
         "the cursor stays within the visible rows"
     );
 
-    // ↑ returns to the row with the query selected; → drops the selection
-    // without leaving the pane, and typing resumes at the end.
+    // ↑ returns to the row with the query selected; → drops the selection,
+    // and typing resumes at the end.
     press(&mut app, KeyCode::Up);
     assert!(app.workspace_search_focused());
     assert!(app.workspace.folder_query.select_all);
     press(&mut app, KeyCode::Right);
-    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
     assert!(!app.workspace.folder_query.select_all);
     press(&mut app, KeyCode::Char('t'));
     assert_eq!(app.workspace.folder_query.value, "rot");
+    // Esc clears a query before it leaves the screen.
     press(&mut app, KeyCode::Esc);
     assert!(app.workspace.folder_query.value.is_empty());
     assert_eq!(app.workspace.visible.len(), 3);
+    assert_eq!(app.screen, Screen::Workspace);
     press(&mut app, KeyCode::Up);
     assert_eq!(
         app.workspace.cursor_field(),
@@ -328,7 +361,7 @@ fn arriving_on_the_folder_search_selects_the_query_so_typing_replaces_it() {
 }
 
 #[test]
-fn folder_search_arrows_move_the_text_cursor_and_never_the_pane() {
+fn folder_search_arrows_move_the_text_cursor() {
     let mut app = app_with_workspace();
     on_folder_search(&mut app);
     type_text(&mut app, "eaf");
@@ -342,7 +375,6 @@ fn folder_search_arrows_move_the_text_cursor_and_never_the_pane() {
     for _ in 0..10 {
         press(&mut app, KeyCode::Left);
     }
-    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
     assert!(app.workspace_search_focused());
     press(&mut app, KeyCode::Delete);
     assert_eq!(app.workspace.folder_query.value, "eaf");
@@ -350,16 +382,11 @@ fn folder_search_arrows_move_the_text_cursor_and_never_the_pane() {
     for _ in 0..10 {
         press(&mut app, KeyCode::Right);
     }
-    assert_eq!(app.workspace.pane, WorkspacePane::Detail);
+    assert!(app.workspace_search_focused());
     press(&mut app, KeyCode::Home);
     press(&mut app, KeyCode::Char('l'));
     assert_eq!(app.workspace.folder_query.value, "leaf");
     assert_eq!(visible_folder_names(&app), vec!["/tmp/leaf".to_string()]);
-
-    // Off the row, ←/→ move between panes again.
-    press(&mut app, KeyCode::Up);
-    press(&mut app, KeyCode::Right);
-    assert_eq!(app.workspace.pane, WorkspacePane::Sessions);
 }
 
 #[test]
@@ -374,7 +401,7 @@ fn folder_search_enter_jumps_to_the_first_match_and_scope_change_clears_it() {
         Some(&PathBuf::from("/tmp/leaf"))
     );
 
-    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Down);
     assert!(app.workspace.folder_query.value.is_empty());
@@ -394,7 +421,7 @@ fn paste_on_the_folder_search_row_filters_folders() {
 fn reopening_a_workspace_lists_its_folders_first() {
     let mut app = app_with_workspace();
     app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/root")];
-    on_workspace_screen(&mut app);
+    on_pane(&mut app);
     press(&mut app, KeyCode::Down);
     assert_eq!(app.workspace.folders[0], PathBuf::from("/tmp/root"));
     assert_eq!(app.workspace.folders.len(), 3);
@@ -416,8 +443,7 @@ fn selected_folders_come_first_each_group_by_latest_activity() {
         PathBuf::from("/tmp/leaf"),
         PathBuf::from("/tmp/root"),
     ];
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
+    on_api_detail(&mut app);
     assert_eq!(
         visible_folder_names(&app),
         vec!["/tmp/root", "/tmp/leaf", "/tmp/gone", "/tmp/middle"]
@@ -425,31 +451,37 @@ fn selected_folders_come_first_each_group_by_latest_activity() {
 }
 
 #[test]
-fn all_is_neither_editable_nor_deletable() {
+fn all_and_the_new_row_are_not_deletable() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(app.mode, UiMode::Table);
+    on_pane(&mut app);
     ctrl(&mut app, 'd');
     assert_eq!(app.mode, UiMode::Table);
     assert_eq!(
         app.status_msg.as_deref(),
         Some("The All workspace cannot be deleted")
     );
+    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Delete);
+    assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(
+        app.status_msg.as_deref(),
+        Some("Select a workspace to delete")
+    );
 }
 
 #[test]
-fn ctrl_d_deletes_after_confirmation_and_keeps_the_row() {
+fn ctrl_d_in_the_pane_deletes_after_confirmation_and_keeps_the_row() {
     let mut app = app_with_workspace();
     app.workspaces
         .workspaces
         .push(Workspace::new("ws-web".into(), "Web".into()));
-    on_workspace_screen(&mut app);
+    on_pane(&mut app);
     press(&mut app, KeyCode::Down);
     ctrl(&mut app, 'd');
     assert_eq!(app.mode, UiMode::WorkspaceDeleteConfirm);
     press(&mut app, KeyCode::Enter); // Cancel is focused first.
     assert_eq!(app.workspaces.workspaces.len(), 2);
+    assert_eq!(app.focus, Focus::Workspaces);
 
     ctrl(&mut app, 'd');
     press(&mut app, KeyCode::Left);
@@ -458,7 +490,7 @@ fn ctrl_d_deletes_after_confirmation_and_keeps_the_row() {
     assert_eq!(app.workspaces.workspaces.len(), 1);
     assert_eq!(app.active_workspace_name(), Some("Web"));
 
-    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Delete);
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Enter);
     assert!(app.workspaces.workspaces.is_empty());
@@ -466,35 +498,37 @@ fn ctrl_d_deletes_after_confirmation_and_keeps_the_row() {
 }
 
 #[test]
-fn sessions_pane_takes_the_session_list_keys() {
+fn the_workspaces_screen_neither_deletes_nor_adds() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Right);
-    assert_eq!(app.workspace.pane, WorkspacePane::Sessions);
-    press(&mut app, KeyCode::Down);
-    assert_eq!(app.selected, 1);
-    press(&mut app, KeyCode::End);
-    assert_eq!(app.selected, 2);
+    on_api_detail(&mut app);
     ctrl(&mut app, 'd');
-    assert_eq!(
-        app.mode,
-        UiMode::DeleteConfirm,
-        "ctrl+d targets the session here"
-    );
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(app.workspaces.workspaces.len(), 1);
+    // Delete only edits a query on the Search row; elsewhere it does nothing.
+    press(&mut app, KeyCode::Delete);
+    assert_eq!(app.mode, UiMode::Table);
 }
 
 #[test]
-fn search_from_a_workspace_pane_confirms_into_the_session_pane() {
+fn search_from_the_pane_returns_on_esc_and_closes_it_on_enter() {
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
+    on_pane(&mut app);
     press(&mut app, KeyCode::Char('/'));
     assert_eq!(app.mode, UiMode::Keyword);
     type_text(&mut app, "middle");
     assert_eq!(visible_ids(&app), ["middle"]);
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
     assert_eq!(app.mode, UiMode::Table);
-    assert_eq!(app.screen, Screen::Workspace);
-    assert_eq!(app.workspace.pane, WorkspacePane::Sessions);
+    assert_eq!(app.focus, Focus::Workspaces);
+    assert_eq!(app.filtered.len(), 3);
+
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "middle");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Table);
+    assert_eq!(visible_ids(&app), ["middle"]);
 }
 
 #[test]
@@ -510,8 +544,9 @@ fn ctrl_w_palette_opens_and_closes_workspaces_on_the_session_screen() {
     assert_eq!(app.active_workspace_name(), Some("Api"));
     assert_eq!(visible_ids(&app), ["root"]);
 
-    // From the Workspaces screen too, the palette lands on the Session screen.
-    on_workspace_screen(&mut app);
+    // From the Workspaces screen too, the palette lands on the session list.
+    on_pane(&mut app);
+    press(&mut app, KeyCode::Enter);
     ctrl(&mut app, 'w');
     let labels: Vec<&str> = app
         .quick
@@ -531,8 +566,20 @@ fn ctrl_w_palette_opens_and_closes_workspaces_on_the_session_screen() {
     );
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Table);
     assert_eq!(app.active_workspace_name(), None);
     assert_eq!(app.filtered.len(), 3);
+}
+
+#[test]
+fn open_workspace_window_shows_the_pane() {
+    let mut app = app_with_workspace();
+    app.switch_screen(Screen::Profile);
+    ctrl(&mut app, 'w');
+    type_text(&mut app, "window");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Workspaces);
 }
 
 #[test]
@@ -559,9 +606,7 @@ fn edits_are_saved_and_the_open_workspace_survives_a_restart() {
     // The fixture's workspace exists only in memory; a real one was loaded or saved.
     let api = app.workspaces.workspaces[0].clone();
     WorkspaceStore::commit(&path, &[crate::workspaces::WorkspaceChange::Upsert(api)]).unwrap();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Right);
+    on_api_detail(&mut app);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     type_text(&mut app, "leaf");
@@ -589,12 +634,40 @@ fn rendered(app: &App, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() {
+    let mut app = app_with_workspace();
+    let text = rendered(&app, 140, 24);
+    assert!(!text.contains("[NEW WORKSPACE]"), "{text}");
+
+    on_pane(&mut app);
+    let text = rendered(&app, 140, 24);
+    assert!(text.contains(" Workspaces "), "{text}");
+    assert!(text.contains("All"), "{text}");
+    assert!(text.contains("[NEW WORKSPACE]"), "{text}");
+    assert!(text.contains(" Prompt "), "{text}");
+    // The pane is 24 cells wide (its focused border is thick); the session
+    // table's border starts right after.
+    let row = text
+        .lines()
+        .find(|l| l.contains("[NEW WORKSPACE]"))
+        .expect("new row");
+    assert_eq!(row.chars().nth(23), Some('┃'), "{row}");
+    assert_eq!(row.chars().nth(24), Some('│'), "{row}");
+
+    // Too narrow for a 40-cell Prompt beside the pane: the table takes it.
+    let text = rendered(&app, 100, 24);
+    assert!(text.contains("[NEW WORKSPACE]"), "{text}");
+    assert!(!text.contains(" Prompt "), "{text}");
+    press(&mut app, KeyCode::Esc);
+    let text = rendered(&app, 100, 24);
+    assert!(text.contains(" Prompt "), "{text}");
+}
+
+#[test]
 fn workspace_screen_draws_three_panes_with_checked_folders() {
     let mut app = app_with_workspace();
     app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/root")];
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Right);
+    on_api_detail(&mut app);
     let text = rendered(&app, 140, 24);
     assert!(text.contains(" Workspaces "), "{text}");
     assert!(text.contains(" Detail "), "{text}");
@@ -602,6 +675,10 @@ fn workspace_screen_draws_three_panes_with_checked_folders() {
     assert!(text.contains("[✓] root"), "{text}");
     assert!(text.contains("[ ] leaf"), "{text}");
     assert!(text.contains("Folders · 1 selected"), "{text}");
+    assert!(
+        !text.contains("[NEW WORKSPACE]"),
+        "the list here only shows the edited workspace\n{text}"
+    );
 
     // The list pane is capped at 24 cells: the Detail border starts right after.
     let row = text
@@ -617,20 +694,20 @@ fn detail_folder_rows_end_with_a_session_count_even_when_narrow() {
     app.sessions[1].cwd = PathBuf::from("/tmp/leaf");
     // A stored folder with no session left still shows its (0).
     app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/gone")];
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
+    on_api_detail(&mut app);
+    // The focused Detail pane's right border is thick.
     for width in [140, 80] {
         let text = rendered(&app, width, 24);
         let leaf = text
             .lines()
             .find(|l| l.contains("[ ] leaf"))
             .expect("leaf row");
-        assert!(leaf.contains("(2) │"), "{width}: {leaf}");
+        assert!(leaf.contains("(2) ┃"), "{width}: {leaf}");
         let gone = text
             .lines()
             .find(|l| l.contains("[✓] gone"))
             .expect("gone row");
-        assert!(gone.contains("(0) │"), "{width}: {gone}");
+        assert!(gone.contains("(0) ┃"), "{width}: {gone}");
     }
 }
 
@@ -697,15 +774,6 @@ fn folder_search_row_paints_only_the_selected_text() {
     assert_ne!(buf[(x + 9, y)].bg, selection_bg, "→ drops the selection");
 }
 
-#[test]
-fn all_workspace_detail_is_locked() {
-    let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    let text = rendered(&app, 140, 24);
-    assert!(text.contains("All sessions · cannot be edited"), "{text}");
-    assert!(text.contains("Folders · all folders"), "{text}");
-}
-
 /// Buffer cell at the first character of `needle` inside columns `cols`,
 /// searched below the header.
 fn cell_at<'a>(
@@ -726,43 +794,40 @@ fn cell_at<'a>(
     panic!("{needle:?} not rendered");
 }
 
+fn draw_buffer(app: &App) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(140, 24)).expect("terminal");
+    terminal
+        .draw(|f| crate::ui::render::draw(f, app))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
 #[test]
 fn panes_without_focus_fade_like_the_session_screen() {
     use ratatui::style::Modifier;
     let mut app = app_with_workspace();
-    on_workspace_screen(&mut app);
-    press(&mut app, KeyCode::Down);
-    assert_eq!(app.workspace.pane, WorkspacePane::List);
-    let draw = |app: &App| {
-        let mut terminal = Terminal::new(TestBackend::new(140, 24)).expect("terminal");
-        terminal
-            .draw(|f| crate::ui::render::draw(f, app))
-            .expect("draw");
-        terminal.backend().buffer().clone()
-    };
-    let (list, detail, sessions) = (0..24, 24..64, 64..140);
     let muted = app.theme.muted;
 
-    // List focused: Detail and the session table fade, and Detail's cursor row
-    // keeps only the weak reversed signal.
-    let buf = draw(&app);
-    let list_row = cell_at(&buf, "Api", list.clone());
-    assert_eq!(list_row.bg, app.theme.selection_bg);
-    let name_value = cell_at(&buf, "Api", detail.clone());
-    assert_eq!(name_value.fg, muted);
-    assert!(name_value.modifier.contains(Modifier::REVERSED));
-    assert_eq!(cell_at(&buf, "FOLDER", sessions.clone()).fg, muted);
+    // Session screen, workspace pane focused: the session table fades.
+    on_pane(&mut app);
+    press(&mut app, KeyCode::Down);
+    let buf = draw_buffer(&app);
+    let (pane, table) = (0..24, 24..140);
+    assert_eq!(
+        cell_at(&buf, "Api", pane.clone()).bg,
+        app.theme.selection_bg
+    );
+    assert_eq!(cell_at(&buf, "FOLDER", table.clone()).fg, muted);
 
-    // Sessions focused: the list's open workspace and Detail fade instead.
-    app.workspace.pane = WorkspacePane::Sessions;
-    let buf = draw(&app);
-    let list_row = cell_at(&buf, "Api", list.clone());
+    // Workspaces screen: only Detail takes keys, so the list's open workspace
+    // and the session table fade.
+    press(&mut app, KeyCode::Enter);
+    let buf = draw_buffer(&app);
+    let (list, detail, sessions) = (0..24, 24..64, 64..140);
+    let list_row = cell_at(&buf, "Api", list);
     assert_eq!(list_row.fg, muted);
     assert_eq!(list_row.bg, app.theme.selection_inactive_bg);
     assert!(list_row.modifier.contains(Modifier::REVERSED));
-    assert_eq!(cell_at(&buf, "Api", detail.clone()).fg, muted);
-    assert_eq!(
-        cell_at(&buf, "FOLDER", sessions.clone()).fg,
-        app.theme.accent
-    );
+    assert_eq!(cell_at(&buf, "Api", detail).bg, app.theme.selection_bg);
+    assert_eq!(cell_at(&buf, "FOLDER", sessions).fg, muted);
 }

@@ -1,8 +1,9 @@
 # Workspaces
 
 > Status: Current
-> Read when: Changing the Workspaces screen, workspace storage or matching, the
-> open-workspace scope, or the `ctrl+w` palette rows.
+> Read when: Changing the Session screen's workspace pane, the Workspaces
+> screen, workspace storage or matching, the open-workspace scope, or the
+> `ctrl+w` palette rows.
 > Entry points: `src/workspaces.rs`, `src/ui/workspace/`, `src/ui/reload.rs`, `ui::App::rebuild_filtered`,
 > `ui::quick::registry::build_workspace_items`
 
@@ -13,20 +14,38 @@ workspace (`scratch.rs`).
 
 ## Screen order
 
-`Profile ⇄ Workspaces ⇄ Session ⇄ Detail`.
+`Profile ← workspace pane ⇄ Session list ⇄ Prompt → Detail`, and
+`Profile → Session list`.
 
-- Profile `→` opens Workspaces with the list focused.
-- Session list `←` (Table focus) opens Workspaces with its Sessions pane focused.
-- Workspaces panes are `List | Detail | Sessions`, moved between with `←`/`→`
-  (`h`/`l`). `←` on List goes to Profile; `→` on Sessions goes to the Session
-  screen with the same scope and selected row.
-- The Detail pane is skipped (not focusable) while "All" is open.
+- The workspace pane is part of the Session screen (`Focus::Workspaces`), drawn
+  left of the session table only while it has focus. There is no separate
+  open/closed state.
+- Session list `←` (Table focus) shows the pane, focused
+  (`App::open_workspace_pane`). In the pane, `→`/`l`/Esc close it and focus the
+  table; `←`/`h` close it and go to Profile.
+- Profile `→` goes to the Session screen with the table focused and the pane
+  closed. `switch_screen` to any other screen also closes it, so a palette
+  `Open Session Window` lands on the table.
+- Enter on a workspace row opens the **Workspaces screen** for it
+  (`Screen::Workspace`), Detail cursor on Name. Only its Detail pane takes keys;
+  the list and session table beside it are display-only. Esc returns to the
+  Session screen with the pane focused on the same workspace; `←`/`→` do not
+  leave (the Search row and an edit use them as text cursor keys). Enter on
+  "All" does nothing, so the Workspaces screen never shows "All": a scope change
+  to "All" while it is shown (cancelled new workspace, `ctrl+u` after another
+  instance deleted it) returns to the pane (`App::workspace_scope_changed`).
+- Palette `Open Workspace Window` shows the pane from any screen.
 
 ## The open workspace
 
 - `WorkspaceStore::active` (workspace id, `None` = "All") is the single scope
-  state. The List cursor *is* `active`: moving it changes what the Session
-  screen lists. Palette rows set the same field. There is no separate cursor.
+  state. The pane cursor *is* `active`: moving it changes what the session
+  list shows. Palette rows set the same field. There is no separate cursor.
+- The pane's last row is the fixed `[NEW WORKSPACE]`, outside the stored list.
+  On it `active` is `None` ("All"); `WorkspaceScreenState::new_row` records
+  that the cursor is there and counts only while `active` is `None`
+  (`App::workspace_pane_cursor`). `+` moves the cursor to it; opening the pane
+  starts on the open workspace.
 - `App::rebuild_filtered` applies the ordinary filter (keyword, agent, folder,
   profile, bookmark) and then `Workspace::matches` (AND). Bookmark grouping and
   activity order are unchanged. Clearing filters (`0`, Esc) does not close the
@@ -51,12 +70,15 @@ Words match through `filter::token_matches`, the same text as `/` search
 
 ## Editing
 
-- `+` (any pane) appends `New Workspace` (`New Workspace 2`, … when taken),
-  opens it, and starts editing its name in the list with the whole value
-  selected. Enter saves; Esc removes the unsaved workspace and reopens the
-  previous scope.
-- Enter on a List row renames it in place. Enter on the Detail Name/Includes/
-  Excludes rows edits that row in place (`UiMode::WorkspaceEdit`).
+- Enter on `[NEW WORKSPACE]` appends `New Workspace` (`New Workspace 2`, …
+  when taken), opens it, and shows it on the Workspaces screen with its Detail
+  Name row in edit and the whole value selected (`App::add_workspace`). Enter
+  saves it (`Upsert` + `Opened`) and stays on the screen to pick folders; Esc
+  removes the unsaved workspace and returns to the pane on `[NEW WORKSPACE]`
+  ("All").
+- The pane has no rename: names change only on the Detail Name row. Enter on
+  the Detail Name/Includes/Excludes rows edits that row in place
+  (`UiMode::WorkspaceEdit`); Esc ends the edit before it can leave the screen.
 - Include/exclude edits apply on every keystroke so the session list follows;
   Esc restores the value before the edit; Enter saves. Names change only on
   Enter.
@@ -78,9 +100,9 @@ Words match through `filter::token_matches`, the same text as `/` search
   while the cursor is on it, keys edit the query directly with no Enter and no
   edit mode (`App::workspace_search_focused`). Typed characters include the
   pane's letter shortcuts (`j`, `k`, `g`, `q`, …) and `space`; `←`/`→`/`Home`/
-  `End` move the text cursor and never change pane; Backspace/`Delete` delete
-  at the cursor; Esc clears a non-empty query; Enter moves to the first match;
-  paste inserts. ctrl combinations keep their pane meaning.
+  `End` move the text cursor; Backspace/`Delete` delete at the cursor; Esc
+  clears a non-empty query (an empty one leaves the screen); Enter moves to the
+  first match; paste inserts. ctrl combinations keep their pane meaning.
 - Arriving on the row with a non-empty query selects the whole query
   (`TextInput::select_all`): typing or paste replaces it, Backspace/`Delete`
   clear it, and `←`/`→` drop the selection to the start/end, keeping the text.
@@ -89,14 +111,15 @@ Words match through `filter::token_matches`, the same text as `/` search
   folder's full path or its displayed label. Non-matching rows are hidden, not
   reordered; their selection is kept and still counted in `· N selected`. The
   query is not stored and is cleared when the scope changes.
-- `ctrl+d`/`del` on List or Detail (`del` not on the Search row) asks for
-  confirmation (Cancel focused) and removes only the workspace; the cursor
-  stays on the same row. "All" can be neither edited nor deleted.
-- The Sessions pane forwards keys to the Session table handler (`on_key_table`)
-  with `Focus::Table`, so `enter`, `ctrl+d` (delete *session*), `ctrl+r`,
-  `ctrl+b`, `a`, `f`, `c`, `0`, `1..5` behave as on the Session screen.
-- `/` opens the shared keyword search from any pane; Enter/Tab moves focus to
-  the Sessions pane, Esc returns to the pane it was opened from.
+- `ctrl+d`/`del` in the pane asks for confirmation (Cancel focused) and removes
+  only the workspace; the cursor stays on the same row. It is the only place a
+  workspace is deleted: the Workspaces screen neither deletes nor adds. "All"
+  and `[NEW WORKSPACE]` cannot be deleted. On the Session screen `ctrl+d`
+  deletes the workspace only while the pane has focus; on the table it deletes
+  the session.
+- `/` opens the shared keyword search from the pane and the Workspaces screen.
+  From the pane, Esc returns to it; Enter/Tab focus the session list, closing
+  it. The Workspaces screen keeps its Detail pane either way.
 
 ## Palette (`ctrl+w`)
 
@@ -109,7 +132,10 @@ Words match through `filter::token_matches`, the same text as `/` search
   prefilled query lists it. While "All" is open it is disabled and sorts after
   the open rows.
 - Running a workspace row opens that scope and switches to the **Session**
-  screen, not Workspaces. Workspace rows are not recorded in palette history.
+  screen with the table focused (the pane closed), not Workspaces. Workspace
+  rows are not recorded in palette history.
+- `Open Workspace Window` shows the workspace pane; it is disabled only while
+  the pane already has focus.
 
 ## Storage
 
@@ -122,7 +148,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   id onto a freshly read file under `store_lock::with_store_lock`, then an
   atomic replace (temp file + rename). So a committed edit, folder toggle,
   add/delete, or scope change never drops workspaces another running s7s
-  saved. No fsync: `Opened` is written on each List cursor move.
+  saved. No fsync: `Opened` is written on each pane cursor move.
 - An `Upsert` whose name another workspace already holds *in the file* is
   refused like a local duplicate; the name edit stays open.
 - `Upsert` of an id another instance deleted re-adds it (the edit being saved
@@ -144,19 +170,24 @@ Words match through `filter::token_matches`, the same text as `/` search
 
 ## Layout
 
-See [ui-style-guide.md](./ui-style-guide.md) §Workspaces screen.
+See [ui-style-guide.md](./ui-style-guide.md) §Workspace pane and §Workspaces
+screen.
 
 ## Verification
 
-- `ui::workspace::tests` (navigation, scope, add/rename/cancel, live include/
-  exclude, folder toggles, folder search, delete, Sessions-pane delegation,
-  search focus, palette open/close, context jump, persistence, render),
+- `ui::workspace::tests` (pane open/close and Profile moves, scope and the
+  `[NEW WORKSPACE]` row, Enter/Esc between pane and Workspaces screen,
+  add/rename/cancel, live include/exclude, folder toggles, folder search,
+  delete, search focus, palette open/close, context jump, persistence, render),
+  `ui::render::tests::workspace_pane_shrinks_the_body_and_hides_a_narrow_prompt`,
   `workspaces::tests` (matching, per-change commits, refused names, unreadable
   store),
   `ui::reload::tests` (`ctrl+u` reload), and `store_lock::tests`.
-- Release PTY check (`s7s demo`): add a workspace, toggle folders, filter
-  folders on the Search row and toggle a match, type includes and watch the
-  list, open/close via `ctrl+w`, restart and confirm the scope is reopened, and
-  check a narrow (80-column) terminal.
+- Release PTY check (`s7s demo`): `←` from the session list and move through
+  workspaces, add one from `[NEW WORKSPACE]`, toggle folders, filter folders on
+  the Search row and toggle a match, type includes and watch the list, Esc back
+  to the pane, delete a workspace, open/close via `ctrl+w`, restart and confirm
+  the scope is reopened, and check an 80-column terminal (Prompt hidden while
+  the pane is open) and a 120-column one (Prompt kept).
 - Two release instances on `s7s demo`: add a workspace in each without
   reloading, confirm `workspaces.json` holds both, then `ctrl+u` in each.

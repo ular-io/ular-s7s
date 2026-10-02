@@ -101,7 +101,7 @@ discrete request fields drained by `runtime`.
 | --- | --- |
 | Shared frame, header, status, shared render helpers | `ui/render.rs` |
 | Session list/search/preview | `ui/session/` |
-| Workspaces screen (list, Detail pane, scoped session table) | `ui/workspace/` |
+| Session screen workspace pane; Workspaces screen (Detail pane beside a display-only list and scoped session table) | `ui/workspace/` |
 | Detail screen | `ui/detail/` |
 | New Session dialog | `ui/new_session/` |
 | Profile screen/forms | `ui/profile/` |

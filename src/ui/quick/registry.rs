@@ -64,7 +64,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Open Workspace Window",
         shortcut: None,
         aliases: &["go", "switch", "view", "list", "screen"],
-        description: Some("Edit workspaces: name, include/exclude words, folders"),
+        description: Some("Show the workspace list beside the sessions"),
     },
     CommandSpec {
         id: CommandId::OpenProfileWindow,
