@@ -337,9 +337,10 @@ pub(crate) fn draw_table_with(
         .block(titled_block_nav(
             &title,
             table_focus,
+            table_dimmed,
             nav.0,
             nav.1,
-            th.accent,
+            th,
         ))
         .row_highlight_style(row_highlight_style)
         // Reserves 1 space to the left of all rows (padding). The highlighted row spans across this space.
@@ -373,8 +374,19 @@ pub(crate) fn draw_table_with(
 pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
     let th = &app.theme;
     let preview_focus = app.focus == Focus::Preview && app.mode == UiMode::Table;
-    let block = titled_block_nav(" Prompt ", preview_focus, true, true, th.accent);
+    // Every pane without focus fades, as the table does when this one has it;
+    // an overlay or the search prompt leaves both undimmed.
+    let dimmed = app.focus != Focus::Preview && app.mode == UiMode::Table;
+    let block = titled_block_nav(" Prompt ", preview_focus, dimmed, true, true, th);
     let inner_w = area.width.saturating_sub(2) as usize;
+    let (heading_style, content_style) = if dimmed {
+        (th.soft_dim().add_modifier(Modifier::BOLD), th.soft_dim())
+    } else {
+        (
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            Style::default(),
+        )
+    };
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(s) = app.current() {
@@ -383,7 +395,7 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
             app.bookmarks.contains(s),
             inner_w,
             th,
-            false,
+            dimmed,
         ));
         lines.push(Line::from(Span::styled(
             "─".repeat(inner_w.max(1)),
@@ -398,7 +410,7 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
                 resolved.is_some_and(|s| app.bookmarks.contains(s)),
                 inner_w,
                 th,
-                false,
+                dimmed,
             ));
             lines.push(Line::from(Span::styled(
                 "─".repeat(inner_w.max(1)),
@@ -407,10 +419,7 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         }
 
         for (idx, turn) in s.user_turns.iter().enumerate() {
-            let mut title = vec![Span::styled(
-                format!("● Q{}", idx + 1),
-                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-            )];
+            let mut title = vec![Span::styled(format!("● Q{}", idx + 1), heading_style)];
             if let Some(timestamp) = s
                 .user_turn_timestamp_ms(idx)
                 .and_then(format_local_datetime_seconds)
@@ -421,7 +430,7 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
             // When expanded, show every user-turn line in full; otherwise keep the omission.
             for display_line in preview_turn_display(turn, app.preview_expanded) {
                 let (raw_line, style) = match display_line {
-                    PreviewTurnLine::Content(line) => (line.to_string(), Style::default()),
+                    PreviewTurnLine::Content(line) => (line.to_string(), content_style),
                     PreviewTurnLine::Omission(count) => (
                         format!("────── ⋯ {count} lines omitted ⋯ ──────"),
                         th.soft_dim().add_modifier(Modifier::DIM),

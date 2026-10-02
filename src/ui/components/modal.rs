@@ -27,11 +27,16 @@ pub(crate) fn modal_block(title: &str, color: Color) -> Block<'static> {
 
 /// Dialog modes that fade the screen behind them. ThemeSelect is excluded because
 /// the backdrop IS the live theme preview; Help repaints the full frame anyway;
-/// Table/Keyword are not dialogs.
+/// Table/Keyword are not dialogs, nor is WorkspaceEdit (the Detail row itself is
+/// the input, so fading it would make the pane being edited look inactive).
 pub(crate) fn backdrop_dimmed(mode: UiMode) -> bool {
     !matches!(
         mode,
-        UiMode::Table | UiMode::Keyword | UiMode::ThemeSelect | UiMode::Help
+        UiMode::Table
+            | UiMode::Keyword
+            | UiMode::WorkspaceEdit
+            | UiMode::ThemeSelect
+            | UiMode::Help
     )
 }
 
@@ -96,21 +101,25 @@ pub(crate) fn render_modal(f: &mut Frame, outer: Rect, block: Block<'static>, th
 /// Block capable of rendering left/right navigation arrows at the corners of the top frame.
 /// `nav_left` / `nav_right` dictate navigable directions when focused.
 /// Arrows only overlay if focused (hidden in unfocused blocks).
+/// `dimmed` = another pane has focus: the frame and title fade with the pane's content.
 pub(crate) fn titled_block_nav(
     title: &str,
     focused: bool,
+    dimmed: bool,
     nav_left: bool,
     nav_right: bool,
-    focus_color: Color,
+    th: &Theme,
 ) -> Block<'static> {
-    // Focus states: focused uses Cyan thick lines (Thick); unfocused uses default thin lines (Plain).
+    // Focus states: focused uses accent thick lines (Thick); unfocused uses thin lines
+    // (Plain), soft-dim while another pane has focus and default otherwise (no pane
+    // focused while an overlay owns input).
     let (border_type, style) = if focused {
         (
             BorderType::Thick,
-            Style::default()
-                .fg(focus_color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
         )
+    } else if dimmed {
+        (BorderType::Plain, th.soft_dim())
     } else {
         (BorderType::Plain, Style::default())
     };

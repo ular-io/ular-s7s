@@ -25,7 +25,10 @@ use ratatui::{
 /// session table takes the rest and hides optional columns on its own. The
 /// Session screen's workspace pane uses the same list width.
 pub(crate) const LIST_MAX_W: u16 = 24;
-/// Fixed last row of the workspace pane, outside the stored list.
+/// Fixed rows of the workspace list, outside the stored list. Bracketed upper
+/// case marks a fixed option (as `[SCRATCH]` does), and a divider separates each
+/// from the stored workspaces. Elsewhere "All" keeps its plain name.
+pub(crate) const ALL_WORKSPACE_LABEL: &str = "[ALL]";
 pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
 const DETAIL_MAX_W: u16 = 40;
 /// Session table width protected before the Detail pane may shrink.
@@ -152,37 +155,65 @@ fn follow(scroll: usize, cursor: usize, view: usize) -> usize {
 fn draw_list(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus, with_new_row: bool) {
     let th = &app.theme;
     let focused = pane.focused;
-    let block = titled_block_nav(" Workspaces ", focused, true, true, th.accent);
+    let block = titled_block_nav(" Workspaces ", focused, pane.dimmed, true, true, th);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width < 3 || inner.height == 0 {
         return;
     }
-    let names: Vec<&str> = std::iter::once(ALL_WORKSPACE_NAME)
-        .chain(app.workspaces.workspaces.iter().map(|w| w.name.as_str()))
-        .chain(with_new_row.then_some(NEW_WORKSPACE_LABEL))
-        .collect();
+    // Display rows: `Some((label, fixed))` is a cursor row, `None` a divider the
+    // cursor never lands on. A list with no stored workspace keeps one divider.
+    let stored = &app.workspaces.workspaces;
+    let mut rows: Vec<Option<(&str, bool)>> = vec![Some((ALL_WORKSPACE_LABEL, true)), None];
+    rows.extend(stored.iter().map(|w| Some((w.name.as_str(), false))));
+    if with_new_row {
+        if !stored.is_empty() {
+            rows.push(None);
+        }
+        rows.push(Some((NEW_WORKSPACE_LABEL, true)));
+    } else if stored.is_empty() {
+        rows.pop();
+    }
     let cursor = if with_new_row {
         app.workspace_pane_cursor()
     } else {
         app.workspaces.active_index().map_or(0, |i| i + 1)
     };
+    // Cursor rows in display order, so `cursor` maps onto its display row.
+    let cursor_row = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.is_some())
+        .nth(cursor)
+        .map_or(0, |(i, _)| i);
     let view = inner.height as usize;
-    let scroll = follow(app.workspace.list_scroll.get(), cursor, view);
+    let scroll = follow(app.workspace.list_scroll.get(), cursor_row, view);
     app.workspace.list_scroll.set(scroll);
 
     // One-cell margins on both sides; the selected highlight spans them.
-    let text_w = (inner.width as usize).saturating_sub(2);
+    let inner_w = inner.width as usize;
+    let text_w = inner_w.saturating_sub(2);
     let mut lines = Vec::new();
-    for (row, name) in names.iter().enumerate().skip(scroll).take(view) {
-        let style = row_style(th, row == cursor, pane);
-        lines.push(Line::from(Span::styled(
-            format!(" {} ", pad_w(&truncate_w(name, text_w), text_w)),
-            style,
-        )));
+    for (i, row) in rows.iter().enumerate().skip(scroll).take(view) {
+        lines.push(match row {
+            Some((name, fixed)) => {
+                let selected = i == cursor_row;
+                let mut style = row_style(th, selected, pane);
+                // Fixed rows also take the key-hint color; the selection and a
+                // faded pane keep their own colors.
+                if *fixed && !selected && !pane.dimmed {
+                    style = style.fg(th.key_hint);
+                }
+                Line::from(Span::styled(
+                    format!(" {} ", pad_w(&truncate_w(name, text_w), text_w)),
+                    style,
+                ))
+            }
+            None => divider(inner_w, th),
+        });
     }
     f.render_widget(Paragraph::new(lines), inner);
-    draw_vscrollbar(f, area, focused, scroll, names.len(), view, th);
+    draw_vscrollbar(f, area, focused, scroll, rows.len(), view, th);
 }
 
 fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
@@ -191,7 +222,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
     let ws = app.workspaces.active_workspace();
     let locked = ws.is_none();
     // ←/→ do not leave this pane (Esc does), so no arrows on its frame.
-    let block = titled_block_nav(" Detail ", focused, false, false, th.accent);
+    let block = titled_block_nav(" Detail ", focused, pane.dimmed, false, false, th);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width < LABEL_W as u16 + 2 || inner.height == 0 {

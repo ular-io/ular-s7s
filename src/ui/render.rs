@@ -1153,6 +1153,44 @@ mod tests {
         assert_ne!(before_fg, after_fg);
     }
 
+    /// Foreground of the first cell of `needle` on the pane border row `y`.
+    fn title_fg(terminal: &Terminal<TestBackend>, y: u16, needle: &str) -> Color {
+        let buffer = terminal.backend().buffer();
+        let row: Vec<&str> = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        let x = (0..row.len())
+            .find(|&x| row[x..].concat().starts_with(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not on the top border"));
+        buffer[(x as u16, y)].fg
+    }
+
+    #[test]
+    fn unfocused_pane_frames_and_titles_fade() {
+        let mut app = crate::ui::test_support::app_with_session();
+        app.theme = crate::theme::default_theme();
+        let (accent, muted) = (app.theme.accent, app.theme.muted);
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        // The body's top border sits right under the five-row header.
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        assert_eq!(title_fg(&terminal, 5, "Session"), accent);
+        assert_eq!(title_fg(&terminal, 5, "Prompt"), muted);
+
+        app.on_key_table(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        assert_eq!(title_fg(&terminal, 5, "Session"), muted);
+        assert_eq!(title_fg(&terminal, 5, "Prompt"), accent);
+
+        // The search prompt (three rows, no backdrop) leaves no pane focused
+        // and none faded.
+        app.on_key_table(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        for title in ["Session", "Prompt"] {
+            let fg = title_fg(&terminal, 8, title);
+            assert!(fg != muted && fg != accent, "{title}: {fg:?}");
+        }
+    }
+
     fn buffer_text(terminal: &Terminal<TestBackend>) -> String {
         let buffer = terminal.backend().buffer();
         let area = *buffer.area();

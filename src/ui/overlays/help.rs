@@ -83,7 +83,7 @@ const HELP_PROFILE: &[(&str, &str)] = &[
     ("ctrl+d", "Delete profile"),
     ("g/home", "Go to top"),
     ("G/end", "Go to bottom"),
-    ("→/l", "Go to session list"),
+    ("→/l", "Go to workspace list"),
 ];
 
 /// "List" is the Session screen's workspace pane (← from the session list);
@@ -92,7 +92,7 @@ const HELP_WORKSPACE: &[(&str, &str)] = &[
     ("←/h", "Session list: show workspace list"),
     ("↑/↓", "List: open workspace · Detail: move row"),
     ("enter", "List: edit workspace · Detail: edit row"),
-    ("+", "List: go to [NEW WORKSPACE]"),
+    ("+", "List: add workspace (name edit starts)"),
     ("ctrl+d/del", "List: delete workspace"),
     ("←/→", "List: go to profiles / close list"),
     ("esc", "List: close · Detail: back to list"),

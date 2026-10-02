@@ -34,7 +34,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
 - **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
-- **Workspaces**: Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it, and survives restarts.
+- **Workspaces**: Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it; s7s always starts with All open.
 - **Project-Free Scratch Sessions**: Pick `[SCRATCH]` at the top of the New Session folder list to start an agent with no project attached — for a question or a quick check. It runs in a shared folder (`~/.config/s7s/scratch`) that is emptied on every start and carries a policy file telling the agent to ask you for a target directory before writing anything, so nothing important is left in a throwaway location.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
 - **Work Handoff**: Park a task you are not doing now in a new session (`s7s session handoff`). The parked session records the work order and stops without acting on it, and keeps a link back to the session it came from, so `ctrl+o` walks to the origin when the work is picked up later.
@@ -155,19 +155,20 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 | `ctrl+e` | Edit profile |
 | `ctrl+d` | Delete profile (default profile cannot be deleted, actual folder remains) |
 | `ctrl+u` | Refresh all profile usages (keeps showing previous value during refresh) |
-| `→` / `l` | Go to the session list (the workspace list stays closed) |
+| `→` / `l` | Go back to the workspace list on the session screen |
 
 ### Workspaces (`←` from the session list)
 
 `←` on the session list opens the workspace list on its left; the session list and
 Prompt stay, narrower (the Prompt is hidden when it would be under 40 columns). The
-first row **All** = every session, the last row `[NEW WORKSPACE]` adds one. The list
-cursor is the open workspace, so the session list follows it as you move.
+first row `[ALL]` = every session, the last row `[NEW WORKSPACE]` adds one; dividers
+set both apart from your workspaces. The list cursor is the open workspace, so the
+session list follows it as you move.
 
 | Key | Action |
 | :-- | :-- |
 | `↑` / `↓`, `home` / `end` | Open another workspace (`[NEW WORKSPACE]` shows All) |
-| `+` | Go to `[NEW WORKSPACE]` |
+| `+` | Add a workspace from any row (same as `enter` on `[NEW WORKSPACE]`) |
 | `enter` | Edit the workspace on the Workspaces screen (nothing on All). On `[NEW WORKSPACE]`: add one and type its name there |
 | `ctrl+d` / `del` | Delete the workspace after confirmation (sessions are untouched) |
 | `→` / `l`, `esc` | Close the list and return to the session list |

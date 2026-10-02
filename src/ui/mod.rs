@@ -299,7 +299,7 @@ impl App {
             (crate::workspaces::WorkspaceStore::default(), None, None)
         } else {
             let path = crate::config::workspaces_path();
-            match crate::workspaces::WorkspaceStore::load(&path) {
+            match crate::workspaces::WorkspaceStore::load_at_startup(&path) {
                 Ok(store) => (store, Some(path), None),
                 Err(err) => (
                     crate::workspaces::WorkspaceStore::default(),

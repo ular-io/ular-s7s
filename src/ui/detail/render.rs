@@ -44,7 +44,9 @@ pub(crate) fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetailState) {
     let th = &app.theme;
     let focused = detail.focus == DetailFocus::Questions && app.mode == UiMode::Table;
-    let block = titled_block_nav(" Prompt ", focused, true, true, th.accent);
+    // Fades only while the Work panel has focus: an overlay leaves it undimmed.
+    let dimmed = detail.focus == DetailFocus::Work && app.mode == UiMode::Table;
+    let block = titled_block_nav(" Prompt ", focused, dimmed, true, true, th);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -67,15 +69,15 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
     // (separator above/below) so the scroll adjustment keeps the whole block visible.
     // Same dimming rule as the session table: when this panel loses focus (Work panel
     // focused) the whole panel renders soft-dim and the selection switches to the
-    // inactive reversed highlight. Selected lines are right-padded so the background
-    // fills the entire row width.
+    // inactive reversed highlight. Under an overlay the selection keeps the inactive
+    // background with readable text. Selected lines are right-padded so the
+    // background fills the entire row width.
     let sel_bg = if focused {
         th.selection_bg
     } else {
         th.selection_inactive_bg
     };
-    let mut rows: Vec<Line> =
-        session_meta_lines(s, app.bookmarks.contains(s), inner_w, th, !focused);
+    let mut rows: Vec<Line> = session_meta_lines(s, app.bookmarks.contains(s), inner_w, th, dimmed);
     rows.push(sep_line());
     if let Some(src) = &s.context_source {
         let resolved = app.context_source_index(s).map(|i| &app.sessions[i]);
@@ -85,7 +87,7 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
             resolved.is_some_and(|s| app.bookmarks.contains(s)),
             inner_w,
             th,
-            !focused,
+            dimmed,
         ));
         rows.push(sep_line());
     }
@@ -97,28 +99,28 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
             sel_top = rows.len().saturating_sub(1);
         }
         let title_style = if selected {
-            if focused {
+            if dimmed {
+                th.soft_dim()
+                    .bg(sel_bg)
+                    .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            } else {
                 Style::default()
                     .bg(sel_bg)
                     .fg(th.selection_fg)
                     .add_modifier(Modifier::BOLD)
-            } else {
-                th.soft_dim()
-                    .bg(sel_bg)
-                    .add_modifier(Modifier::REVERSED | Modifier::BOLD)
             }
-        } else if focused {
-            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+        } else if dimmed {
+            th.soft_dim().add_modifier(Modifier::BOLD)
         } else {
-            th.soft_dim()
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
         };
         let title = format!("● Q{}", idx + 1);
         let mut title_spans = vec![Span::styled(title.clone(), title_style)];
         if let Some(timestamp) = turn.submitted_at_ms.and_then(format_local_datetime_seconds) {
-            let timestamp_style = if selected && focused {
-                th.soft_dim().bg(sel_bg)
-            } else if selected {
+            let timestamp_style = if selected && dimmed {
                 th.soft_dim().bg(sel_bg).add_modifier(Modifier::REVERSED)
+            } else if selected {
+                th.soft_dim().bg(sel_bg)
             } else {
                 th.soft_dim()
             };
@@ -136,15 +138,15 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
         }
         rows.push(Line::from(title_spans));
         let body_style = if selected {
-            if focused {
-                Style::default().bg(sel_bg).fg(th.selection_fg)
-            } else {
+            if dimmed {
                 th.soft_dim().bg(sel_bg).add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().bg(sel_bg).fg(th.selection_fg)
             }
-        } else if focused {
-            Style::default()
-        } else {
+        } else if dimmed {
             th.soft_dim()
+        } else {
+            Style::default()
         };
         // The single expanded turn shows the full prompt; others keep the omission.
         for display_line in preview_turn_display(&turn.user, detail.expanded_prompt == Some(idx)) {
@@ -154,10 +156,10 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
                     let s = th.soft_dim().add_modifier(Modifier::DIM);
                     (
                         format!("────── ⋯ {count} lines omitted ⋯ ──────"),
-                        if selected && focused {
-                            s.bg(sel_bg)
-                        } else if selected {
+                        if selected && dimmed {
                             s.bg(sel_bg).add_modifier(Modifier::REVERSED)
+                        } else if selected {
+                            s.bg(sel_bg)
                         } else {
                             s
                         },
@@ -225,8 +227,19 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
 fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetailState) {
     let th = &app.theme;
     let focused = detail.focus == DetailFocus::Work && app.mode == UiMode::Table;
+    // While the Prompt panel has focus this one fades like every unfocused pane:
+    // text turns soft-dim and headings drop their color but stay bold.
+    let dimmed = detail.focus == DetailFocus::Questions && app.mode == UiMode::Table;
+    let heading = |style: Style| {
+        if dimmed {
+            th.soft_dim().add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    };
+    let body = |style: Style| if dimmed { th.soft_dim() } else { style };
     let title = format!(" Q{} Work & Answer ", detail.selected + 1);
-    let block = titled_block_nav(&title, focused, true, false, th.accent);
+    let block = titled_block_nav(&title, focused, dimmed, true, false, th);
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -281,21 +294,21 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
                 continue;
             }
             flush_hidden(&mut lines, &mut hidden_run);
-            let heading_style = match entry.kind {
+            let heading_style = heading(match entry.kind {
                 WorkKind::AssistantText => th.soft_dim().add_modifier(Modifier::BOLD),
                 WorkKind::ToolCall => th.key_style(),
                 WorkKind::ToolResult => {
                     Style::default().fg(th.success).add_modifier(Modifier::BOLD)
                 }
-            };
+            });
             lines.push(Line::from(Span::styled(
                 format!("● {} {}", entry.kind.heading(), i + 1),
                 heading_style,
             )));
-            let body_style = match entry.kind {
+            let body_style = body(match entry.kind {
                 WorkKind::AssistantText => Style::default(),
                 _ => th.soft_dim(),
-            };
+            });
             push_capped_lines(
                 &mut lines,
                 &entry.text,
@@ -309,7 +322,7 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
         flush_hidden(&mut lines, &mut hidden_run);
         lines.push(Line::from(Span::styled(
             "● Final Answer",
-            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            heading(Style::default().fg(th.accent).add_modifier(Modifier::BOLD)),
         )));
         match turn.final_answer.as_deref() {
             Some(answer) if !answer.trim().is_empty() => {
@@ -317,7 +330,7 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
                     &mut lines,
                     answer,
                     wrap_width,
-                    Style::default(),
+                    body(Style::default()),
                     final_answer_max,
                     th,
                 );

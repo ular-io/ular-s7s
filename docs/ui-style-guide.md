@@ -43,22 +43,38 @@ semantic fields rather than literal colors.
 
 `titled_block_nav` is the shared panel frame:
 
-| State | Border | Style |
+| State | Border and title | Style |
 | --- | --- | --- |
-| Focused | `Thick` | theme accent + bold |
-| Unfocused | `Plain` | default style; do not dim the border |
+| Focused | `Thick` | theme accent + bold, with the `←`/`→` hints |
+| Faded (another pane has focus) | `Plain` | `soft_dim()` |
+| Unfocused, nothing focused (overlay, search prompt) | `Plain` | default style |
 
-When Prompt is focused:
+The caller passes `dimmed` to `titled_block_nav`; the frame never derives it.
 
-- Session header, rows, and agent tag use `soft_dim()`.
-- The selected Session row uses `selection_inactive_bg`, `soft_dim()`, and a
-  weak `REVERSED` signal.
-- Prompt alone keeps the thick accent border.
+Every pane except the focused one fades, on every screen and whatever the pane
+holds (a list or text to read). Fading a pane means:
 
-When Session is focused:
+- Its border and title use `soft_dim()` (table above); only the focused pane is
+  thick.
+- Its text, headers, and tags use `soft_dim()`; colored headings (accent, agent,
+  key, success) drop their color and keep only their bold.
+- A selected row uses `selection_inactive_bg`, `soft_dim()`, and a weak
+  `REVERSED` signal.
+- Separators and the third-level omission markers keep their own fainter styles.
 
-- Its selected row uses `selection_bg`/`selection_fg` plus bold.
-- Prompt uses a plain inactive border.
+Exception: while an overlay or the search prompt owns input no pane is focused
+and none fades, so a dialog is not drawn over a faded screen. A selected row then
+reads `selection_inactive_bg` + `selection_fg` + bold. Pane renderers therefore
+compute `dimmed` as "another pane has focus *and* the mode is the table mode",
+not as `!focused`. A Workspaces Detail in-place edit (`UiMode::WorkspaceEdit`)
+is not an overlay: Detail keeps focus and the other panes stay faded.
+
+Where it applies: Session table, Prompt, and workspace pane (shown only while
+focused); Detail Prompt and Work & Answer; the Workspaces screen's list and
+session table (its Detail pane always has focus).
+
+When Session is focused, its selected row uses `selection_bg`/`selection_fg`
+plus bold, and the Prompt fades.
 
 Inspect border, title, header, normal rows, and selected row together. The
 selected-row style is applied last and can otherwise defeat the intended focus
@@ -225,13 +241,16 @@ Additional rules:
   which sessions a workspace holds. The Prompt never has focus while the pane
   is shown, so hiding it moves no focus.
 - The pane is a focused `titled_block_nav` with both arrows (`←` Profile,
-  `→` close). The session table fades as for a focused Prompt (`soft_dim()`
-  rows, inactive selection); the Prompt keeps its plain unfocused frame.
-- Rows: the fixed "All" first, the stored workspaces, then the fixed
-  `[NEW WORKSPACE]` last, all outside the stored list. The bracketed upper-case
-  label is what distinguishes the fixed option from workspace names, as with
-  `[SCRATCH]`. The cursor row is the open workspace (or `[NEW WORKSPACE]`,
-  showing "All").
+  `→` close). The session table and the Prompt fade like any unfocused pane.
+- Rows: the fixed `[ALL]` first, the stored workspaces, then the fixed
+  `[NEW WORKSPACE]` last, all outside the stored list. Three signals set the
+  fixed rows apart, none of them color alone: the bracketed upper-case label
+  (as with `[SCRATCH]`), a `dim` divider between them and the stored workspaces
+  (one divider when there is none; the cursor never lands on it), and the
+  `key_hint` color on an unselected row of an unfaded pane. The label is
+  list-only (`workspace::render::ALL_WORKSPACE_LABEL`); Detail, palette rows,
+  and messages keep the name "All". The cursor row is the open workspace (or
+  `[NEW WORKSPACE]`, showing "All").
 - While an overlay or the search prompt owns input the pane is drawn unfocused
   and undimmed, like the other workspace panes.
 
@@ -253,8 +272,9 @@ Additional rules:
   (`workspace::render::pane_widths`). Below 104 columns the Detail pane shrinks
   first, to 24, keeping 40 for the table; past that the table hides its
   optional columns under the Session table rules above.
-- The list's first row is the fixed "All" scope, outside the stored list. Its
-  selected row is the workspace being edited.
+- The list is the workspace pane's list without `[NEW WORKSPACE]` and its
+  divider: `[ALL]`, a divider, the stored workspaces. Its selected row is the
+  workspace being edited.
 - Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
   values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
   `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
@@ -278,7 +298,9 @@ Additional rules:
   every value `soft_dim()`, no cursor row, footer `All sessions · cannot be
   edited` — rather than assuming that.
 - In-place edits draw the input inside the Detail row with the hardware cursor;
-  the status bar shows `enter save · esc cancel`.
+  the status bar shows `enter save · esc cancel`. An edit is not a dialog:
+  `backdrop_dimmed` excludes `UiMode::WorkspaceEdit`, so Detail stays focused
+  and unfaded while it is edited.
 
 ## Width and root layout
 

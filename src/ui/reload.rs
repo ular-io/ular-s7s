@@ -111,12 +111,11 @@ mod tests {
         app
     }
 
-    /// Workspace pane `+` then Enter: a new workspace with its name in edit.
+    /// Workspace pane `+`: a new workspace with its name in edit.
     fn start_new_workspace(app: &mut App) {
         use crossterm::event::{KeyCode, KeyModifiers};
         app.open_workspace_pane();
         app.on_key_table(key(KeyCode::Char('+'), KeyModifiers::NONE));
-        app.on_key_table(key(KeyCode::Enter, KeyModifiers::NONE));
     }
 
     fn names(app: &App) -> Vec<String> {
