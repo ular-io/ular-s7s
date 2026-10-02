@@ -658,3 +658,64 @@ fn all_workspace_detail_is_locked() {
     assert!(text.contains("All sessions · cannot be edited"), "{text}");
     assert!(text.contains("Folders · all folders"), "{text}");
 }
+
+/// Buffer cell at the first character of `needle` inside columns `cols`,
+/// searched below the header.
+fn cell_at<'a>(
+    buf: &'a ratatui::buffer::Buffer,
+    needle: &str,
+    cols: std::ops::Range<u16>,
+) -> &'a ratatui::buffer::Cell {
+    // Skips the five-row header, whose shortcut labels may contain `needle`.
+    for y in 5..buf.area.height {
+        let row: Vec<&str> = cols.clone().map(|x| buf[(x, y)].symbol()).collect();
+        for x in 0..row.len() {
+            if row[x..].concat().starts_with(needle) {
+                let x = cols.start + x as u16;
+                return &buf[(x, y)];
+            }
+        }
+    }
+    panic!("{needle:?} not rendered");
+}
+
+#[test]
+fn panes_without_focus_fade_like_the_session_screen() {
+    use ratatui::style::Modifier;
+    let mut app = app_with_workspace();
+    on_workspace_screen(&mut app);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.workspace.pane, WorkspacePane::List);
+    let draw = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).expect("terminal");
+        terminal
+            .draw(|f| crate::ui::render::draw(f, app))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    };
+    let (list, detail, sessions) = (0..24, 24..64, 64..140);
+    let muted = app.theme.muted;
+
+    // List focused: Detail and the session table fade, and Detail's cursor row
+    // keeps only the weak reversed signal.
+    let buf = draw(&app);
+    let list_row = cell_at(&buf, "Api", list.clone());
+    assert_eq!(list_row.bg, app.theme.selection_bg);
+    let name_value = cell_at(&buf, "Api", detail.clone());
+    assert_eq!(name_value.fg, muted);
+    assert!(name_value.modifier.contains(Modifier::REVERSED));
+    assert_eq!(cell_at(&buf, "FOLDER", sessions.clone()).fg, muted);
+
+    // Sessions focused: the list's open workspace and Detail fade instead.
+    app.workspace.pane = WorkspacePane::Sessions;
+    let buf = draw(&app);
+    let list_row = cell_at(&buf, "Api", list.clone());
+    assert_eq!(list_row.fg, muted);
+    assert_eq!(list_row.bg, app.theme.selection_inactive_bg);
+    assert!(list_row.modifier.contains(Modifier::REVERSED));
+    assert_eq!(cell_at(&buf, "Api", detail.clone()).fg, muted);
+    assert_eq!(
+        cell_at(&buf, "FOLDER", sessions.clone()).fg,
+        app.theme.accent
+    );
+}
