@@ -69,27 +69,51 @@ pub(crate) fn draw_workspace_screen(f: &mut Frame, app: &App, area: Rect) {
         .split(body);
     let active = matches!(app.mode, UiMode::Table | UiMode::WorkspaceEdit);
     let pane = app.workspace.pane;
-    draw_list(f, app, cols[0], active && pane == WorkspacePane::List);
-    draw_detail(f, app, cols[1], active && pane == WorkspacePane::Detail);
+    // As on the Session and Detail screens, the panes that do not own focus fade
+    // while one does; an overlay or the search prompt leaves none focused or dimmed.
+    let state = |p: WorkspacePane| PaneFocus {
+        focused: active && pane == p,
+        dimmed: active && pane != p,
+    };
+    draw_list(f, app, cols[0], state(WorkspacePane::List));
+    draw_detail(f, app, cols[1], state(WorkspacePane::Detail));
+    let sessions = state(WorkspacePane::Sessions);
     crate::ui::session::render::draw_table_with(
         f,
         app,
         cols[2],
-        app.mode == UiMode::Table && pane == WorkspacePane::Sessions,
-        false,
+        sessions.focused && app.mode == UiMode::Table,
+        sessions.dimmed,
         (true, true),
     );
 }
 
-/// Selected-row style shared by both panes, mirroring the session table.
-fn row_style(th: &Theme, selected: bool, focused: bool) -> Style {
-    match (selected, focused) {
-        (true, true) => Style::default()
+#[derive(Clone, Copy)]
+struct PaneFocus {
+    focused: bool,
+    /// Another pane owns focus, so this one renders `soft_dim()`.
+    dimmed: bool,
+}
+
+/// Row style shared by the list and Detail panes, mirroring the session table:
+/// a focused selection is `selection_bg` + bold, a dimmed pane fades every row
+/// and keeps only the weak reversed signal on the selected one.
+fn row_style(th: &Theme, selected: bool, pane: PaneFocus) -> Style {
+    match (selected, pane.focused, pane.dimmed) {
+        (true, true, _) => Style::default()
             .bg(th.selection_bg)
             .fg(th.selection_fg)
             .add_modifier(Modifier::BOLD),
-        (true, false) => Style::default().bg(th.selection_inactive_bg),
-        _ => Style::default(),
+        (true, false, true) => th
+            .soft_dim()
+            .bg(th.selection_inactive_bg)
+            .add_modifier(Modifier::REVERSED),
+        (true, false, false) => Style::default()
+            .bg(th.selection_inactive_bg)
+            .fg(th.selection_fg)
+            .add_modifier(Modifier::BOLD),
+        (false, _, true) => th.soft_dim(),
+        (false, _, false) => Style::default(),
     }
 }
 
@@ -106,8 +130,9 @@ fn follow(scroll: usize, cursor: usize, view: usize) -> usize {
     }
 }
 
-fn draw_list(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+fn draw_list(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
     let th = &app.theme;
+    let focused = pane.focused;
     let block = titled_block_nav(" Workspaces ", focused, true, true, th.accent);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -131,7 +156,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         .filter(|e| e.in_list && app.mode == UiMode::WorkspaceEdit);
     let mut lines = Vec::new();
     for (row, name) in names.iter().enumerate().skip(scroll).take(view) {
-        let style = row_style(th, row == cursor, focused);
+        let style = row_style(th, row == cursor, pane);
         let text = match edit.filter(|_| row == cursor) {
             Some(edit) => {
                 let (visible, cursor_x) = input_view(&edit.input, text_w);
@@ -150,8 +175,9 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     draw_vscrollbar(f, area, focused, scroll, names.len(), view, th);
 }
 
-fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
     let th = &app.theme;
+    let focused = pane.focused;
     let ws = app.workspaces.active_workspace();
     let locked = ws.is_none();
     let block = titled_block_nav(" Detail ", focused, true, true, th.accent);
@@ -170,7 +196,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     // A locked ("All") pane is never focusable, so no cursor row is drawn there.
     let cursor = (!locked).then_some(state.detail_cursor);
     let label_style = th.soft_dim();
-    let value_style = if locked {
+    let value_style = if locked || pane.dimmed {
         th.soft_dim()
     } else {
         Style::default()
@@ -183,7 +209,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             WorkspaceField::Includes => ("Includes", ws.map_or("", |w| &w.includes)),
             WorkspaceField::Excludes => ("Excludes", ws.map_or("", |w| &w.excludes)),
         };
-        let style = row_style(th, cursor == Some(row), focused);
+        let style = row_style(th, cursor == Some(row), pane);
         let editing = edit.filter(|e| e.field == *field && cursor == Some(row));
         let value_span = match editing {
             Some(edit) => {
@@ -240,7 +266,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         let text_style = if search_focused && query.select_all {
             Style::default().fg(th.selection_fg).bg(th.selection_bg)
         } else {
-            Style::default()
+            value_style
         };
         search_line.push(Span::styled(visible, text_style));
     }
@@ -274,11 +300,13 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         let checked = ws.is_some_and(|w| w.has_folder(folder));
         let mark = if checked { "[✓]" } else { "[ ]" };
         let label = folder_display_label(folder);
-        let style = row_style(th, folder_cursor == Some(i), focused);
-        let mark_style = if checked && !locked {
-            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
-        } else {
-            th.soft_dim()
+        let style = row_style(th, folder_cursor == Some(i), pane);
+        // A dimmed pane drops the accent, as the session table drops agent
+        // colors, but keeps a checked mark bold.
+        let mark_style = match (checked && !locked, pane.dimmed) {
+            (true, false) => Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            (true, true) => th.soft_dim().add_modifier(Modifier::BOLD),
+            (false, _) => th.soft_dim(),
         };
         lines.push(Line::from(vec![
             Span::styled(" ", style),

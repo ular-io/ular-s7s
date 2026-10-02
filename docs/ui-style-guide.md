@@ -216,13 +216,20 @@ Additional rules:
   table (`session::render::draw_table_with`, the Session screen's table with
   the caller's focus state). Each uses `titled_block_nav`; only the focused
   pane is thick.
+- The panes without focus follow the Prompt-focused Session rule
+  (`workspace::render::row_style`): every row and the table header use
+  `soft_dim()`, and a selected row keeps `selection_inactive_bg`, `soft_dim()`,
+  and a weak `REVERSED` signal. A checked folder mark drops its accent but stays
+  bold. While an overlay or the search prompt owns input no pane is focused or
+  dimmed, so a selected row reads `selection_inactive_bg` + `selection_fg` +
+  bold, as the unfocused session table does.
 - Widths include borders: list 24, Detail 40, sessions take the rest
   (`workspace::render::pane_widths`). Below 104 columns the Detail pane shrinks
   first, to 24, keeping 40 for the table; past that the table hides its
   optional columns under the Session table rules below.
 - The list's first row is the fixed "All" scope, outside the stored list. The
   list cursor is the open workspace, so its selected row stays highlighted
-  (`selection_inactive_bg`) when another pane has focus.
+  (the dimmed selection above) when another pane has focus.
 - Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
   values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
   `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
