@@ -9,7 +9,7 @@ use super::state::{
 use crate::theme::Theme;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
 use crate::ui::components::scrollbar::draw_vscrollbar;
-use crate::ui::components::text::{pad_w, truncate_w};
+use crate::ui::components::text::{count_note, fit_before_note, pad_w, truncate_w};
 use crate::ui::render::{centered_fixed_rect, display_path, input_view};
 use crate::ui::{App, UiMode};
 use crate::workspaces::ALL_WORKSPACE_NAME;
@@ -294,6 +294,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
         view,
     );
     state.folder_scroll.set(scroll);
+    // " [✓] " before the label and one trailing space.
     let label_w = w.saturating_sub(6);
     let shown = state.visible.len();
     for (i, folder) in state.visible_folders().enumerate().skip(scroll).take(view) {
@@ -308,14 +309,16 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
             (true, true) => th.soft_dim().add_modifier(Modifier::BOLD),
             (false, _) => th.soft_dim(),
         };
+        let note = count_note(state.folder_counts.get(folder).copied().unwrap_or(0));
         lines.push(Line::from(vec![
             Span::styled(" ", style),
             Span::styled(mark, mark_style.patch(style)),
             Span::styled(" ", style),
             Span::styled(
-                pad_w(&truncate_w(&label, label_w), label_w),
+                fit_before_note(&label, label_w, &note),
                 value_style.patch(style),
             ),
+            Span::styled(note, style.patch(th.soft_dim())),
             Span::styled(" ", style),
         ]));
     }

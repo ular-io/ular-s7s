@@ -5,6 +5,7 @@
 
 use crate::ui::TextInput;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Panes of the Workspaces screen, left to right. Moved between with ←/→.
@@ -62,6 +63,9 @@ pub struct WorkspaceScreenState {
     /// is opened (its selected folders first, then the rest by latest activity).
     /// Toggling does not reorder, so the cursor stays on the row it toggled.
     pub folders: Vec<PathBuf>,
+    /// Sessions per folder over every session, captured with `folders`; a
+    /// stored folder with no session left is absent and reads 0.
+    pub folder_counts: HashMap<PathBuf, usize>,
     /// Folder search, typed directly while the cursor is on `SEARCH_ROW`
     /// (no Enter). Not stored; cleared when the scope changes.
     pub folder_query: TextInput,
@@ -79,6 +83,7 @@ impl Default for WorkspaceScreenState {
             pane: WorkspacePane::List,
             detail_cursor: 0,
             folders: Vec::new(),
+            folder_counts: HashMap::new(),
             folder_query: TextInput::new(String::new()),
             visible: Vec::new(),
             edit: None,

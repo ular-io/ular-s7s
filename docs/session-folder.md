@@ -18,6 +18,10 @@ Palette-only command (`:` → `Change Folder`), implemented in
   path in the stored conversation keeps working.
 - The chosen folder must already exist. Creating a project folder belongs to New
   Session.
+- The pick list shows every session folder by latest session activity
+  (`ui::cwds_by_latest`), then the scratch workspace if no session has run
+  there; typed matches move to the top without changing that order. Each row
+  ends with the folder's total session count as a dim ` (N)`.
 - The value is written to `~/.config/s7s/session_workspaces.json` by
   `AppEffect::ChangeSessionFolder`, and dropping that record restores the folder
   the agent recorded. `session_delete` clears the record for every agent.

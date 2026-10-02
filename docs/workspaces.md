@@ -63,11 +63,16 @@ Words match through `filter::token_matches`, the same text as `/` search
 - Names are trimmed, non-empty, unique case-insensitively, and may not be
   `All`: palette rows are labelled `Open Workspace <name>`, so a name must
   identify one row. A rejected name keeps the edit open with a status message.
-- Detail folder rows list the workspace's selected folders first (selection
-  order), then every other session cwd by latest activity. The order is
+- Detail folder rows list the workspace's selected folders first, then every
+  other session cwd; each group is ordered by latest session activity (newest
+  first, ties by path), and a selected folder with no remaining session sorts
+  last in its group. The stored selection order is not used. The order is
   captured when the scope changes and kept while toggling, so `space` never
   moves the cursor. A stored folder with no remaining session still appears so
-  it can be unchecked. `[✓]` = selected.
+  it can be unchecked. `[✓]` = selected. Each row ends with a dim ` (N)`: the
+  folder's sessions across every session, not narrowed by the session filters
+  or the workspace's include/exclude words, so a stored folder with no session
+  left reads `(0)`. Captured with the order (`WorkspaceScreenState::folder_counts`).
 - A `Search` row sits between the `Folders` heading and the folder rows. It is
   an ordinary cursor row (`SEARCH_ROW`), reached and left only with `↑`/`↓`;
   while the cursor is on it, keys edit the query directly with no Enter and no

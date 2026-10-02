@@ -14,7 +14,7 @@
 
 use crate::model::Agent;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
-use crate::ui::components::text::truncate_w;
+use crate::ui::components::text::{count_note, fit_before_note};
 use crate::ui::new_session::input::resolve_input_path;
 use crate::ui::new_session::state::is_bare_project_name;
 use crate::ui::render::{centered_fixed_rect, input_view};
@@ -26,6 +26,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Padding, Paragraph},
     Frame,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ---- State ----
@@ -38,8 +39,11 @@ pub enum ChangeFolderFocus {
 
 pub struct ChangeFolderState {
     pub input: TextInput,
-    /// Every folder already known from the session list, sorted and de-duplicated.
+    /// Every folder already known from the session list, by latest activity,
+    /// then the scratch workspace if no session has run there.
     pub folders: Vec<PathBuf>,
+    /// Sessions per folder over every session; a folder with none reads 0.
+    pub folder_counts: HashMap<PathBuf, usize>,
     /// Indices into `folders`; the first `match_count` entries match the input.
     pub ordered: Vec<usize>,
     pub match_count: usize,
@@ -52,7 +56,8 @@ pub struct ChangeFolderState {
 }
 
 impl ChangeFolderState {
-    /// Reorders the pick list so input matches lead. Non-matching folders are
+    /// Reorders the pick list so input matches lead, each subset keeping the
+    /// latest-activity order of `folders`. Non-matching folders are
     /// appended rather than hidden, mirroring the New Session folder dropdown so
     /// the list never appears to lose entries while typing.
     pub(crate) fn rank(&mut self) {
@@ -155,21 +160,18 @@ impl App {
             return;
         }
         let current = session.cwd.to_string_lossy().into_owned();
-        let mut folders: Vec<PathBuf> = self
-            .sessions
-            .iter()
-            .map(|s| s.cwd.clone())
-            .filter(|p| !p.as_os_str().is_empty())
-            .collect();
-        folders.push(crate::scratch::dir());
-        folders.sort_unstable();
-        folders.dedup();
+        let mut folders = crate::ui::cwds_by_latest(&self.sessions);
+        let scratch = crate::scratch::dir();
+        if !folders.contains(&scratch) {
+            folders.push(scratch);
+        }
 
         let mut state = ChangeFolderState {
             // Prefilled and selected: typing replaces the current folder outright,
             // which is the common case when the session landed in the wrong one.
             input: TextInput::selected(current),
             folders,
+            folder_counts: crate::ui::cwd_counts(&self.sessions),
             ordered: Vec::new(),
             match_count: 0,
             cursor: None,
@@ -412,7 +414,8 @@ pub(crate) fn draw_change_folder_modal(f: &mut Frame, app: &App) {
         .take(height)
         .filter_map(|(row, &folder_i)| {
             let path = state.folders.get(folder_i)?;
-            let text = truncate_w(&path.to_string_lossy(), list_area.width as usize);
+            let note = count_note(state.folder_counts.get(path).copied().unwrap_or(0));
+            let text = fit_before_note(&path.to_string_lossy(), list_area.width as usize, &note);
             let style = if state.cursor == Some(row) {
                 Style::default().fg(th.selection_fg).bg(th.selection_bg)
             } else if row < state.match_count {
@@ -420,7 +423,10 @@ pub(crate) fn draw_change_folder_modal(f: &mut Frame, app: &App) {
             } else {
                 th.soft_dim()
             };
-            Some(Line::from(Span::styled(text, style)))
+            Some(Line::from(vec![
+                Span::styled(text, style),
+                Span::styled(note, style.patch(th.soft_dim())),
+            ]))
         })
         .collect();
     f.render_widget(Paragraph::new(lines), list_area);

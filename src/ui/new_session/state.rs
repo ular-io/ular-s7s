@@ -3,6 +3,7 @@
 
 use crate::model::Agent;
 use crate::ui::TextInput;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Focused control in the new session dialog (cycled via Tab / Shift+Tab).
@@ -69,6 +70,9 @@ pub struct NewSessionState {
     pub input: TextInput,
     /// Existing workspace folders (full paths) discovered across all sessions.
     pub folders: Vec<PathBuf>,
+    /// Sessions per folder over every session, including the scratch workspace
+    /// (its fixed row looks it up by `scratch::dir()`).
+    pub folder_counts: HashMap<PathBuf, usize>,
     /// Sorted indices of `folders` prioritizing matches. The first `match_count` items are matches
     /// for the input string, followed by non-matching items (not hidden).
     pub ordered: Vec<usize>,
@@ -184,7 +188,7 @@ impl NewSessionState {
     }
 
     /// Reorders folder options placing input matches at the top. Non-matching items are appended
-    /// to the tail rather than hidden, preserving alphabetical order within each subset.
+    /// to the tail rather than hidden, preserving latest-activity order within each subset.
     pub(crate) fn reorder_folders(&mut self) {
         let q = crate::normalize::nfc_lower(self.input.value.trim());
         let mut matched = Vec::new();

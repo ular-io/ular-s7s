@@ -1873,6 +1873,7 @@ mod tests {
                 select_all: false,
             },
             folders: Vec::new(),
+            folder_counts: Default::default(),
             ordered: Vec::new(),
             match_count: 0,
             folder_cursor: None,
@@ -1914,6 +1915,38 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(footer_x, footer_y)].fg, app.theme.muted);
         assert_ne!(buffer[(label_x, label_y)].fg, app.theme.muted);
+    }
+
+    /// Every dropdown row, the fixed scratch row included, ends with a dim `(N)`.
+    #[test]
+    fn folder_dropdown_rows_end_with_a_dim_session_count() {
+        let mut app = session_app();
+        app.theme = crate::theme::default_theme();
+        app.mode = crate::ui::UiMode::NewSession;
+        let mut state = new_session_state(None);
+        state.focus = crate::ui::NewSessionFocus::Folder;
+        state.dropdown_open = true;
+        state.folders = vec![std::path::PathBuf::from("/tmp/work/web")];
+        state
+            .folder_counts
+            .insert(std::path::PathBuf::from("/tmp/work/web"), 12);
+        state.reorder_folders();
+        state.folder_cursor = Some(0);
+        app.new_session = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 34)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        let (web_x, web_y) = find_cell(&terminal, "(12)");
+        let (scratch_x, scratch_y) = find_cell(&terminal, "(0)");
+        assert_eq!(
+            web_x + 1,
+            scratch_x,
+            "right-aligned counts share an end column"
+        );
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(web_x, web_y)].fg, app.theme.muted);
+        // The cursor row keeps the count dim too.
+        assert_eq!(buffer[(scratch_x, scratch_y)].fg, app.theme.muted);
     }
 
     /// A whole-value selection has to be visible before the first key: the value is

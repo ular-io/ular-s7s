@@ -53,6 +53,19 @@ pub(crate) fn pad_w(s: &str, w: usize) -> String {
     }
 }
 
+/// Session-count note drawn at the right edge of a folder row: ` (N)`.
+pub(crate) fn count_note(n: usize) -> String {
+    format!(" ({n})")
+}
+
+/// Fits `label` into the `w` columns left of `note`, padded so the note ends
+/// at the row's right edge. The note is never dropped: a narrow row truncates
+/// the label instead.
+pub(crate) fn fit_before_note(label: &str, w: usize, note: &str) -> String {
+    let avail = w.saturating_sub(note.width());
+    pad_w(&truncate_w(label, avail), avail)
+}
+
 /// Truncates to `max_w` display columns using a custom ellipsis marker.
 pub(crate) fn truncate_w_with_ellipsis(s: &str, max_w: usize, ellipsis: &str) -> String {
     if s.width() <= max_w {
@@ -231,5 +244,17 @@ mod tests {
             vec!["a".to_string(), FAMILY.to_string(), "b".to_string()]
         );
         assert_eq!(truncate_w(FAMILY, 1), "…");
+    }
+
+    #[test]
+    fn a_count_note_ends_at_the_right_edge_and_is_never_dropped() {
+        let note = count_note(12);
+        assert_eq!(note, " (12)");
+        let label = fit_before_note("web", 12, &note);
+        assert_eq!(format!("{label}{note}"), "web     (12)");
+        // Too narrow for the label: the label gives way, the note stays whole.
+        let label = fit_before_note("frontend", 8, &note);
+        assert_eq!(format!("{label}{note}"), "fr… (12)");
+        assert_eq!(fit_before_note("frontend", 3, &note), "");
     }
 }

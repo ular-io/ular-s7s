@@ -11,7 +11,7 @@ use crate::model::Agent;
 use crate::theme::Theme;
 use crate::ui::components::modal::{modal_block, render_modal};
 use crate::ui::components::scrollbar::draw_vscrollbar;
-use crate::ui::components::text::truncate_w;
+use crate::ui::components::text::{count_note, fit_before_note, truncate_w};
 use crate::ui::render::centered_fixed_rect;
 use crate::ui::{insert_paste_at, App, UiMode};
 use ratatui::{
@@ -21,7 +21,7 @@ use ratatui::{
     widgets::{List, ListItem, Padding, Paragraph},
     Frame,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // ---- State ----
 
@@ -116,6 +116,7 @@ impl App {
 
     pub(crate) fn open_folder_modal(&mut self) {
         self.folder_query.clear();
+        self.folder_counts = self.folder_counts_without_folder_filter();
         self.folder_order = (0..self.all_folders.len()).collect();
         self.folder_order
             .sort_by_key(|&i| !self.filter.folders.contains(self.all_folders[i].as_str()));
@@ -133,6 +134,22 @@ impl App {
             .collect();
         self.folder_modal = Some(ModalState::new(labels, pre));
         self.mode = UiMode::FolderModal;
+    }
+
+    /// Sessions per folder name under every active condition except the folder
+    /// filter itself (keyword, agent, profile, bookmark, open workspace).
+    fn folder_counts_without_folder_filter(&self) -> HashMap<String, usize> {
+        let mut others = self.filter.clone();
+        others.folders.clear();
+        let kept = crate::filter::apply_with_bookmarks(&self.sessions, &others, |s| {
+            self.bookmarks.contains(s)
+        });
+        let ws = self.workspaces.active_workspace();
+        let sessions = kept
+            .into_iter()
+            .map(|i| &self.sessions[i])
+            .filter(|s| ws.is_none_or(|w| w.matches(s)));
+        crate::ui::count_by(sessions, crate::ui::folder_name_key)
     }
 
     /// Re-evaluates visible folder lists in folder modal based on `folder_query`.
@@ -296,7 +313,7 @@ pub(crate) fn draw_agent_modal(f: &mut Frame, app: &App) {
         .labels
         .iter()
         .enumerate()
-        .map(|(i, label)| modal_list_item(i, label, m, inner_w, th))
+        .map(|(i, label)| modal_list_item(i, label, None, m, inner_w, th))
         .collect();
     f.render_widget(List::new(items), inner);
 }
@@ -400,7 +417,10 @@ pub(crate) fn draw_folder_modal(f: &mut Frame, app: &App) {
         .enumerate()
         .skip(offset)
         .take(list_h)
-        .map(|(i, label)| modal_list_item(i, label, m, inner_w, th))
+        .map(|(i, label)| {
+            let count = app.folder_counts.get(label).copied().unwrap_or(0);
+            modal_list_item(i, label, Some(count), m, inner_w, th)
+        })
         .collect();
     f.render_widget(List::new(items), rows[2]);
 
@@ -415,10 +435,12 @@ pub(crate) fn draw_folder_modal(f: &mut Frame, app: &App) {
     }
 }
 
-/// Individual modal list item: checkbox mark + label (truncated to inner width) + cursor highlight.
+/// Individual modal list item: checkbox mark + label (truncated to inner width)
+/// + cursor highlight, with an optional session count at the right edge.
 pub(super) fn modal_list_item<'a>(
     i: usize,
     label: &str,
+    count: Option<usize>,
     m: &ModalState,
     inner_w: usize,
     th: &Theme,
@@ -428,11 +450,21 @@ pub(super) fn modal_list_item<'a>(
     } else {
         "[ ]"
     };
-    let text = truncate_w(&format!("{} {}", mark, label), inner_w);
+    let row = format!("{} {}", mark, label);
+    let line = match count {
+        Some(n) => {
+            let note = count_note(n);
+            Line::from(vec![
+                Span::raw(fit_before_note(&row, inner_w, &note)),
+                Span::styled(note, th.soft_dim()),
+            ])
+        }
+        None => Line::from(truncate_w(&row, inner_w)),
+    };
     let style = if i == m.cursor {
         Style::default().fg(th.selection_fg).bg(th.selection_bg)
     } else {
         Style::default()
     };
-    ListItem::new(Line::from(text)).style(style)
+    ListItem::new(line).style(style)
 }

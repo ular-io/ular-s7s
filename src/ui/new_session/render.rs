@@ -3,7 +3,9 @@
 //! overlay popup.
 
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
-use crate::ui::components::text::{pad_w, sanitize_single_line, truncate_w};
+use crate::ui::components::text::{
+    count_note, fit_before_note, pad_w, sanitize_single_line, truncate_w,
+};
 use crate::ui::render::{centered_fixed_rect, input_view, usage_spans};
 use crate::ui::App;
 use ratatui::{
@@ -435,7 +437,13 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 .skip(offset)
                 .take(list_h)
                 .map(|(pos, row)| {
-                    let text = format!(" {} ", truncate_w(&row.label, inner_w.saturating_sub(2)));
+                    let note = count_note(row.count);
+                    let label = fit_before_note(&row.label, inner_w.saturating_sub(2), &note);
+                    let line = Line::from(vec![
+                        Span::raw(format!(" {label}")),
+                        Span::styled(note, th.soft_dim()),
+                        Span::raw(" "),
+                    ]);
                     let style = if state.folder_cursor == Some(pos) {
                         Style::default().fg(th.selection_fg).bg(th.selection_bg)
                     } else if row.matched {
@@ -443,7 +451,7 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                     } else {
                         th.soft_dim()
                     };
-                    ListItem::new(Line::from(text)).style(style)
+                    ListItem::new(line).style(style)
                 })
                 .collect()
         };
@@ -530,6 +538,8 @@ struct FolderRow {
     label: String,
     /// Drawn in normal color. Unmatched folders render dim; the scratch row never does.
     matched: bool,
+    /// Sessions in the folder, drawn as a dim `(N)` at the right edge.
+    count: usize,
 }
 
 /// Dropdown rows in display order: the fixed `[SCRATCH]` workspace followed by
@@ -538,9 +548,11 @@ struct FolderRow {
 fn folder_dropdown_rows(state: &crate::ui::NewSessionState) -> Vec<FolderRow> {
     // Bracketed and upper case: folder rows are bare basenames, so the label itself
     // has to say this row is not one of them.
+    let count = |path: &std::path::Path| state.folder_counts.get(path).copied().unwrap_or(0);
     let mut rows = vec![FolderRow {
         label: crate::scratch::LABEL.to_string(),
         matched: true,
+        count: count(&crate::scratch::dir()),
     }];
     rows.extend(
         state
@@ -551,6 +563,7 @@ fn folder_dropdown_rows(state: &crate::ui::NewSessionState) -> Vec<FolderRow> {
             .map(|(pos, path)| FolderRow {
                 label: folder_name_only(path),
                 matched: pos < state.match_count,
+                count: count(path),
             }),
     );
     rows
@@ -585,6 +598,7 @@ mod tests {
                 select_all: false,
             },
             folders: Vec::new(),
+            folder_counts: Default::default(),
             ordered: Vec::new(),
             match_count: 0,
             folder_cursor: None,
