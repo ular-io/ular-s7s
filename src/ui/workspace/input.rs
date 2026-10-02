@@ -184,7 +184,12 @@ impl App {
             KeyCode::Char('u') if ctrl => {
                 self.pending_effect = Some(crate::ui::effect::AppEffect::RefreshAll);
             }
-            KeyCode::Char('+') => self.workspace_pane_move(isize::MAX),
+            // Same as Enter on `[NEW WORKSPACE]`: the cursor goes there first, so
+            // an Esc on the new name returns to that row.
+            KeyCode::Char('+') => {
+                self.workspace_pane_move(isize::MAX);
+                self.add_workspace();
+            }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.close_workspace_pane();
                 self.switch_screen(Screen::Profile);

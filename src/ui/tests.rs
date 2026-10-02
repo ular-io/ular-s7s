@@ -120,9 +120,11 @@ fn left_right_switch_between_profile_workspace_pane_and_session_list() {
     app.on_key_table(key(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Profile);
 
-    // Profile view -> Right key -> straight to the session list (independent of
-    // the selected profile); the workspace pane stays closed.
+    // Profile view -> Right key -> back to the workspace pane (independent of
+    // the selected profile) -> Right key -> session list.
     app.on_key_profile_table(key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.screen, Screen::Session);
+    assert_eq!(app.focus, Focus::Workspaces);
+    app.on_key_table(key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Table);
 }

@@ -168,8 +168,9 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
             &title,
             app.mode == UiMode::Table,
             false,
+            false,
             true,
-            th.accent,
+            th,
         ))
         .row_highlight_style(
             Style::default()

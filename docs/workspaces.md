@@ -14,8 +14,7 @@ workspace (`scratch.rs`).
 
 ## Screen order
 
-`Profile ← workspace pane ⇄ Session list ⇄ Prompt → Detail`, and
-`Profile → Session list`.
+`Profile ⇄ workspace pane ⇄ Session list ⇄ Prompt → Detail`.
 
 - The workspace pane is part of the Session screen (`Focus::Workspaces`), drawn
   left of the session table only while it has focus. There is no separate
@@ -23,9 +22,9 @@ workspace (`scratch.rs`).
 - Session list `←` (Table focus) shows the pane, focused
   (`App::open_workspace_pane`). In the pane, `→`/`l`/Esc close it and focus the
   table; `←`/`h` close it and go to Profile.
-- Profile `→` goes to the Session screen with the table focused and the pane
-  closed. `switch_screen` to any other screen also closes it, so a palette
-  `Open Session Window` lands on the table.
+- Profile `→` goes back to the Session screen with the pane focused on the open
+  workspace, so `←`/`→` retrace the same path. `switch_screen` to any other
+  screen closes the pane, so a palette `Open Session Window` lands on the table.
 - Enter on a workspace row opens the **Workspaces screen** for it
   (`Screen::Workspace`), Detail cursor on Name. Only its Detail pane takes keys;
   the list and session table beside it are display-only. Esc returns to the
@@ -44,8 +43,10 @@ workspace (`scratch.rs`).
 - The pane's last row is the fixed `[NEW WORKSPACE]`, outside the stored list.
   On it `active` is `None` ("All"); `WorkspaceScreenState::new_row` records
   that the cursor is there and counts only while `active` is `None`
-  (`App::workspace_pane_cursor`). `+` moves the cursor to it; opening the pane
-  starts on the open workspace.
+  (`App::workspace_pane_cursor`). Opening the pane starts on the open
+  workspace. `+` on any row moves the cursor to `[NEW WORKSPACE]` and adds a
+  workspace as Enter there does (below), so an Esc on the new name returns to
+  that row.
 - `App::rebuild_filtered` applies the ordinary filter (keyword, agent, folder,
   profile, bookmark) and then `Workspace::matches` (AND). Bookmark grouping and
   activity order are unchanged. Clearing filters (`0`, Esc) does not close the
@@ -144,6 +145,9 @@ Words match through `filter::token_matches`, the same text as `/` search
 
 - Ids are stable; `active` survives renames. An `active` id that no longer
   exists loads as "All".
+- The TUI does not restore `active`: every start opens "All"
+  (`WorkspaceStore::load_at_startup`). The field is still written (`Opened`)
+  and read by `load`, so the format is unchanged.
 - Every save is a `WorkspaceChange` (`Upsert` / `Remove` / `Opened`) applied by
   id onto a freshly read file under `store_lock::with_store_lock`, then an
   atomic replace (temp file + rename). So a committed edit, folder toggle,
@@ -160,7 +164,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   and on `ctrl+u` (`App::reload_shared_stores`, start of a new refresh cycle).
   There is no file watching or polling.
 - On reload, the open workspace stays this instance's own: the file's
-  `active` (another instance's last scope) is used only at startup. If the open
+  `active` (another instance's last scope) is never applied. If the open
   workspace was deleted elsewhere, "All" opens.
 - An unreadable or newer-version store is never overwritten: startup keeps an
   empty in-memory store and reports it; each save re-reads the file and fails
@@ -184,10 +188,11 @@ screen.
   store),
   `ui::reload::tests` (`ctrl+u` reload), and `store_lock::tests`.
 - Release PTY check (`s7s demo`): `←` from the session list and move through
-  workspaces, add one from `[NEW WORKSPACE]`, toggle folders, filter folders on
-  the Search row and toggle a match, type includes and watch the list, Esc back
-  to the pane, delete a workspace, open/close via `ctrl+w`, restart and confirm
-  the scope is reopened, and check an 80-column terminal (Prompt hidden while
+  workspaces, add one with `+` and from `[NEW WORKSPACE]`, toggle folders,
+  filter folders on the Search row and toggle a match, type includes and watch
+  the list, Esc back to the pane, delete a workspace, open/close via `ctrl+w`,
+  restart with a workspace open and confirm "All" opens, and check an
+  80-column terminal (Prompt hidden while
   the pane is open) and a 120-column one (Prompt kept).
 - Two release instances on `s7s demo`: add a workspace in each without
   reloading, confirm `workspaces.json` holds both, then `ctrl+u` in each.

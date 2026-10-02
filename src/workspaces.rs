@@ -139,6 +139,14 @@ impl WorkspaceStore {
         Ok(store)
     }
 
+    /// `load` for a starting TUI: every start opens "All", so the stored
+    /// `active` (the last scope of whichever instance saved last) is dropped.
+    pub(crate) fn load_at_startup(path: &Path) -> Result<Self> {
+        let mut store = Self::load(path)?;
+        store.active = None;
+        Ok(store)
+    }
+
     /// Atomic whole-file replace. Callers outside tests go through
     /// [`Self::commit`] so the replace starts from the current file. No fsync:
     /// the file is rewritten on every workspace cursor move, and losing the
@@ -320,6 +328,22 @@ mod tests {
         store.active = Some("missing".into());
         store.save(&path).unwrap();
         assert_eq!(WorkspaceStore::load(&path).unwrap().active, None);
+    }
+
+    #[test]
+    fn a_start_opens_all_whatever_was_open_last() {
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let path = root.path.with_file_name("workspaces.json");
+        let mut store = WorkspaceStore::default();
+        store
+            .workspaces
+            .push(Workspace::new(store.new_id(), "Api".into()));
+        store.set_active(Some(0));
+        store.save(&path).unwrap();
+
+        let started = WorkspaceStore::load_at_startup(&path).unwrap();
+        assert_eq!(started.active, None);
+        assert_eq!(started.workspaces, store.workspaces);
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn visible_ids(app: &App) -> Vec<String> {
 }
 
 #[test]
-fn left_opens_the_pane_right_and_esc_close_it_and_profile_returns_without_it() {
+fn left_opens_the_pane_right_and_esc_close_it_and_profile_returns_to_it() {
     let mut app = app_with_workspace();
     on_pane(&mut app);
     assert_eq!(app.screen, Screen::Session);
@@ -84,11 +84,13 @@ fn left_opens_the_pane_right_and_esc_close_it_and_profile_returns_without_it() {
     assert_eq!(app.mode, UiMode::Table);
 
     on_pane(&mut app);
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Left);
     assert_eq!(app.screen, Screen::Profile);
     press(&mut app, KeyCode::Right);
     assert_eq!(app.screen, Screen::Session);
-    assert_eq!(app.focus, Focus::Table, "no workspace pane from Profile");
+    assert_eq!(app.focus, Focus::Workspaces, "→ retraces ← from the pane");
+    assert_eq!(app.workspace_pane_cursor(), 1, "on the open workspace");
 }
 
 #[test]
@@ -114,8 +116,8 @@ fn pane_cursor_is_the_scope_and_the_new_row_shows_all() {
     press(&mut app, KeyCode::Home);
     assert!(!app.workspace.new_row);
     assert_eq!(app.workspace_pane_cursor(), 0);
-    press(&mut app, KeyCode::Char('+'));
-    assert_eq!(app.workspace_pane_cursor(), 2, "+ goes to the new row");
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.workspace_pane_cursor(), 2, "End goes to the new row");
     press(&mut app, KeyCode::Up);
     assert_eq!(app.active_workspace_name(), Some("Api"));
 
@@ -154,7 +156,7 @@ fn enter_edits_a_workspace_on_the_workspaces_screen_and_esc_returns_to_the_pane(
 fn new_row_enter_adds_a_workspace_with_its_name_in_edit() {
     let mut app = app_with_workspace();
     on_pane(&mut app);
-    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::End);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.screen, Screen::Workspace);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
@@ -174,11 +176,17 @@ fn new_row_enter_adds_a_workspace_with_its_name_in_edit() {
 }
 
 #[test]
-fn esc_drops_an_unsaved_new_workspace_and_returns_to_the_new_row() {
+fn plus_adds_a_workspace_from_any_row_and_esc_returns_to_the_new_row() {
     let mut app = app_with_workspace();
     on_pane(&mut app);
+    press(&mut app, KeyCode::Down); // On "Api": `+` does not need the new row.
     press(&mut app, KeyCode::Char('+'));
-    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Workspace);
+    assert_eq!(app.mode, UiMode::WorkspaceEdit);
+    assert_eq!(app.active_workspace_name(), Some("New Workspace"));
+    // The edit is in place, not a dialog: Detail stays focused, unfaded.
+    let buf = draw_buffer(&app);
+    assert_eq!(cell_at(&buf, "Detail", 24..64).fg, app.theme.accent);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.mode, UiMode::Table);
     assert_eq!(app.screen, Screen::Session);
@@ -193,7 +201,6 @@ fn duplicate_empty_and_reserved_names_are_rejected() {
     let mut app = app_with_workspace();
     on_pane(&mut app);
     press(&mut app, KeyCode::Char('+'));
-    press(&mut app, KeyCode::Enter);
     for name in ["api", "  ", "all"] {
         type_text(&mut app, name);
         press(&mut app, KeyCode::Enter);
@@ -460,7 +467,7 @@ fn all_and_the_new_row_are_not_deletable() {
         app.status_msg.as_deref(),
         Some("The All workspace cannot be deleted")
     );
-    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::End);
     press(&mut app, KeyCode::Delete);
     assert_eq!(app.mode, UiMode::Table);
     assert_eq!(
@@ -598,7 +605,7 @@ fn context_jump_closes_a_workspace_hiding_the_source_and_back_restores_it() {
 }
 
 #[test]
-fn edits_are_saved_and_the_open_workspace_survives_a_restart() {
+fn edits_are_saved_and_a_restart_opens_all() {
     let root = TempBookmarkStore::new();
     let path = root.path.with_file_name("workspaces.json");
     let mut app = app_with_workspace();
@@ -615,6 +622,9 @@ fn edits_are_saved_and_the_open_workspace_survives_a_restart() {
     let stored = WorkspaceStore::load(&path).expect("saved store");
     assert_eq!(stored.active.as_deref(), Some("ws-api"));
     assert_eq!(stored.workspaces[0].includes, "leaf");
+    let restarted = WorkspaceStore::load_at_startup(&path).expect("saved store");
+    assert_eq!(restarted.active, None, "a start opens All");
+    assert_eq!(restarted.workspaces[0].includes, "leaf");
 }
 
 fn rendered(app: &App, width: u16, height: u16) -> String {
@@ -642,9 +652,27 @@ fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() 
     on_pane(&mut app);
     let text = rendered(&app, 140, 24);
     assert!(text.contains(" Workspaces "), "{text}");
-    assert!(text.contains("All"), "{text}");
     assert!(text.contains("[NEW WORKSPACE]"), "{text}");
     assert!(text.contains(" Prompt "), "{text}");
+    // Dividers set the fixed rows apart from the stored workspaces.
+    let pane: Vec<String> = text
+        .lines()
+        .skip(6)
+        .take(5)
+        .map(|l| l.chars().skip(1).take(22).collect::<String>())
+        .collect();
+    let rule = "─".repeat(22);
+    assert_eq!(
+        pane.iter().map(|l| l.trim_end()).collect::<Vec<_>>(),
+        [
+            " [ALL]",
+            rule.as_str(),
+            " Api",
+            rule.as_str(),
+            " [NEW WORKSPACE]"
+        ],
+        "{text}"
+    );
     // The pane is 24 cells wide (its focused border is thick); the session
     // table's border starts right after.
     let row = text
@@ -817,6 +845,14 @@ fn panes_without_focus_fade_like_the_session_screen() {
         cell_at(&buf, "Api", pane.clone()).bg,
         app.theme.selection_bg
     );
+    // Unselected fixed rows take the key-hint color; workspace names do not.
+    for fixed in ["[ALL]", "[NEW WORKSPACE]"] {
+        assert_eq!(
+            cell_at(&buf, fixed, pane.clone()).fg,
+            app.theme.key_hint,
+            "{fixed}"
+        );
+    }
     assert_eq!(cell_at(&buf, "FOLDER", table.clone()).fg, muted);
 
     // Workspaces screen: only Detail takes keys, so the list's open workspace

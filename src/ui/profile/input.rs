@@ -3,7 +3,7 @@
 //! creation confirmation (including the login request emitted on save).
 
 use crate::model::Agent;
-use crate::ui::{App, Focus, FormFocus, MessageKind, ProfileFormState, Screen, TextInput, UiMode};
+use crate::ui::{App, FormFocus, MessageKind, ProfileFormState, TextInput, UiMode};
 
 impl App {
     /// Applies `changes` onto the current profiles.json
@@ -361,12 +361,9 @@ impl App {
             KeyCode::Char(':') => self.open_quick_command(),
             // No session selection on this screen; shows a status message explaining why.
             KeyCode::Char('!') => self.open_quick_terminal(),
-            // →: Switches to the Session screen with the session list focused; the
-            // workspace pane between the two stays closed.
-            KeyCode::Right | KeyCode::Char('l') => {
-                self.switch_screen(Screen::Session);
-                self.focus = Focus::Table;
-            }
+            // →: Back to the Session screen on the workspace pane, the pane `←`
+            // left from (so ←/→ retrace the same path).
+            KeyCode::Right | KeyCode::Char('l') => self.open_workspace_pane(),
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_workspace_palette();
             }
