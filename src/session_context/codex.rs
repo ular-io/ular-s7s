@@ -21,7 +21,8 @@ use serde_json::Value;
 use std::path::Path;
 
 pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
-    let content = std::fs::read_to_string(path)?;
+    // A rewind segment parses as its whole thread (`parser::codex::segments`).
+    let content = crate::parser::codex::segments::read_rollout(path)?;
     let mut turns: Vec<ContextTurn> = Vec::new();
     let mut current: Option<ContextTurn> = None;
     // Completed-turn count in `turns` at each user-message boundary; used to
@@ -114,6 +115,26 @@ mod tests {
         ));
         std::fs::write(&path, content).expect("write temp file");
         path
+    }
+
+    /// A codex 0.159+ rewind segment: list and detail both read the inherited
+    /// history and drop the abandoned turn left in the earlier file.
+    #[test]
+    fn rewind_segment_reads_as_its_whole_thread_in_list_and_context() {
+        use crate::parser::codex::segments::tests::{temp_sessions, write_rewound_thread, THREAD};
+        let sessions = temp_sessions("context");
+        let (_, segment) = write_rewound_thread(&sessions);
+
+        let session = crate::parser::codex::parse_file(&segment, 0, None).expect("listed");
+        assert_eq!(session.id, THREAD);
+        assert_eq!(session.user_turns, ["질문1", "질문2", "새 질문"]);
+        assert!(!session.assistant_blob.contains("버린 답"));
+
+        let turns = parse_turns(&segment).expect("context");
+        let users: Vec<&str> = turns.iter().map(|t| t.user.as_str()).collect();
+        assert_eq!(users, ["질문1", "질문2", "새 질문"]);
+        assert_eq!(turns[1].last_assistant_text.as_deref(), Some("답2"));
+        let _ = std::fs::remove_dir_all(sessions.parent().unwrap());
     }
 
     #[test]

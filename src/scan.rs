@@ -6,7 +6,7 @@ use crate::model::{Agent, Session};
 use crate::parser;
 use crate::profile::Profile;
 use crate::session_workspace::WorkspaceStore;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// Summary of scanning results.
@@ -84,6 +84,7 @@ pub(crate) fn collect_at(
                         parser::claude::parse_file(path, mtime, meta)
                     },
                     |_name| true,
+                    None,
                     |path, sessions| {
                         apply_claude_title_meta(
                             path,
@@ -98,6 +99,7 @@ pub(crate) fn collect_at(
             Agent::Codex => {
                 let dir = profile.sessions_dir();
                 let codex_meta = parser::codex::load_title_meta(&dir);
+                let segments = parser::codex::segments::Segments::scan(&dir);
                 scan_jsonl_tree(
                     &dir,
                     &old,
@@ -107,6 +109,7 @@ pub(crate) fn collect_at(
                     &mut reparsed,
                     |path, mtime| parser::codex::parse_file(path, mtime, Some(&codex_meta)),
                     |name| name.starts_with("rollout-"),
+                    Some(&segments),
                     |_, sessions| {
                         apply_codex_title_meta(sessions, &codex_meta, &workspaces, &profile.id)
                     },
@@ -144,6 +147,10 @@ pub(crate) fn collect_at(
 }
 
 /// Recursively scans for *.jsonl files and parses them into one session per file (with cache applied).
+///
+/// `segments` (codex only) folds a rewound thread's rollout files into one session: superseded
+/// files are skipped, and the newest segment's cache freshness, creation time and size cover the
+/// earlier files it reads its history from.
 #[allow(clippy::too_many_arguments)]
 fn scan_jsonl_tree<P, F>(
     root: &Path,
@@ -154,6 +161,7 @@ fn scan_jsonl_tree<P, F>(
     reparsed: &mut usize,
     parse: P,
     name_filter: F,
+    segments: Option<&parser::codex::segments::Segments>,
     refresh_cached: impl Fn(&Path, &mut Vec<Session>),
 ) where
     P: Fn(&Path, i64) -> Option<Session>,
@@ -174,13 +182,21 @@ fn scan_jsonl_tree<P, F>(
         if !name.ends_with(".jsonl") || !name_filter(name) {
             continue;
         }
+        if segments.is_some_and(|s| s.is_superseded(path)) {
+            continue;
+        }
         *scanned += 1;
         let mtime = match file_mtime_ms(path) {
             Some(m) => m,
             None => continue,
         };
-        let ctime = file_ctime_ms(path, mtime);
-        let size = file_size_bytes(path);
+        let earlier = segments.map(|s| s.earlier(path)).unwrap_or(&[]);
+        let mtime = earlier
+            .iter()
+            .filter_map(|p| file_mtime_ms(p))
+            .fold(mtime, i64::max);
+        let ctime = file_ctime_ms(earlier.first().map_or(path, PathBuf::as_path), mtime);
+        let size = file_size_bytes(path) + earlier.iter().map(|p| file_size_bytes(p)).sum::<u64>();
         let key = path.to_string_lossy().to_string();
 
         if let Some(cached) = old.get_fresh(&key, mtime) {
@@ -562,6 +578,44 @@ mod tests {
         assert_eq!(result.sessions.len(), 1);
         assert_eq!(result.sessions[0].title(), "메타 제목");
         assert!(result.sessions[0].title_fixed);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rewound codex thread spans two rollout files but is one session: the
+    /// newest segment is listed with the whole thread, the earlier file is not.
+    #[test]
+    fn scan_lists_a_rewound_codex_thread_once() {
+        use crate::parser::codex::segments::tests::{temp_sessions, write_rewound_thread, THREAD};
+        let sessions_dir = temp_sessions("scan-once");
+        let root = sessions_dir.parent().unwrap().to_path_buf();
+        let (first, segment) = write_rewound_thread(&sessions_dir);
+
+        let profiles = vec![crate::profile::Profile {
+            id: "t".to_string(),
+            agent: Agent::Codex,
+            name: "t".to_string(),
+            path: root.clone(),
+            oauth_token: None,
+            active: true,
+            shortcut: None,
+            builtin: false,
+        }];
+        let result = scan_at(
+            &profiles,
+            true,
+            &root.join("index.bin"),
+            &root.join("session_workspaces.json"),
+        );
+        assert_eq!(result.sessions.len(), 1);
+        let session = &result.sessions[0];
+        assert_eq!(session.id, THREAD);
+        assert_eq!(session.source_path.as_deref(), Some(segment.as_path()));
+        assert_eq!(session.user_turns, ["질문1", "질문2", "새 질문"]);
+        assert_eq!(
+            session.size_bytes,
+            file_size_bytes(&first) + file_size_bytes(&segment)
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

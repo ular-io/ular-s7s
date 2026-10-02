@@ -602,16 +602,17 @@ fn run_delete(args: &DeleteArgs) -> i32 {
         Err(code) => return code,
     };
 
-    let source = session
-        .source_path
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(source path missing)".to_string());
+    let files = crate::session_delete::transcript_files(&session);
 
     if !args.yes {
         println!("Would delete this session (nothing was removed):");
         print_session_row(&session);
-        println!("    file: {source}");
+        if files.is_empty() {
+            println!("    file: (source path missing)");
+        }
+        for file in &files {
+            println!("    file: {}", file.display());
+        }
         println!("\nRe-run with --yes to delete it. This cannot be undone.");
         return 1;
     }
@@ -630,7 +631,9 @@ fn run_delete(args: &DeleteArgs) -> i32 {
 
     println!("Deleted this session:");
     print_session_row(&session);
-    println!("    file: {source}");
+    for file in &files {
+        println!("    file: {}", file.display());
+    }
     if let Some(warning) = outcome.bookmark_warning {
         eprintln!("warning: session deleted; {warning}");
     }
