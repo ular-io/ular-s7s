@@ -26,7 +26,7 @@ planning; backlog entries are not implementation authorization.
 | Work handoff (`src/session_handoff.rs`, `s7s session handoff`) | [session-context.md](./docs/session-context.md) §Handoff + [testing.md](./docs/testing.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Session bookmarks / Ctrl+B / bookmark filter (`src/bookmarks.rs`, `src/ui/bookmarks.rs`) | [bookmarks.md](./docs/bookmarks.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
-| Claude live-session markers (background / open elsewhere) / `claude agents --json` (`src/agent_status.rs`, `src/ui/agent_status.rs`) | [background-sessions.md](./docs/background-sessions.md) |
+| Claude live-session markers, attach dialog, and live-session blocking (background / open elsewhere) / `claude agents --json` (`src/agent_status.rs`, `src/ui/agent_status.rs`, `src/ui/overlays/attach.rs`) | [background-sessions.md](./docs/background-sessions.md) |
 | Workspace pane / workspace edit dialog / open-workspace scope / `ctrl+w` palette rows (`src/workspaces.rs`, `src/ui/workspace/`) | [workspaces.md](./docs/workspaces.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Multi-instance saving / `ctrl+u` reload of app-owned stores (`src/store_lock.rs`, `src/ui/reload.rs`) | [workspaces.md](./docs/workspaces.md) §Multiple running instances + [profiles.md](./docs/profiles.md) |
 | Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
@@ -89,9 +89,9 @@ authoritative matrix; the essentials:
   [testing.md](./docs/testing.md).
 - **Claude Code background sessions** (2.1.x daemon; `←` on an empty prompt
   forks the session under a new id) make `claude --resume <id>
-  --dangerously-skip-permissions` exit 1 while their worker is alive. s7s only
-  marks them (`Ⓑ`, and `Ⓞ` for sessions open in another terminal)
-  for now; see
+  --dangerously-skip-permissions` exit 1 while their worker is alive. s7s marks
+  them `Ⓑ` (and `Ⓞ` for sessions open in another terminal), offers Attach
+  (Cancel focused) instead of resume, and refuses delete/rename for both; see
   [background-sessions.md](./docs/background-sessions.md).
 - **Codex 0.159 stores a rewind as a new rollout segment**, not as a
   `thread_rolled_back` marker: `rollout-<ts>-<thread id>_<segment id>.jsonl`,

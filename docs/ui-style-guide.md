@@ -109,6 +109,9 @@ drives the current decision. Avoid using bold for every value.
   `- <marker> : <meaning>` rows under Name (bold marker, soft-dim text,
   truncated to the pane). Detail and Context Source blocks and `ui/copy.rs`
   omit them.
+- The Attach dialog for a background session follows the delete dialog: action
+  button left, Cancel right and focused by default, warning border. Blocks for
+  live sessions use the shared message dialog (`show_message`, `Warn`).
 - Bookmarked titles carry `♥ ` in the table and metadata grids. This prefix is
   display-only; clipboard text retains the original title. In the table the
   marker is bold even on an unselected or unfocused row, without changing the

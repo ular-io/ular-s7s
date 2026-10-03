@@ -17,13 +17,14 @@ pub(crate) struct TempBookmarkStore {
 
 impl TempBookmarkStore {
     pub fn new() -> Self {
+        // A per-process counter keeps parallel tests apart: the clock alone can
+        // repeat (macOS reports microseconds), and two tests sharing a folder
+        // overwrite each other's store or lose it to the other's `Drop`.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "s7s-bookmark-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&root).expect("temp dir");
         Self {

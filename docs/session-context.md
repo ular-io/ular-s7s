@@ -274,6 +274,10 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
 
 - Irreversible: the transcript files are removed, not archived, and s7s keeps
   no copy.
+- Refused (exit 1) while a live Claude process holds the session — a
+  background worker or another terminal — because it would keep writing the
+  removed files; the TUI delete action blocks the same way. See
+  [background-sessions.md](./background-sessions.md) §Actions on live sessions.
 - Without `--yes` nothing is removed. The resolved target is printed with every
   transcript file it would delete (`session_delete::transcript_files`) and the
   command exits 1, so a script cannot read the refusal as success.

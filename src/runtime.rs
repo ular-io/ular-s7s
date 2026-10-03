@@ -364,6 +364,11 @@ fn run_loop(session: &mut TerminalSession, app: &mut App) -> Result<()> {
             let target = app.sessions[idx].clone();
             handover(session, app, &target)?;
         }
+        if let Some(req) = app.attach_request.take() {
+            if let Some(target) = app.sessions.get(req.idx).cloned() {
+                handover_attach(session, app, &target, &req.job)?;
+            }
+        }
         if let Some(req) = app.new_session_request.take() {
             handover_new_session(session, app, req)?;
         }
@@ -387,6 +392,7 @@ fn run_loop(session: &mut TerminalSession, app: &mut App) -> Result<()> {
 fn drain_queued_events(app: &mut App) -> Result<()> {
     while !app.should_quit
         && app.resume_request.is_none()
+        && app.attach_request.is_none()
         && app.new_session_request.is_none()
         && app.login_request.is_none()
         && app.terminal_request.is_none()
@@ -415,6 +421,7 @@ fn dispatch_event(app: &mut App, ev: Event) {
                 UiMode::AgentModal => app.on_key_agent_modal(key),
                 UiMode::FolderModal => app.on_key_folder_modal(key),
                 UiMode::DeleteConfirm => app.on_key_delete_confirm(key),
+                UiMode::AttachConfirm => app.on_key_attach_confirm(key),
                 UiMode::Rename => app.on_key_rename_modal(key),
                 UiMode::ProfileForm => app.on_key_profile_form(key),
                 UiMode::ProfileDeleteConfirm => app.on_key_profile_delete_confirm(key),
@@ -492,6 +499,52 @@ fn handover(tui: &mut TerminalSession, app: &mut App, session: &model::Session) 
     drain_pending_input();
     app.begin_quit_grace();
     app.status_msg = Some(format!("Returned from resume: {}", session.folder));
+    Ok(())
+}
+
+/// Hands the terminal to `claude attach` for a session Claude Code's daemon
+/// holds, then restores the TUI and rescans like a resume.
+fn handover_attach(
+    tui: &mut TerminalSession,
+    app: &mut App,
+    session: &model::Session,
+    job: &str,
+) -> Result<()> {
+    tui.suspend()?;
+    let profile = app.profiles.find(&session.profile_id).cloned();
+    let preview = resume::preview_attach(job, profile.as_ref());
+    print_handover_screen(
+        &format!(
+            "[{}] attach: {}",
+            session.agent.label(),
+            session.cwd.to_string_lossy()
+        ),
+        &preview,
+    );
+    match resume::run_attach(session, job, profile.as_ref()) {
+        Ok(status) => {
+            print_returning_notice();
+            if !status.success() && !resume::interrupted_by_user(&status) {
+                eprintln!(
+                    "\n⚠ Attach exited abnormally (exit code: {}).",
+                    status.code().unwrap_or(-1)
+                );
+                eprintln!("  command: {preview}");
+                pause_before_return();
+            }
+        }
+        Err(e) => {
+            print_returning_notice();
+            eprintln!("\n⚠ failed to run attach: {e}");
+            eprintln!("  command: {preview}");
+            pause_before_return();
+        }
+    }
+    tui.resume()?;
+    app.refresh_sessions();
+    drain_pending_input();
+    app.begin_quit_grace();
+    app.status_msg = Some(format!("Returned from attach: {}", session.folder));
     Ok(())
 }
 

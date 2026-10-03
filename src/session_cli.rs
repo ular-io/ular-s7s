@@ -538,6 +538,12 @@ fn run_rename(args: &RenameArgs) -> i32 {
         return 1;
     };
 
+    // A live process would keep appending to the transcript this rename writes.
+    if let Some(entry) = crate::agent_status::live_holder(&profile, &session) {
+        crate::agent_status::print_live_refusal(&entry, "rename");
+        return 1;
+    }
+
     let before = session.title();
     if let Err(err) = crate::rename::rename_session(&profile, &session, &args.title) {
         eprintln!("error: rename failed: {err}");
@@ -602,6 +608,15 @@ fn run_delete(args: &DeleteArgs) -> i32 {
         Ok(target) => target,
         Err(code) => return code,
     };
+
+    // A live process would keep writing the files this would remove.
+    if let Some(entry) = profiles
+        .find(&session.profile_id)
+        .and_then(|p| crate::agent_status::live_holder(p, &session))
+    {
+        crate::agent_status::print_live_refusal(&entry, "delete");
+        return 1;
+    }
 
     let files = crate::session_delete::transcript_files(&session);
 

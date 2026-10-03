@@ -31,7 +31,7 @@ the change area below and run every check listed for it.
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Session bookmarks / Ctrl+B | Release TUI/PTY: toggle in Session and Detail, restart to verify persistence, run the bookmark filter, and inspect `♥ ` at narrow/wide widths | [bookmarks.md](./bookmarks.md) §Verification |
-| Claude live-session markers (`agent_status.rs`, `ui/agent_status.rs`) | Release TUI: create a disposable `claude --bg` session, confirm `Ⓑ` appears and its Prompt legend moves from working to done within 30 s (or after `ctrl+u`), then `claude stop` and confirm the marker clears; open a disposable session in another terminal and confirm `Ⓞ` appears and clears after it exits; re-check the `agents --json` fields and the resume table on a CLI upgrade | [background-sessions.md](./background-sessions.md) §Verification |
+| Claude live-session markers (`agent_status.rs`, `ui/agent_status.rs`) | Release TUI: create a disposable `claude --bg` session, confirm `Ⓑ` appears and its Prompt legend moves from working to done within 30 s (or after `ctrl+u`), then `claude stop` and confirm the marker clears; open a disposable session in another terminal and confirm `Ⓞ` appears and clears after it exits; press Enter on each: `Ⓑ` opens the Attach dialog with Cancel focused (Attach, then `ctrl+z` returns to s7s), `Ⓞ` is blocked; `ctrl+d`/`ctrl+r` and `s7s session delete|rename` are refused for both; re-check the `agents --json` fields and the resume table on a CLI upgrade | [background-sessions.md](./background-sessions.md) §Verification |
 | App-owned store saving / `ctrl+u` reload (`store_lock.rs`, `ui/reload.rs`, profile/workspace commits) | Two release instances on `s7s demo`: add a workspace in each without reloading and confirm `workspaces.json` holds both; `ctrl+u` in each shows the other's workspace while its own open workspace stays; repeat for a profile | [workspaces.md](./workspaces.md) §Multiple running instances · [profiles.md](./profiles.md) |
 | Workspace pane / edit dialog / scope / `ctrl+w` | Release PTY on `s7s demo`: `←` from the session list, add a workspace with `+` and from `[NEW WORKSPACE]` (Save and Cancel), confirm the pane lists names in text order and a rename moves the row, toggle folders and type includes/excludes and watch `Matches` (the list changes only on Save), delete one, open/close via `ctrl+w` (lands on Session), restart with a workspace open and confirm "All" opens, check the dialog height on 24- and 40-row terminals (grows with folders up to 90%, fixed while typing a query), and check 80- and 120-column terminals (Prompt hidden / kept beside the pane) | [workspaces.md](./workspaces.md) §Verification |
 | Global refresh (`Ctrl+U` / palette Refresh All) | Release PTY with a deliberately slow session-storage read: navigate, search, repeat refresh, and exit before completion; verify completion preserves selection and Detail, and dialogs/mutations cannot apply stale snapshots | §Global refresh checks below |
@@ -74,6 +74,11 @@ deletion invalidation, worker failure, and staged-cache acceptance/discard.
 - Certain agents might have different rename behaviors between non-interactive and interactive environments.
 
 ## Unit test policy
+
+Tests that need a store on disk take a fresh folder from
+`ui::test_support::TempBookmarkStore` (process id + an atomic counter). A
+clock-only name collides across parallel tests on macOS, where the clock
+reports microseconds, and one test then overwrites or deletes another's store.
 
 Tests for the rename/session-title code must cover the following:
 

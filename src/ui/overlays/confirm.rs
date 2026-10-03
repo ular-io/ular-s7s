@@ -8,6 +8,7 @@
 //! session-deletion filesystem work lives in `crate::session_delete`, shared
 //! with `s7s session delete`, so the overlay only enqueues the effect.
 
+use crate::ui::agent_status::LiveAction;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
 use crate::ui::components::text::truncate_w;
 use crate::ui::render::{centered_fixed_rect, input_view};
@@ -48,6 +49,9 @@ impl App {
 
     /// Opens session deletion confirmation modal for specified sessions index (helper for details screen direct trigger).
     pub(crate) fn open_delete_confirm_at(&mut self, idx: usize) {
+        if self.divert_live_session(idx, LiveAction::Delete) {
+            return;
+        }
         self.pending_delete = Some(idx);
         self.delete_ok_focused = false; // Default focus to Cancel (safer fallback).
         self.mode = UiMode::DeleteConfirm;
@@ -64,10 +68,14 @@ impl App {
 
     /// Opens session rename modal for specified sessions index (helper for details screen direct trigger).
     pub(crate) fn open_rename_modal_at(&mut self, idx: usize) {
-        let Some(session) = self.sessions.get(idx) else {
+        if self.sessions.get(idx).is_none() {
             self.status_msg = Some("No session selected".to_string());
             return;
-        };
+        }
+        if self.divert_live_session(idx, LiveAction::Rename) {
+            return;
+        }
+        let session = &self.sessions[idx];
         self.rename_modal = Some(RenameModalState {
             input: TextInput::new(session.title()),
             focus: RenameFocus::Input,

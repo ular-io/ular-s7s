@@ -61,6 +61,10 @@ Therefore, whenever an agent CLI is upgraded, the implementation must be reverif
 
 ### Current rename strategy
 
+0. Refuse while a live Claude process holds the session (background worker or
+   another terminal): step 4 would append to a transcript that process is still
+   writing. Both the TUI and `s7s session rename` check right before renaming
+   ([background-sessions.md](./background-sessions.md) §Actions on live sessions).
 1. Attempt `claude --resume <id> --name <title> -p --output-format json`
    (If the session belongs to a profile with an additional path, inject `CLAUDE_CONFIG_DIR` + clean contaminated env — same rule as resume, 46th)
 2. Check if `custom-title` + `agent-name` events have appeared in the actual JSONL

@@ -68,9 +68,41 @@ command's flags or the settings default (`permissions.defaultMode`). Attaching
 keeps the worker's own launch mode (`respawnFlags`).
 
 s7s's default `resume_claude` template carries `--dangerously-skip-permissions`,
-so opening a session whose worker is alive fails with "Agent exited abnormally
-(exit code: 1)". Opening it correctly (`claude attach <jobId>` when a live
-worker holds it) is not implemented yet.
+so resuming a session whose worker is alive would fail with "Agent exited
+abnormally (exit code: 1)"; s7s therefore attaches instead (below).
+
+## Attaching
+
+Several terminals can attach to one worker at once (the daemon keeps a set of
+attachers). There is still one writer, so the transcript is safe, but every
+attached terminal types into the same prompt and the worker's screen is resized
+to the newest attacher. Who is attached is held only in daemon memory: neither
+`agents --json`, the registry, `roster.json`, nor process command lines and
+environments reveal which session an agent-view terminal is showing (it can
+switch after launch), so s7s cannot tell a watched session from an unattended
+one.
+
+`claude attach <jobId>` returns exit 0 when the user leaves with `ctrl+z`, or
+with `←` (agent view) and then `ctrl+c` twice; the worker keeps running either
+way (verified on 2.1.288). That makes it a normal blocking handover for s7s.
+
+## Actions on live sessions
+
+Right before Enter (resume), delete, or rename, s7s queries the session's
+profile again (`App::live_entry_now`, refreshing that profile's markers), so a
+30 s old sweep cannot let a live session through. A failed query falls back to
+the last sweep.
+
+| Holder | Enter | Delete / Rename |
+| --- | --- | --- |
+| Background worker (`Ⓑ`) | Attach/Cancel dialog (`ui/overlays/attach.rs`), **Cancel focused**, warning that an attached terminal would share screen and input; Attach runs `resume::run_attach` in a handover | Blocked with a message naming `claude stop <jobId>` |
+| Another terminal (`Ⓞ`) | Blocked with a message | Blocked with a message |
+| None | Resume as before | As before |
+
+`s7s session delete` and `s7s session rename` refuse the same way
+(`agent_status::live_holder`, exit 1 with an `error:`/`hint:` pair), including
+a `delete` dry run. A retired worker no longer blocks anything, so a session
+can be deleted once the daemon retires it (about 1 hour idle).
 
 ## Status markers
 
@@ -123,8 +155,8 @@ blocks omit these rows, and copied session info never includes them.
 
 Known gaps:
 
-- Status can be up to 30 s old; a session backgrounded since the last sweep
-  still fails to open.
+- Markers can be up to 30 s old. Actions re-query, so this only affects what
+  the list shows.
 - The forked original is still listed beside its copy (no folding by
   `continued-in` yet). The marker identifies the copy.
 - Whether a terminal is attached to a background session is not observable

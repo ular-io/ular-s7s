@@ -6,9 +6,9 @@
 //! while the TUI is idle. Results replace the profile's previous map; a failed
 //! query clears it so a stale marker never outlives its source.
 
-use crate::agent_status::LiveStatus;
+use crate::agent_status::{LiveEntry, LiveStatus};
 use crate::model::{Agent, Session};
-use crate::ui::App;
+use crate::ui::{App, MessageKind};
 use std::time::{Duration, Instant};
 
 /// Period of the idle-time sweep.
@@ -57,15 +57,93 @@ impl App {
         changed
     }
 
-    /// Live status of `session`: held by Claude Code's daemon or open in another terminal.
-    pub(crate) fn session_live_status(&self, session: &Session) -> Option<LiveStatus> {
+    /// Live holder of `session` from the last sweep: Claude Code's daemon or
+    /// another terminal.
+    fn session_live_entry(&self, session: &Session) -> Option<LiveEntry> {
         if session.agent != Agent::Claude {
             return None;
         }
         self.agent_status
             .get(&session.profile_id)?
             .get(&session.id.to_ascii_lowercase())
-            .copied()
+            .cloned()
+    }
+
+    /// Live status of `session`: held by Claude Code's daemon or open in another terminal.
+    pub(crate) fn session_live_status(&self, session: &Session) -> Option<LiveStatus> {
+        self.session_live_entry(session).map(|e| e.status)
+    }
+
+    /// Holder check right before an action that must not race a live process.
+    /// Queries the session's profile now, so a sweep up to 30 s old cannot let
+    /// it through, and refreshes that profile's markers. A failed query falls
+    /// back to the last sweep. Unit tests read the injected map only.
+    fn live_entry_now(&mut self, idx: usize) -> Option<LiveEntry> {
+        let session = self.sessions.get(idx)?;
+        if session.agent != Agent::Claude {
+            return None;
+        }
+        #[cfg(not(test))]
+        {
+            let profile_id = session.profile_id.clone();
+            let fresh = self
+                .profiles
+                .find(&profile_id)
+                .and_then(crate::agent_status::query);
+            match fresh {
+                Some(map) if map.is_empty() => {
+                    self.agent_status.remove(&profile_id);
+                }
+                Some(map) => {
+                    self.agent_status.insert(profile_id, map);
+                }
+                None => {}
+            }
+        }
+        self.session_live_entry(&self.sessions[idx])
+    }
+
+    /// Diverts `action` on a session a live Claude process holds. Returns true
+    /// when it did: resuming a background session asks whether to attach;
+    /// everything else explains the block. Opening a session another terminal
+    /// holds would make two processes write one transcript, a flagged resume of
+    /// a background session exits 1, and deleting or renaming either races the
+    /// process still writing it.
+    pub(crate) fn divert_live_session(&mut self, idx: usize, action: LiveAction) -> bool {
+        let Some(entry) = self.live_entry_now(idx) else {
+            return false;
+        };
+        let background = entry.status != LiveStatus::Open;
+        if let (LiveAction::Resume, true, Some(job)) = (action, background, entry.job.clone()) {
+            self.open_attach_confirm(idx, job, entry.status);
+            return true;
+        }
+        let hint = if action == LiveAction::Resume && !background {
+            "Continue it there, or exit it there and open it again.".to_string()
+        } else {
+            entry.release_hint()
+        };
+        let lines = vec![entry.status.holder_sentence(), String::new(), hint];
+        self.show_message(action.title(), lines, MessageKind::Warn);
+        true
+    }
+}
+
+/// Session actions that must not run while a live Claude process holds the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveAction {
+    Resume,
+    Delete,
+    Rename,
+}
+
+impl LiveAction {
+    fn title(self) -> &'static str {
+        match self {
+            LiveAction::Resume => " Cannot Resume ",
+            LiveAction::Delete => " Cannot Delete ",
+            LiveAction::Rename => " Cannot Rename ",
+        }
     }
 }
 
@@ -86,7 +164,10 @@ mod tests {
     fn map(entries: &[(&str, LiveStatus)]) -> StatusMap {
         entries
             .iter()
-            .map(|(id, st)| (id.to_string(), *st))
+            .map(|(id, st)| {
+                let job = (*st != LiveStatus::Open).then(|| id.chars().take(8).collect());
+                (id.to_string(), LiveEntry { status: *st, job })
+            })
             .collect()
     }
 
@@ -229,6 +310,104 @@ mod tests {
             false,
         );
         assert_eq!(plain.len(), hidden.len());
+    }
+
+    fn live_app(status: LiveStatus) -> App {
+        let mut app = crate::ui::test_support::app_with_session();
+        app.sessions[0].agent = Agent::Claude;
+        app.sessions[0].profile_id = "p1".into();
+        app.agent_status
+            .insert("p1".into(), map(&[("session-1", status)]));
+        app.recompute();
+        app
+    }
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crate::ui::test_support::key(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn resume_of_a_session_open_elsewhere_is_blocked() {
+        let mut app = live_app(LiveStatus::Open);
+        app.request_resume(0);
+        assert_eq!(app.resume_request, None);
+        assert_eq!(app.mode, crate::ui::UiMode::Message);
+        let msg = app.message.as_ref().unwrap();
+        assert_eq!(msg.title, " Cannot Resume ");
+        assert!(msg.lines[0].contains("another Claude Code terminal"));
+    }
+
+    #[test]
+    fn resume_of_a_background_session_asks_to_attach_with_cancel_first() {
+        use crossterm::event::KeyCode;
+        let mut app = live_app(LiveStatus::Done);
+        app.request_resume(0);
+        assert_eq!(app.resume_request, None);
+        assert_eq!(app.mode, crate::ui::UiMode::AttachConfirm);
+        assert!(!app.attach_ok_focused);
+
+        // Enter on the default button cancels.
+        app.on_key_attach_confirm(key(KeyCode::Enter));
+        assert_eq!(app.mode, crate::ui::UiMode::Table);
+        assert_eq!(app.attach_request, None);
+
+        app.request_resume(0);
+        app.on_key_attach_confirm(key(KeyCode::Left));
+        app.on_key_attach_confirm(key(KeyCode::Enter));
+        assert_eq!(
+            app.attach_request,
+            Some(crate::ui::AttachRequest {
+                idx: 0,
+                job: "session-".into()
+            })
+        );
+        assert_eq!(app.resume_request, None);
+    }
+
+    #[test]
+    fn attach_dialog_names_the_state_and_both_buttons() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = live_app(LiveStatus::NeedsInput);
+        app.request_resume(0);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| crate::ui::render::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..30)
+            .map(|y| {
+                (0..120)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Attach Background Session"), "{text}");
+        assert!(text.contains("(needs input)"), "{text}");
+        assert!(text.contains("Attach") && text.contains("Cancel"));
+    }
+
+    #[test]
+    fn delete_and_rename_are_blocked_for_live_sessions() {
+        for status in [LiveStatus::Open, LiveStatus::Working] {
+            let mut app = live_app(status);
+            app.open_delete_confirm_at(0);
+            assert_eq!(app.pending_delete, None);
+            assert_eq!(app.message.as_ref().unwrap().title, " Cannot Delete ");
+
+            let mut app = live_app(status);
+            app.open_rename_modal_at(0);
+            assert!(app.rename_modal.is_none());
+            assert_eq!(app.message.as_ref().unwrap().title, " Cannot Rename ");
+        }
+    }
+
+    #[test]
+    fn sessions_without_a_live_holder_open_as_before() {
+        let mut app = crate::ui::test_support::app_with_session();
+        app.sessions[0].agent = Agent::Claude;
+        app.request_resume(0);
+        assert_eq!(app.resume_request, Some(0));
+        app.open_delete_confirm_at(0);
+        assert_eq!(app.pending_delete, Some(0));
     }
 
     #[test]
