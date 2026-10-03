@@ -7,25 +7,73 @@ use ratatui::{
     text::{Line, Span},
 };
 
-pub(crate) fn display_title(session: &Session, bookmarked: bool) -> String {
-    if bookmarked {
-        format!("Ⓑ  {}", session.title())
-    } else {
-        session.title()
+/// Display-only markers placed before a session title: the bookmark `♥`, then
+/// the Claude live status (`Ⓑ` background / `Ⓞ` open). Markers are separated by one
+/// space. The title follows a circled letter after two spaces, since terminals
+/// may draw those ambiguous-width glyphs two cells wide, and a lone `♥` after one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TitleMarks {
+    pub bookmarked: bool,
+    pub live_status: Option<crate::agent_status::LiveStatus>,
+}
+
+impl TitleMarks {
+    fn glyphs(self) -> impl Iterator<Item = char> {
+        self.bookmarked
+            .then_some('♥')
+            .into_iter()
+            .chain(self.live_status.map(|s| s.glyph()))
+    }
+
+    /// `(marker, meaning)` for each marker present, in prefix order.
+    pub(crate) fn legend(self) -> Vec<(char, &'static str)> {
+        self.bookmarked
+            .then_some(('♥', "Bookmarked"))
+            .into_iter()
+            .chain(self.live_status.map(|s| (s.glyph(), s.description())))
+            .collect()
+    }
+
+    fn prefix(self) -> Option<String> {
+        let glyphs: Vec<String> = self.glyphs().map(String::from).collect();
+        (!glyphs.is_empty()).then(|| glyphs.join(" "))
     }
 }
 
-/// Apply bold to the marker after truncation, preserving the title's normal tone.
-pub(crate) fn styled_title(title: String, bookmarked: bool, style: Style) -> Line<'static> {
-    if bookmarked {
-        if let Some(rest) = title.strip_prefix('Ⓑ') {
-            return Line::from(vec![
-                Span::styled("Ⓑ", style.add_modifier(Modifier::BOLD)),
-                Span::styled(rest.to_string(), style),
-            ]);
+pub(crate) fn display_title(session: &Session, marks: TitleMarks) -> String {
+    match marks.prefix() {
+        Some(prefix) if prefix.ends_with('♥') => format!("{prefix} {}", session.title()),
+        Some(prefix) => format!("{prefix}  {}", session.title()),
+        None => session.title(),
+    }
+}
+
+/// Apply bold to the markers after truncation, preserving the title's normal tone.
+pub(crate) fn styled_title(title: String, marks: TitleMarks, style: Style) -> Line<'static> {
+    let glyphs: Vec<char> = marks.glyphs().collect();
+    if glyphs.is_empty() {
+        return Line::from(Span::styled(title, style));
+    }
+    let mut spans = Vec::new();
+    let mut rest = title.as_str();
+    for (i, glyph) in glyphs.iter().enumerate() {
+        let Some(after) = rest.strip_prefix(*glyph) else {
+            break;
+        };
+        spans.push(Span::styled(
+            glyph.to_string(),
+            style.add_modifier(Modifier::BOLD),
+        ));
+        rest = after;
+        if i + 1 < glyphs.len() {
+            if let Some(after) = rest.strip_prefix(' ') {
+                spans.push(Span::styled(" ", style));
+                rest = after;
+            }
         }
     }
-    Line::from(Span::styled(title, style))
+    spans.push(Span::styled(rest.to_string(), style));
+    Line::from(spans)
 }
 
 impl App {
@@ -37,8 +85,15 @@ impl App {
         self.pending_effect = Some(AppEffect::ToggleBookmark { idx });
     }
 
+    pub(crate) fn title_marks(&self, session: &Session) -> TitleMarks {
+        TitleMarks {
+            bookmarked: self.bookmarks.contains(session),
+            live_status: self.session_live_status(session),
+        }
+    }
+
     pub(crate) fn session_display_title(&self, session: &Session) -> String {
-        display_title(session, self.bookmarks.contains(session))
+        display_title(session, self.title_marks(session))
     }
 
     pub(crate) fn run_toggle_bookmark(&mut self, idx: usize) {
@@ -153,7 +208,7 @@ mod tests {
         );
         assert_eq!(
             app.session_display_title(app.current().unwrap()),
-            format!("Ⓑ  {title}")
+            format!("♥ {title}")
         );
         let reloaded = BookmarkStore::load(&temp.path).unwrap();
         assert!(reloaded.contains(app.current().unwrap()));
@@ -185,7 +240,7 @@ mod tests {
         app.apply_effect();
         assert!(app.bookmarks.contains(&app.sessions[0]));
         assert!(!app.bookmarks.contains(&app.sessions[2]));
-        assert!(frame(&app, 160).contains("Ⓑ  leaf"));
+        assert!(frame(&app, 160).contains("♥ leaf"));
 
         palette(&mut app, "toggle bookmark");
         assert_eq!(app.mode, UiMode::Table);
@@ -373,13 +428,12 @@ mod tests {
             let buffer = terminal.backend().buffer();
             let (x, y) = (0..10)
                 .flat_map(|y| (0..100).map(move |x| (x, y)))
-                .find(|&(x, y)| buffer[(x, y)].symbol() == "Ⓑ")
+                .find(|&(x, y)| buffer[(x, y)].symbol() == "♥")
                 .expect("bookmark cell");
             assert!(buffer[(x, y)].modifier.contains(Modifier::BOLD));
             assert_eq!(buffer[(x + 1, y)].symbol(), " ");
-            assert_eq!(buffer[(x + 2, y)].symbol(), " ");
-            assert_eq!(buffer[(x + 3, y)].symbol(), "r");
-            assert!(!buffer[(x + 3, y)].modifier.contains(Modifier::BOLD));
+            assert_eq!(buffer[(x + 2, y)].symbol(), "r");
+            assert!(!buffer[(x + 2, y)].modifier.contains(Modifier::BOLD));
         }
     }
 
@@ -446,9 +500,9 @@ mod tests {
                 for focus in [Focus::Table, Focus::Preview] {
                     app.focus = focus;
                     let text = frame(&app, width);
-                    assert!(text.contains("Ⓑ  "), "marker missing at width {width}");
+                    assert!(text.contains("♥ "), "marker missing at width {width}");
                     assert!(
-                        !text.contains("ⒷSession"),
+                        !text.contains("♥Session"),
                         "marker must be separated from title"
                     );
                 }
@@ -456,10 +510,10 @@ mod tests {
         }
         let text = frame(&app, 200);
         assert!(
-            text.contains("Ⓑ  middle"),
+            text.contains("♥ middle"),
             "context source title is also decorated"
         );
         app.bookmarks.set(&app.sessions[0], false);
-        assert!(!frame(&app, 200).contains("Ⓑ  Session"));
+        assert!(!frame(&app, 200).contains("♥ Session"));
     }
 }

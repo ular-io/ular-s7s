@@ -10,10 +10,16 @@
   toggles the focused session's bookmark. An empty list has no target.
 - Quick Command exposes **Toggle Bookmark** with the same effect. It is disabled
   on Profile and when no session is selected.
-- A bookmarked title has the prefix `Ⓑ  ` in the Session table, Prompt metadata,
-  Detail metadata, and resolved Context Source metadata. The two separating ASCII
-  spaces are intentional. Truncation measures the entire decorated title with the
+- A bookmarked title has the prefix `♥ ` in the Session table, Prompt metadata,
+  Detail metadata, and resolved Context Source metadata. A lone `♥` takes one
+  separating space; a circled live-session marker after it keeps two (see
+  below). Truncation measures the entire decorated title with the
   shared Unicode-width helpers; it never changes the original title.
+  A Claude live-session marker (`Ⓑ` background, `Ⓞ` open;
+  [background-sessions.md](./background-sessions.md)) shares the prefix: markers
+  are joined by one space and a two-space gap follows the last circled marker
+  (`♥ Ⓑ  title`), which terminals may draw two cells wide. Every marker is bold. In the Prompt pane's Session block,
+  each present marker also gets a `- ♥ : Bookmarked`-style row under Name.
 - The marker is bold, including on unselected rows and with Prompt focus. The
   table title text keeps its existing tone; metadata titles are already bold.
 - Bookmarked table rows have a subtle full-width `Theme::bookmark_bg` fill.
@@ -46,7 +52,7 @@
   agent, profile ID, and session ID. Titles, folders, and row indices are not keys.
   Bookmarks survive renames, rescans, cache rebuilds, and app restarts.
 - The session index and agent-owned transcript/metadata remain unchanged.
-  Clipboard and session CLI projections retain their original titles; `Ⓑ` is a
+  Clipboard and session CLI projections retain their original titles; `♥` is a
   TUI decoration rather than title content.
 - Missing storage starts empty. Read/parse/version errors are shown at startup;
   a toggle re-reads the store and refuses to replace an unreadable/newer file.
@@ -79,7 +85,7 @@
   `ui::detail::tests::detail_delete_returns_to_session_screen_with_next_selected`.
 - Source-jump return behavior: `ui::context_jump::tests::palette_back_*` plus
   `ctrl_o_reopens_the_detail_screen_on_the_source`.
-- Release TUI/PTY: use `s7s demo`, press `ctrl+b`, inspect `Ⓑ  ` before the table
+- Release TUI/PTY: use `s7s demo`, press `ctrl+b`, inspect `♥ ` before the table
   title and Prompt Name, restart, and confirm it persists. Toggle off again.
   Open Detail and repeat, then use the palette's bookmark filter and `0`.
 - Bookmark an older row: it must move to the first group with the cursor
@@ -96,7 +102,9 @@
   gone; other bookmark identities must remain. Cancel a delete and verify its
   bookmark remains.
 - Check narrow/wide widths, dark/light themes, focus changes, and a CJK title.
-  `Ⓑ` has ambiguous East Asian width; actual font/terminal rendering must be
+  `♥` (U+2665) has ambiguous East Asian width and, though text presentation is
+  its default, some terminals draw it as a color emoji; actual font/terminal
+  rendering must be
   inspected as well as the buffer tests. Verify the glyph and next title
   character do not overlap. The supported layout uses the usual one-cell
   ambiguous-width setting, matching `unicode-width`/ratatui.

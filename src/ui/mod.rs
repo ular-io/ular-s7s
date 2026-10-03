@@ -1,5 +1,6 @@
 //! TUI application state and state machine.
 
+pub(crate) mod agent_status;
 pub mod background;
 pub(crate) mod bookmarks;
 pub mod components;
@@ -132,6 +133,13 @@ pub struct App {
     pub sessions: Vec<Session>,
     pub(crate) bookmarks: crate::bookmarks::BookmarkStore,
     pub(crate) bookmarks_path: PathBuf,
+    /// Live Claude sessions per profile (`claude agents --json`): held by the
+    /// daemon or open in another terminal. Keyed by profile id then lowercase
+    /// session id. Display-only.
+    pub(crate) agent_status: HashMap<String, crate::agent_status::StatusMap>,
+    /// When the next periodic agent-status sweep is due. Starts at launch time,
+    /// so the first loop pass runs the launch sweep.
+    pub(crate) agent_status_due: std::time::Instant,
     /// User-defined session scopes; `active` narrows every session list.
     pub(crate) workspaces: crate::workspaces::WorkspaceStore,
     /// `None` disables saving (unit tests). A store that failed to load stays
@@ -317,6 +325,8 @@ impl App {
             sessions,
             bookmarks,
             bookmarks_path,
+            agent_status: HashMap::new(),
+            agent_status_due: std::time::Instant::now(),
             workspaces,
             workspaces_path,
             workspace: workspace::WorkspaceScreenState::default(),
@@ -443,6 +453,8 @@ impl App {
                 .map(|s| (key, crate::handoff::load_turns(s)))
         });
         self.apply_session_scan(result, detail);
+        // A handover is where `←` most often moves a session to the background.
+        self.request_agent_status();
     }
 
     /// Applies a completed index against the selection and detail target that
@@ -677,7 +689,9 @@ impl App {
         let usage_updated = self.poll_usage();
         let models_updated = self.poll_models();
         let sessions_updated = self.poll_refresh_scan();
-        usage_updated || models_updated || sessions_updated
+        let status_updated = self.poll_agent_status();
+        self.tick_agent_status();
+        usage_updated || models_updated || sessions_updated || status_updated
     }
 
     fn rebuild_all_folders(&mut self) {

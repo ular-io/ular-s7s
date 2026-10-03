@@ -6,6 +6,7 @@
 //! calls [`run`]; the CLI, TUI event loop, and terminal lifecycle live in
 //! `runtime`.
 
+mod agent_status;
 mod bookmarks;
 pub mod cache;
 mod codex_app_server;

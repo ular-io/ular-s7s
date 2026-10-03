@@ -6,6 +6,7 @@
 //! live on `App`; session-refresh tests use controlled receivers and isolated
 //! stores.
 
+use crate::agent_status;
 use crate::models::{self, ModelsResult};
 use crate::profile::Profile;
 use crate::usage::{self, UsageResult};
@@ -24,6 +25,8 @@ pub(crate) struct BackgroundState {
     models_rxs: Vec<Receiver<(String, models::ModelsResult)>>,
     /// Profile IDs with active model queries (prevents duplicate PTY queries for the same profile).
     models_loading: HashSet<String>,
+    /// One active `claude agents --json` sweep over every Claude profile.
+    agent_status_rx: Option<Receiver<(String, Option<agent_status::StatusMap>)>>,
 }
 
 impl BackgroundState {
@@ -154,10 +157,48 @@ impl BackgroundState {
         results
     }
 
+    /// Starts a Claude live-session status sweep unless one is already running.
+    pub(crate) fn spawn_agent_status(&mut self, profiles: Vec<Profile>) {
+        if self.agent_status_rx.is_none() {
+            self.agent_status_rx = Some(agent_status::spawn_fetch(profiles));
+        }
+    }
+
+    /// Drains finished per-profile status results; the receiver is dropped once
+    /// the sweep has answered for every profile.
+    pub(crate) fn drain_agent_status(&mut self) -> Vec<(String, Option<agent_status::StatusMap>)> {
+        let mut results = Vec::new();
+        let Some(rx) = self.agent_status_rx.as_ref() else {
+            return results;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(item) => results.push(item),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.agent_status_rx = None;
+                    break;
+                }
+            }
+        }
+        results
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_agent_status_receiver(
+        &mut self,
+        rx: Receiver<(String, Option<agent_status::StatusMap>)>,
+    ) {
+        self.agent_status_rx = Some(rx);
+    }
+
     /// Returns whether any background job is in progress
     /// (used to determine polling frequency in the main loop).
     pub(crate) fn in_flight(&self) -> bool {
-        !self.usage_rxs.is_empty() || !self.models_rxs.is_empty() || self.refresh_rx.is_some()
+        !self.usage_rxs.is_empty()
+            || !self.models_rxs.is_empty()
+            || self.refresh_rx.is_some()
+            || self.agent_status_rx.is_some()
     }
 }
 

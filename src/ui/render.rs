@@ -659,7 +659,8 @@ fn draw_project_dir_confirm(f: &mut Frame, app: &App) {
 /// `dimmed` renders the accent-colored values in soft-dim too (whole panel unfocused).
 pub(crate) fn session_meta_lines(
     s: &crate::model::Session,
-    bookmarked: bool,
+    marks: crate::ui::bookmarks::TitleMarks,
+    show_legend: bool,
     inner_w: usize,
     th: &Theme,
     dimmed: bool,
@@ -671,7 +672,12 @@ pub(crate) fn session_meta_lines(
             heading_hint: None,
             folder: crate::scratch::folder_label(&s.cwd, &s.folder),
             full_path: &s.cwd.to_string_lossy(),
-            title: &crate::ui::bookmarks::display_title(s, bookmarked),
+            title: &crate::ui::bookmarks::display_title(s, marks),
+            legend: if show_legend {
+                marks.legend()
+            } else {
+                Vec::new()
+            },
             extra_rows: &[
                 ("Created at: ", s.created_str()),
                 ("Updated at: ", s.updated_str()),
@@ -701,7 +707,7 @@ const CONTEXT_SOURCE_JUMP_HINT: &str = "<ctrl+o>";
 pub(crate) fn context_source_lines(
     src: &crate::model::ContextSource,
     resolved: Option<&crate::model::Session>,
-    bookmarked: bool,
+    marks: crate::ui::bookmarks::TitleMarks,
     inner_w: usize,
     th: &Theme,
     dimmed: bool,
@@ -717,7 +723,8 @@ pub(crate) fn context_source_lines(
                 heading_hint: Some(CONTEXT_SOURCE_JUMP_HINT),
                 folder: crate::scratch::folder_label(&s.cwd, &s.folder),
                 full_path: &s.cwd.to_string_lossy(),
-                title: &crate::ui::bookmarks::display_title(s, bookmarked),
+                title: &crate::ui::bookmarks::display_title(s, marks),
+                legend: Vec::new(),
                 extra_rows: &[],
                 id_value: Some(format!("[{}] {} · {}", tag.trim(), src.id, src.profile)),
             },
@@ -735,6 +742,7 @@ pub(crate) fn context_source_lines(
                     folder: "",
                     full_path: "",
                     title: "",
+                    legend: Vec::new(),
                     extra_rows: &[],
                     id_value: Some(format!(
                         "[{}] {} · {}  (source unavailable)",
@@ -766,6 +774,8 @@ struct MetaGrid<'a> {
     folder: &'a str,
     full_path: &'a str,
     title: &'a str,
+    /// `<marker> : <meaning>` rows explaining the title markers, under Name.
+    legend: Vec<(char, &'static str)>,
     /// Soft-dim `- label + value` rows rendered between Name and Id.
     extra_rows: &'a [(&'a str, String)],
     /// Id row value; omitted when `None`.
@@ -781,6 +791,7 @@ fn meta_grid(g: MetaGrid, inner_w: usize, th: &Theme, dimmed: bool) -> Vec<Line<
         folder,
         full_path,
         title,
+        legend,
         extra_rows,
         id_value,
     } = g;
@@ -832,6 +843,21 @@ fn meta_grid(g: MetaGrid, inner_w: usize, th: &Theme, dimmed: bool) -> Vec<Line<
         Span::styled(name_prefix, th.soft_dim()),
         Span::styled(truncate_w_with_ellipsis(title, name_w, "..."), accent_style),
     ]));
+
+    // Same `- ` bullet as the other rows; the marker keeps its bold title style.
+    for (glyph, meaning) in legend {
+        let glyph = glyph.to_string();
+        let rest_w = inner_w.saturating_sub(2 + glyph.width() + 3);
+        lines.push(Line::from(vec![
+            Span::styled("- ", th.soft_dim()),
+            Span::styled(glyph, th.soft_dim().add_modifier(Modifier::BOLD)),
+            Span::styled(" : ", th.soft_dim()),
+            Span::styled(
+                truncate_w_with_ellipsis(meaning, rest_w, "..."),
+                th.soft_dim(),
+            ),
+        ]));
+    }
 
     for (label, value) in extra_rows {
         lines.push(Line::from(vec![
@@ -1283,20 +1309,32 @@ mod tests {
                 .collect()
         };
 
-        let resolved =
-            super::context_source_lines(&src, Some(&source_session), false, 60, &th, false);
+        let resolved = super::context_source_lines(
+            &src,
+            Some(&source_session),
+            Default::default(),
+            60,
+            &th,
+            false,
+        );
         let heading = heading_of(&resolved);
         assert!(heading.starts_with("● Context Source"));
         assert!(heading.ends_with("<ctrl+o>"), "heading was {heading:?}");
         assert_eq!(heading.width(), 60, "hint is flush with the pane edge");
 
         // Unresolved source: the key would report "unavailable", so no hint.
-        let missing = super::context_source_lines(&src, None, false, 60, &th, false);
+        let missing = super::context_source_lines(&src, None, Default::default(), 60, &th, false);
         assert!(!heading_of(&missing).contains("ctrl+o"));
 
         // Narrow pane: the hint is dropped rather than crowding the heading.
-        let narrow =
-            super::context_source_lines(&src, Some(&source_session), false, 20, &th, false);
+        let narrow = super::context_source_lines(
+            &src,
+            Some(&source_session),
+            Default::default(),
+            20,
+            &th,
+            false,
+        );
         assert_eq!(heading_of(&narrow), "● Context Source");
     }
 
