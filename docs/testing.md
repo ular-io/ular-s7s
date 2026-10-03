@@ -75,6 +75,11 @@ deletion invalidation, worker failure, and staged-cache acceptance/discard.
 
 ## Unit test policy
 
+Tests that need a store on disk take a fresh folder from
+`ui::test_support::TempBookmarkStore` (process id + an atomic counter). A
+clock-only name collides across parallel tests on macOS, where the clock
+reports microseconds, and one test then overwrites or deletes another's store.
+
 Tests for the rename/session-title code must cover the following:
 
 - Whether explicit renames take precedence over automated titles
