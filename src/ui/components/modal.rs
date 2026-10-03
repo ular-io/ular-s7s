@@ -1,14 +1,17 @@
 //! Modal framing and backdrop primitives shared by every dialog: the thick
-//! titled block, the clear-and-repaint renderer, navigation-arrow blocks, button
-//! styles, and the behind-dialog backdrop fade.
+//! titled block, the clear-and-repaint renderer, navigation-arrow blocks, form
+//! input boxes, joined dividers, button styles, and the behind-dialog backdrop
+//! fade.
 
 use crate::theme::Theme;
-use crate::ui::UiMode;
+use crate::ui::components::text::truncate_w;
+use crate::ui::render::input_view;
+use crate::ui::{TextInput, UiMode};
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Padding},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
     Frame,
 };
 
@@ -134,6 +137,77 @@ pub(crate) fn titled_block_nav(
         block = block.title_top(Line::from(" → ━").right_aligned().style(style));
     }
     block
+}
+
+/// Single-line form input box titled with its label (three rows with borders).
+/// Focused: Thick accent border and the hardware cursor; unfocused: a Plain `dim`
+/// border, lighter than a panel because it sits inside a dialog. A whole-value
+/// selection paints only the text, and only while focused. `placeholder` fills an
+/// empty box only while it is not focused, because the cursor sits where it would
+/// start.
+pub(crate) fn form_input(
+    f: &mut Frame,
+    area: Rect,
+    label: &str,
+    input: &TextInput,
+    focused: bool,
+    placeholder: &str,
+    th: &Theme,
+) {
+    let (border_type, style) = if focused {
+        (
+            BorderType::Thick,
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (BorderType::Plain, Style::default().fg(th.dim))
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(style)
+        .title(Span::styled(label.to_string(), style))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let width = inner.width as usize;
+    let (visible, cursor_x) = input_view(input, width);
+    let value = if input.value.is_empty() && !focused {
+        Span::styled(truncate_w(placeholder, width), th.soft_dim())
+    } else if focused && input.select_all {
+        Span::styled(
+            visible,
+            Style::default().fg(th.selection_fg).bg(th.selection_bg),
+        )
+    } else {
+        Span::raw(visible)
+    };
+    f.render_widget(Paragraph::new(Line::from(value)), inner);
+    if focused {
+        f.set_cursor_position((inner.x.saturating_add(cursor_x), inner.y));
+    }
+}
+
+/// Thin divider across a modal's inner row `y`, joined to its thick side borders
+/// as `┠───┨`. `outer` is the area passed to `render_modal`.
+pub(crate) fn joined_divider(f: &mut Frame, outer: Rect, y: u16, th: &Theme) {
+    if outer.width < 4 {
+        return;
+    }
+    let left = outer.x + 1;
+    let right = outer.x + outer.width - 2;
+    let line = Rect::new(left, y, right - left + 1, 1);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(line.width as usize),
+            Style::default().fg(th.dim),
+        )),
+        line,
+    );
+    let border = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
+    let buf = f.buffer_mut();
+    buf[(left, y)].set_symbol("┠").set_style(border);
+    buf[(right, y)].set_symbol("┨").set_style(border);
 }
 
 /// Dialog button styles: `(focused, unfocused)`.

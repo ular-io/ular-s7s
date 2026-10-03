@@ -1,12 +1,14 @@
 //! Workspace rendering: the Session screen's workspace pane, the edit dialog
-//! (fields, match count, folder search and checklist, a footer resolving the
-//! cursor row, and the Save/Cancel buttons), and the deletion confirmation.
+//! (field boxes, match count, folder search and checklist, a footer resolving
+//! the cursor row, and the Save/Cancel buttons), and the deletion confirmation.
 
 use super::state::{
     folder_display_label, WorkspaceDialog, WorkspaceField, DIALOG_FIELDS, FIRST_FOLDER_ROW,
 };
 use crate::theme::Theme;
-use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
+use crate::ui::components::modal::{
+    button_styles, form_input, joined_divider, modal_block, render_modal, titled_block_nav,
+};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{count_note, fit_before_note, pad_w, truncate_w};
 use crate::ui::render::{centered_fixed_rect, display_path, input_view};
@@ -26,14 +28,14 @@ pub(crate) const LIST_MAX_W: u16 = 24;
 /// from the stored workspaces. Elsewhere "All" keeps its plain name.
 pub(crate) const ALL_WORKSPACE_LABEL: &str = "[ALL]";
 pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
-/// Dialog field label column (`" Includes "`).
+/// Label column of the dialog's unboxed rows (`" Matches "`, `" Search "`).
 const LABEL_W: usize = 10;
 /// Dialog width including its outer margin, capped at 80% of the terminal.
 const DIALOG_MAX_W: u16 = 86;
-/// Dialog rows besides the folder rows: borders (2); Name, Includes, Excludes,
-/// Matches, divider, Folders heading, Search (7); divider, footer, blank, and
-/// buttons (4).
-const DIALOG_CHROME_H: u16 = 13;
+/// Dialog rows besides the folder rows: borders (2) and top padding (1); the
+/// Name box and the Includes/Excludes boxes side by side (6); Matches, divider,
+/// Folders heading, Search (4); divider, footer, blank, and buttons (4).
+const DIALOG_CHROME_H: u16 = 17;
 /// Folder rows kept when there are fewer folders (or none), so the dialog
 /// never collapses around an empty list.
 const DIALOG_MIN_FOLDER_ROWS: u16 = 3;
@@ -136,18 +138,17 @@ fn follow(scroll: usize, cursor: usize, view: usize) -> usize {
     }
 }
 
-/// One text row of the dialog (a field or the folder search). A text input is
-/// never painted as a cursor row: a focused row bolds its label in the accent
-/// color and shows the hardware cursor, and a whole-value selection paints only
-/// the text. `placeholder` fills an empty row only while it is not focused,
-/// because the hardware cursor sits where it would start.
-fn text_row(
+/// The folder search row. It stays unboxed like the Select Folders search line:
+/// a box would cost two of the folder rows. A text input is never painted as a
+/// cursor row: a focused row bolds its label in the accent color and shows the
+/// hardware cursor, and a whole-value selection paints only the text. The
+/// `type to filter` placeholder fills an empty row only while it is not
+/// focused, because the hardware cursor sits where it would start.
+fn search_row(
     f: &mut Frame,
     (x, y, value_w): (u16, u16, usize),
-    label: &str,
     input: &TextInput,
     focused: bool,
-    placeholder: &str,
     th: &Theme,
 ) -> Line<'static> {
     let label_style = if focused {
@@ -155,14 +156,11 @@ fn text_row(
     } else {
         th.soft_dim()
     };
-    let mut spans = vec![Span::styled(
-        pad_w(&format!(" {label}"), LABEL_W),
-        label_style,
-    )];
+    let mut spans = vec![Span::styled(pad_w(" Search", LABEL_W), label_style)];
     if input.value.is_empty() {
         if !focused {
             spans.push(Span::styled(
-                truncate_w(placeholder, value_w),
+                truncate_w("type to filter", value_w),
                 th.soft_dim(),
             ));
         }
@@ -196,7 +194,7 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     } else {
         " Edit Workspace "
     };
-    let block = modal_block(title, th.accent).padding(Padding::horizontal(1));
+    let block = modal_block(title, th.accent).padding(Padding::new(1, 1, 1, 0));
     let inner = render_modal(f, area, block, th);
     if inner.width < LABEL_W as u16 + 2 || inner.height == 0 {
         return;
@@ -204,7 +202,12 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7), // fields, matches, divider, heading, search
+            Constraint::Length(3), // Name box
+            Constraint::Length(3), // Includes and Excludes boxes
+            Constraint::Length(1), // matches
+            Constraint::Length(1), // divider
+            Constraint::Length(1), // Folders heading
+            Constraint::Length(1), // search
             Constraint::Min(0),    // folder rows
             Constraint::Length(1), // divider
             Constraint::Length(1), // footer: error or the cursor row
@@ -215,55 +218,64 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     let width = inner.width as usize;
     let value_w = width.saturating_sub(LABEL_W + 1);
 
-    let mut head: Vec<Line> = Vec::new();
+    let words = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .split(rows[1]);
     for (row, field) in DIALOG_FIELDS.iter().enumerate() {
-        let (label, placeholder) = match field {
-            WorkspaceField::Name => ("Name", ""),
-            WorkspaceField::Includes => ("Includes", "(none)"),
-            WorkspaceField::Excludes => ("Excludes", "(none)"),
+        let (label, placeholder, rect) = match field {
+            WorkspaceField::Name => (" Name ", "", rows[0]),
+            WorkspaceField::Includes => (" Includes ", "(none)", words[0]),
+            WorkspaceField::Excludes => (" Excludes ", "(none)", words[2]),
         };
         let focused = !dialog.on_buttons && dialog.cursor == row;
-        let y = inner.y + head.len() as u16;
-        head.push(text_row(
+        form_input(
             f,
-            (inner.x, y, value_w),
+            rect,
             label,
             dialog.input(*field),
             focused,
             placeholder,
             th,
-        ));
+        );
     }
-    head.push(Line::from(vec![
-        Span::styled(pad_w(" Matches", LABEL_W), th.soft_dim()),
-        Span::raw(format!("{} ", dialog.matching)),
-        Span::styled(format!("of {} sessions", app.sessions.len()), th.soft_dim()),
-    ]));
-    head.push(divider(width, th));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(pad_w(" Matches", LABEL_W), th.soft_dim()),
+            Span::raw(format!("{} ", dialog.matching)),
+            Span::styled(format!("of {} sessions", app.sessions.len()), th.soft_dim()),
+        ])),
+        rows[2],
+    );
+    joined_divider(f, area, rows[3].y, th);
     let selected = dialog.draft.folders.len();
     let scope = if selected == 0 {
         "all folders".to_string()
     } else {
         format!("{selected} selected")
     };
-    head.push(Line::from(vec![
-        Span::styled(" Folders ", th.soft_dim().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("· {scope}"), th.soft_dim()),
-    ]));
-    let y = inner.y + head.len() as u16;
-    head.push(text_row(
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Folders ", th.soft_dim().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("· {scope}"), th.soft_dim()),
+        ])),
+        rows[4],
+    );
+    let search = search_row(
         f,
-        (inner.x, y, value_w),
-        "Search",
+        (inner.x, rows[5].y, value_w),
         &dialog.folder_query,
         dialog.cursor_on_search(),
-        "type to filter",
         th,
-    ));
-    f.render_widget(Paragraph::new(head), rows[0]);
+    );
+    f.render_widget(Paragraph::new(search), rows[5]);
 
-    draw_dialog_folders(f, app, dialog, area, rows[1]);
-    f.render_widget(Paragraph::new(divider(width, th)), rows[2]);
+    draw_dialog_folders(f, app, dialog, area, rows[6]);
+    joined_divider(f, area, rows[7].y, th);
 
     let (note, note_style) = match &dialog.error {
         Some(err) => (err.clone(), Style::default().fg(th.error)),
@@ -271,7 +283,7 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     };
     f.render_widget(
         Paragraph::new(truncate_w(&format!(" {note}"), width)).style(note_style),
-        rows[3],
+        rows[8],
     );
 
     // Buttons are highlighted only while the button row has focus.
@@ -288,7 +300,7 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     ]);
     f.render_widget(
         Paragraph::new(buttons).alignment(Alignment::Center),
-        rows[5],
+        rows[10],
     );
 }
 
@@ -458,10 +470,10 @@ mod tests {
     #[test]
     fn dialog_fits_every_folder_up_to_ninety_percent_of_the_terminal() {
         let term = |w, h| Rect::new(0, 0, w, h);
-        // 13 rows of chrome plus one row per folder.
-        assert_eq!(dialog_size(term(200, 50), 10), (86, 23));
+        // 17 rows of chrome plus one row per folder.
+        assert_eq!(dialog_size(term(200, 50), 10), (86, 27));
         // Fewer than three folders still leaves three rows.
-        assert_eq!(dialog_size(term(200, 50), 0), (86, 16));
+        assert_eq!(dialog_size(term(200, 50), 0), (86, 20));
         // Many folders stop at 90% of the height (45 of 50, 21 of 24).
         assert_eq!(dialog_size(term(200, 50), 500), (86, 45));
         assert_eq!(dialog_size(term(80, 24), 500), (64, 21));

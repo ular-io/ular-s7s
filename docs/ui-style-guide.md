@@ -148,10 +148,20 @@ Use the shared primitives in `ui/components/modal.rs`:
 - `render_modal` to clear/repaint the outer area and inset the frame by one cell,
   protecting borders from background double-width glyphs;
 - `button_styles` for theme-aware focused and unfocused buttons;
+- `form_input` for a single-line text input: a three-row box titled with its
+  label, `Thick` accent while focused and `Plain` `dim` otherwise;
+- `joined_divider` for a thin inner divider joined to the thick side borders
+  (`┠───┨`);
 - `dim_backdrop` only for modes selected by `backdrop_dimmed`.
 
 Additional rules:
 
+- A dialog with buttons uses `Padding::new(1, 1, 1, 0)`: one blank row under the
+  title. Only the search-backed lists without buttons (Quick Command, Select
+  Folders) drop the top padding so their input line sits under the title.
+- Wrap a form's text inputs in `form_input` boxes. The one unboxed text input
+  in a form is a search line that filters a list right below it (the workspace
+  dialog's Search row), drawn like the Select Folders search line.
 - Keep action order `[Confirm/Execute] [Cancel]`.
 - A text-input Enter must not submit a form. Submission occurs only when the
   confirm button owns focus; Enter on Cancel closes the dialog.
@@ -267,25 +277,30 @@ Additional rules:
 ## Workspace edit dialog
 
 - `workspace::render::draw_workspace_dialog`: a `modal_block` titled
-  ` Edit Workspace ` or ` New Workspace `, with horizontal padding only, over
-  the dimmed Session screen. Width 86 including the outer margin, capped at 80%
-  of the terminal width.
-- Height (`workspace::render::dialog_size`): 13 rows of chrome plus one row per
-  folder, at least three folder rows, capped at 90% of the terminal height. It
-  is sized by every folder, not by the search matches, so typing a query never
-  moves the buttons. Rows past the cap scroll, with the scrollbar on the
-  dialog's right border beside the folder rows.
-- Rows, top to bottom: `Name`, `Includes`, `Excludes` (label column
-  `soft_dim()`), `Matches  N of M sessions` (N in the default color, the rest
-  `soft_dim()`), a divider, `Folders · all folders` / `· N selected`, `Search`,
-  the folder rows, a divider, the footer, a blank row, and the buttons.
-- Text rows (the three fields and Search) are inputs, so the cursor row style
-  is never applied to them: a focused row bolds its label in the accent color
-  and shows the hardware cursor, and a whole-value selection (a new
-  workspace's suggested name, an arrived-on Search query) paints only the text
-  with `selection_fg`/`selection_bg`, as with the combo-box selection rule.
-  An empty unfocused field reads `(none)` and an empty unfocused Search reads
-  `type to filter`, both `soft_dim()`; a focused empty row shows no
+  ` Edit Workspace ` or ` New Workspace ` with the standard dialog padding (one
+  blank row under the title), over the dimmed Session screen. Width 86
+  including the outer margin, capped at 80% of the terminal width.
+- Height (`workspace::render::dialog_size`): 17 rows of chrome plus one row per
+  folder, at least three folder rows, capped at 90% of the terminal height (a
+  24-row terminal keeps four folder rows). It is sized by every folder, not by
+  the search matches, so typing a query never moves the buttons. Rows past the
+  cap scroll, with the scrollbar on the dialog's right border beside the folder
+  rows.
+- Rows, top to bottom: the `Name` box, the `Includes` and `Excludes` boxes side
+  by side (two boxes on one row instead of two rows keep the folder list usable
+  on a 24-row terminal), `Matches  N of M sessions` (N in the default color, the
+  rest `soft_dim()`), a joined divider, `Folders · all folders` /
+  `· N selected`, `Search`, the folder rows, a joined divider, the footer, a
+  blank row, and the buttons.
+- The three fields are `form_input` boxes. A whole-value selection (a new
+  workspace's suggested name) paints only the text with
+  `selection_fg`/`selection_bg`, as with the combo-box selection rule. An empty
+  unfocused Includes/Excludes box reads `(none)` in `soft_dim()`.
+- Search is the form's unboxed search line (a box would cost two folder rows):
+  `Search` in a `soft_dim()` label column, bold accent while focused, with the
+  hardware cursor. The cursor row style is never applied to it; an arrived-on
+  query is painted as a whole-value selection. An empty unfocused Search reads
+  `type to filter` in `soft_dim()`; a focused empty field shows no
   placeholder because the hardware cursor sits where it would start.
 - Folder rows: `[✓]`/`[ ]`, the bare basename, and a right-aligned ` (N)`
   session count. A selected mark is accent + bold, so selection does not rely

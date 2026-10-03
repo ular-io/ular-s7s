@@ -858,9 +858,26 @@ fn edit_dialog_draws_fields_match_count_checked_folders_and_buttons() {
     on_api_dialog(&mut app);
     let text = rendered(&app, 140, 40);
     assert!(text.contains(" Edit Workspace "), "{text}");
-    assert!(text.contains("Name     Api"), "{text}");
-    assert!(text.contains("Includes (none)"), "{text}");
+    let rows = dialog_rows(&text);
+    // Fields are titled boxes; the focused Name box is thick, the rest plain.
+    assert!(rows.iter().any(|l| l.contains("┏ Name ━")), "{text}");
+    assert!(rows.iter().any(|l| l.contains("┃ Api ")), "{text}");
+    let words = rows
+        .iter()
+        .find(|l| l.contains("┌ Includes ─"))
+        .expect("includes box");
+    assert!(words.contains("┌ Excludes ─"), "side by side\n{text}");
+    assert!(text.contains("│ (none) "), "{text}");
     assert!(text.contains("Matches  1 of 3 sessions"), "{text}");
+    // One blank row under the title, and dividers joined to the side borders.
+    let frame = rows[0].find('┏').expect("frame left");
+    let blank: String = rows[1].chars().skip(frame + 1).take(20).collect();
+    assert_eq!(blank.trim(), "", "{text}");
+    let joined = rows
+        .iter()
+        .filter(|l| l.contains("┠─") && l.contains("─┨"))
+        .count();
+    assert_eq!(joined, 2, "{text}");
     assert!(text.contains("Folders · 1 selected"), "{text}");
     assert!(text.contains("[✓] root"), "{text}");
     assert!(text.contains("[ ] leaf"), "{text}");
@@ -879,9 +896,9 @@ fn edit_dialog_draws_fields_match_count_checked_folders_and_buttons() {
 fn edit_dialog_grows_with_the_folders_up_to_ninety_percent_of_the_terminal() {
     let mut app = app_with_workspace();
     on_api_dialog(&mut app);
-    // Three folders: 13 rows of chrome plus three folder rows.
+    // Three folders: 17 rows of chrome plus three folder rows.
     let text = rendered(&app, 140, 40);
-    assert_eq!(dialog_rows(&text).len(), 16, "{text}");
+    assert_eq!(dialog_rows(&text).len(), 20, "{text}");
 
     // Thirty folders on a 40-row terminal: capped at 36 rows, scrolling.
     for i in 0..27 {
