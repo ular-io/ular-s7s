@@ -3,20 +3,21 @@
 //! config-directory confirmation modals.
 
 use crate::theme::Theme;
-use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
+use crate::ui::components::modal::{
+    button_styles, form_input, modal_block, render_modal, titled_block_nav,
+};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::truncate_w;
 use crate::ui::render::{
-    agent_tag, centered_fixed_rect, display_path, input_view, pulse_level_now, pulse_span,
-    reset_label_current, reset_label_weekly, LOADING_LABEL, MISSING_DIR_LABEL, NOT_INSTALLED_LABEL,
-    NOT_LOGGED_IN_LABEL,
+    agent_tag, centered_fixed_rect, display_path, pulse_level_now, pulse_span, reset_label_current,
+    reset_label_weekly, LOADING_LABEL, MISSING_DIR_LABEL, NOT_INSTALLED_LABEL, NOT_LOGGED_IN_LABEL,
 };
-use crate::ui::{App, TextInput, UiMode};
+use crate::ui::{App, UiMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Cell, Padding, Paragraph, Row, Table, TableState, Wrap},
     Frame,
 };
 
@@ -463,6 +464,7 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
         " Name ",
         &form.name,
         form.focus == FormFocus::Name,
+        "",
         th,
     );
     form_input(
@@ -471,6 +473,7 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
         " Config Path ",
         &form.path,
         form.focus == FormFocus::Path,
+        "",
         th,
     );
 
@@ -501,38 +504,6 @@ pub(crate) fn draw_profile_form(f: &mut Frame, app: &App) {
         Paragraph::new(buttons).alignment(Alignment::Center),
         rows[5],
     );
-}
-
-/// Single-line input box styled with a label. If focused, renders a Thick/accent border and displays hardware cursor.
-fn form_input(
-    f: &mut Frame,
-    area: Rect,
-    label: &str,
-    input: &TextInput,
-    focused: bool,
-    th: &Theme,
-) {
-    let (border_type, style) = if focused {
-        (
-            BorderType::Thick,
-            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (BorderType::Plain, Style::default().fg(th.dim))
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(border_type)
-        .border_style(style)
-        .title(Span::styled(label.to_string(), style))
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let (visible, cursor_x) = input_view(input, inner.width as usize);
-    f.render_widget(Paragraph::new(visible), inner);
-    if focused {
-        f.set_cursor_position((inner.x.saturating_add(cursor_x), inner.y));
-    }
 }
 
 /// Profile deletion confirmation modal. Explicitly warns that the actual folder is preserved on disk.

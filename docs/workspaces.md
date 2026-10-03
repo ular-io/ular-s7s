@@ -77,13 +77,14 @@ Words match through `filter::token_matches`, the same text as `/` search
   fresh `New Workspace` (`New Workspace 2`, … when taken) that is not in the
   store. Nothing is written and the session list does not change until
   **Save**. Cancel or Esc drops the draft; a new workspace then never existed.
-- Rows: `Name`, `Includes`, `Excludes`, a read-only `Matches  N of M sessions`
-  (sessions the draft matches over every session, recounted on every edit and
-  folder toggle), the `Folders` heading, a `Search` row, the folder rows, then
-  the `Save`/`Cancel` buttons. Name, Includes, Excludes, and Search are text
+- Rows: `Name`, `Includes` and `Excludes` (side by side, as boxes), a
+  read-only `Matches  N of M sessions` (sessions the draft matches over every
+  session, recounted on every edit and folder toggle), the `Folders` heading,
+  a `Search` row, the folder rows, then the `Save`/`Cancel` buttons. Name, Includes, Excludes, and Search are text
   rows: typing edits them directly with no edit mode. A new workspace's
   suggested name starts selected, so typing replaces it.
-- Keys: `↑`/`↓` move one row, past the last folder onto the buttons; Tab /
+- Keys: `↑`/`↓` move one row in field order (`↓` on Includes moves to the
+  Excludes box beside it), past the last folder onto the buttons; Tab /
   BackTab move between groups (each field, Search, the first folder when one is
   shown, the buttons), wrapping. On text rows `←`/`→`/`Home`/`End` move the text
   cursor and Enter moves to the next row — a text row never submits. On folder
