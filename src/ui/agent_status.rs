@@ -1,4 +1,4 @@
-//! Scheduling and application of Claude live-session status sweeps.
+//! Scheduling and application of live-session status sweeps (Claude, agy).
 //!
 //! A sweep runs `claude agents --json` once per Claude profile on a worker
 //! (`crate::agent_status`). It starts at launch, with every session rescan
@@ -58,9 +58,9 @@ impl App {
     }
 
     /// Live holder of `session` from the last sweep: Claude Code's daemon or
-    /// another terminal.
+    /// another terminal. Codex sessions are never marked.
     fn session_live_entry(&self, session: &Session) -> Option<LiveEntry> {
-        if session.agent != Agent::Claude {
+        if session.agent == Agent::Codex {
             return None;
         }
         self.agent_status
@@ -80,7 +80,7 @@ impl App {
     /// back to the last sweep. Unit tests read the injected map only.
     fn live_entry_now(&mut self, idx: usize) -> Option<LiveEntry> {
         let session = self.sessions.get(idx)?;
-        if session.agent != Agent::Claude {
+        if session.agent == Agent::Codex {
             return None;
         }
         #[cfg(not(test))]
@@ -189,6 +189,10 @@ mod tests {
         assert_eq!(
             app.session_live_status(&session("p2", "abc", Agent::Claude)),
             None
+        );
+        assert_eq!(
+            app.session_live_status(&session("p1", "abc", Agent::Antigravity)),
+            Some(LiveStatus::Done)
         );
         assert_eq!(
             app.session_live_status(&session("p1", "abc", Agent::Codex)),
@@ -334,7 +338,7 @@ mod tests {
         assert_eq!(app.mode, crate::ui::UiMode::Message);
         let msg = app.message.as_ref().unwrap();
         assert_eq!(msg.title, " Cannot Resume ");
-        assert!(msg.lines[0].contains("another Claude Code terminal"));
+        assert!(msg.lines[0].contains("open in another terminal"));
     }
 
     #[test]

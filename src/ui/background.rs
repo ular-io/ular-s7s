@@ -25,7 +25,7 @@ pub(crate) struct BackgroundState {
     models_rxs: Vec<Receiver<(String, models::ModelsResult)>>,
     /// Profile IDs with active model queries (prevents duplicate PTY queries for the same profile).
     models_loading: HashSet<String>,
-    /// One active `claude agents --json` sweep over every Claude profile.
+    /// One active live-session sweep over every Claude and agy profile.
     agent_status_rx: Option<Receiver<(String, Option<agent_status::StatusMap>)>>,
 }
 
@@ -157,7 +157,7 @@ impl BackgroundState {
         results
     }
 
-    /// Starts a Claude live-session status sweep unless one is already running.
+    /// Starts a live-session status sweep unless one is already running.
     pub(crate) fn spawn_agent_status(&mut self, profiles: Vec<Profile>) {
         if self.agent_status_rx.is_none() {
             self.agent_status_rx = Some(agent_status::spawn_fetch(profiles));
