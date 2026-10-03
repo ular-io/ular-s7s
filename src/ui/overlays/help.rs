@@ -43,7 +43,7 @@ const HELP_SESSION: &[(&str, &str)] = &[
     ("ctrl+o", "Go to context source (clears filters if hidden)"),
     ("ctrl+b", "Toggle session bookmark"),
     ("Ⓑ", "Claude background session (state in Prompt pane)"),
-    ("Ⓞ", "Claude session open in another terminal"),
+    ("Ⓞ", "Session open in another terminal (Claude, agy)"),
     ("/", "Keyword search"),
     (".", "Expand/collapse preview (when focused)"),
     ("c", "Copy session info / all user turns (by focus)"),

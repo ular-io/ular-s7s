@@ -136,9 +136,9 @@ pub struct App {
     pub sessions: Vec<Session>,
     pub(crate) bookmarks: crate::bookmarks::BookmarkStore,
     pub(crate) bookmarks_path: PathBuf,
-    /// Live Claude sessions per profile (`claude agents --json`): held by the
-    /// daemon or open in another terminal. Keyed by profile id then lowercase
-    /// session id. Display-only.
+    /// Live sessions per profile (`claude agents --json`, agy presence locks):
+    /// held by Claude Code's daemon or open in another terminal. Keyed by
+    /// profile id then lowercase session id. Display-only.
     pub(crate) agent_status: HashMap<String, crate::agent_status::StatusMap>,
     /// When the next periodic agent-status sweep is due. Starts at launch time,
     /// so the first loop pass runs the launch sweep.

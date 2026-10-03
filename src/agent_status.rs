@@ -1,6 +1,10 @@
-//! Live Claude Code session status, read from `claude agents --json`.
+//! Live session status for Claude Code (`claude agents --json`) and
+//! Antigravity (`presence/<conversation id>.lock`). Codex is not covered: its
+//! shared app-server daemon keeps threads loaded and locked after the terminal
+//! that opened them exits, and nothing on disk or in its protocol says which
+//! terminal shows which thread.
 //!
-//! Two kinds of live holder are reported:
+//! Two kinds of live Claude holder are reported:
 //!
 //! - **Background** sessions run inside Claude Code's daemon (`←` on an empty
 //!   prompt, `/bg`, `claude --bg`, or the agent view). While that worker is
@@ -16,11 +20,16 @@
 //! process whose session was moved to the background. An entry carries `pid`
 //! only while its process is alive; retired, stopped, and daemon-less background
 //! entries have none and resume normally, so only entries with a `pid` are
-//! reported. See `docs/background-sessions.md`.
+//! reported.
+//!
+//! A running agy holds an exclusive `flock` on its conversation's presence
+//! file and releases it on exit; the file itself stays. Held files are
+//! reported as open in another terminal. See `docs/background-sessions.md`.
 
 use crate::model::Agent;
 use crate::profile::Profile;
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -28,8 +37,8 @@ use std::time::{Duration, Instant};
 /// Upper bound for one `claude agents --json` call (normally ~0.3 s).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Live holder of a Claude session. The background variants mirror the agent
-/// view groups.
+/// Live holder of a session. The background variants are Claude-only and
+/// mirror its agent view groups; `Open` covers Claude and agy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveStatus {
     /// Background `state: working` — a turn is running.
@@ -39,7 +48,8 @@ pub enum LiveStatus {
     /// Background `state: done` — the turn finished but the worker is still
     /// alive, so a flagged resume is still refused until the daemon retires it.
     Done,
-    /// Interactive — open in another Claude Code terminal.
+    /// Open in another terminal (Claude Code interactive session, or a
+    /// running agy holding the conversation's presence lock).
     Open,
 }
 
@@ -50,14 +60,14 @@ impl LiveStatus {
             LiveStatus::Working => "Claude background session · working",
             LiveStatus::NeedsInput => "Claude background session · needs input",
             LiveStatus::Done => "Claude background session · done, still held (resume fails)",
-            LiveStatus::Open => "Open in another Claude Code terminal",
+            LiveStatus::Open => "Open in another terminal",
         }
     }
 
     /// Who holds the session, as one sentence for dialogs and CLI errors.
     pub fn holder_sentence(self) -> String {
         match self {
-            LiveStatus::Open => "This session is open in another Claude Code terminal.".to_string(),
+            LiveStatus::Open => "This session is open in another terminal.".to_string(),
             status => format!(
                 "Claude Code is running this session in the background ({}).",
                 status.state_label()
@@ -136,10 +146,84 @@ pub fn parse(json: &str) -> Option<StatusMap> {
     Some(map)
 }
 
-/// Runs `claude agents --json` against `profile`'s config dir. `None` on any
-/// failure (missing CLI, timeout, non-zero exit, unparsable output); callers
-/// then show no marker for that profile.
+/// Live holders for `profile`'s sessions. `None` on any failure; callers then
+/// show no marker for that profile. Codex profiles always yield `None`.
 pub fn query(profile: &Profile) -> Option<StatusMap> {
+    match profile.agent {
+        Agent::Claude => query_claude(profile),
+        Agent::Antigravity => query_agy(&profile.path.join("presence")),
+        Agent::Codex => None,
+    }
+}
+
+/// Reports every agy conversation whose presence lock another process holds.
+/// A missing presence folder means no conversation has run there yet.
+fn query_agy(presence: &Path) -> Option<StatusMap> {
+    let entries = match std::fs::read_dir(presence) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(StatusMap::new()),
+        Err(_) => return None,
+    };
+    let mut map = StatusMap::new();
+    for path in entries.flatten().map(|e| e.path()) {
+        if path.extension().and_then(|e| e.to_str()) != Some("lock") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if lock_held(&path) == Some(true) {
+            map.insert(
+                id.to_ascii_lowercase(),
+                LiveEntry {
+                    status: LiveStatus::Open,
+                    job: None,
+                },
+            );
+        }
+    }
+    Some(map)
+}
+
+/// Whether another process holds a `flock` on `path`. `None` when it cannot
+/// be checked.
+#[cfg(target_os = "macos")]
+fn lock_held(path: &Path) -> Option<bool> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::open(path).ok()?;
+    // macOS reports flock locks through F_GETLK, which acquires nothing, so the
+    // check can never collide with agy taking the lock at the same moment.
+    let mut probe: libc::flock = unsafe { std::mem::zeroed() };
+    probe.l_type = libc::F_WRLCK as _;
+    probe.l_whence = libc::SEEK_SET as _;
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut probe) } == -1 {
+        return None;
+    }
+    Some(i32::from(probe.l_type) != libc::F_UNLCK as i32)
+}
+
+/// Whether another process holds a `flock` on `path`. `None` when it cannot
+/// be checked.
+#[cfg(not(target_os = "macos"))]
+fn lock_held(path: &Path) -> Option<bool> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::open(path).ok()?;
+    // Linux keeps flock and fcntl locks apart, so probe with a non-blocking
+    // shared flock and release it at once.
+    let fd = file.as_raw_fd();
+    if unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+        return Some(false);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::EWOULDBLOCK) => Some(true),
+        _ => None,
+    }
+}
+
+/// Runs `claude agents --json` against `profile`'s config dir. `None` on any
+/// failure (missing CLI, timeout, non-zero exit, unparsable output).
+fn query_claude(profile: &Profile) -> Option<StatusMap> {
     let bin = std::env::var_os("S7S_AGENTS_CLAUDE_BIN").unwrap_or_else(|| "claude".into());
     let mut cmd = Command::new(bin);
     cmd.args(["agents", "--json"])
@@ -183,11 +267,8 @@ pub fn query(profile: &Profile) -> Option<StatusMap> {
 }
 
 /// Live holder of `session` right now, for the `s7s session` mutations. `None`
-/// for non-Claude sessions and when the query fails.
+/// for Codex sessions and when the query fails.
 pub fn live_holder(profile: &Profile, session: &crate::model::Session) -> Option<LiveEntry> {
-    if session.agent != Agent::Claude {
-        return None;
-    }
     query(profile)?.remove(&session.id.to_ascii_lowercase())
 }
 
@@ -211,13 +292,14 @@ pub fn print_live_refusal(entry: &LiveEntry, what: &str) {
     eprintln!("hint: {}", entry.release_hint());
 }
 
-/// Queries every Claude profile on a worker thread. Each profile yields one
-/// `(profile_id, result)` message; the channel disconnects when all are done.
+/// Queries every Claude and agy profile on a worker thread. Each profile
+/// yields one `(profile_id, result)` message; the channel disconnects when all
+/// are done.
 pub fn spawn_fetch(profiles: Vec<Profile>) -> Receiver<(String, Option<StatusMap>)> {
     let (tx, rx) = mpsc::channel();
     let targets: Vec<Profile> = profiles
         .into_iter()
-        .filter(|p| p.agent == Agent::Claude && p.path.is_dir())
+        .filter(|p| p.agent != Agent::Codex && p.path.is_dir())
         .collect();
     let _ = std::thread::Builder::new()
         .name("s7s-agent-status".into())
@@ -301,6 +383,46 @@ mod tests {
             Some("8d1d04b2")
         );
         assert_eq!(map["c3cbc2a0-0bd0-44b3-9fba-a782c578ec9d"].job, None);
+    }
+
+    #[test]
+    fn agy_presence_reports_only_conversations_another_process_locks() {
+        use std::io::BufRead;
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let presence = root.path.with_file_name("presence");
+        assert!(query_agy(&presence).unwrap().is_empty(), "no folder yet");
+
+        std::fs::create_dir_all(&presence).unwrap();
+        let open = presence.join("AAAA-open.lock");
+        std::fs::write(&open, "").unwrap();
+        std::fs::write(presence.join("bbbb-closed.lock"), "").unwrap();
+        std::fs::write(presence.join("notes.txt"), "").unwrap();
+        assert!(query_agy(&presence).unwrap().is_empty(), "nothing locked");
+
+        // Another process takes the exclusive flock agy holds while open.
+        let Ok(mut child) = std::process::Command::new("perl")
+            .args([
+                "-e",
+                "use Fcntl ':flock'; open(my $f, '<', $ARGV[0]) or die; \
+                 flock($f, LOCK_EX) or die; $| = 1; print \"L\\n\"; sleep 30",
+            ])
+            .arg(&open)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        else {
+            return; // perl is unavailable; the unlocked cases above still ran.
+        };
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let map = query_agy(&presence).unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(line.trim(), "L");
+        assert_eq!(map.len(), 1, "{map:?}");
+        assert_eq!(map["aaaa-open"].status, LiveStatus::Open);
+        assert_eq!(map["aaaa-open"].job, None);
     }
 
     #[test]

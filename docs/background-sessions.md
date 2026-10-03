@@ -1,6 +1,7 @@
-# Claude Background Sessions
+# Live Sessions: Claude Background and Open Elsewhere
 
-> Read when: changing the Claude live-session markers (`Ⓑ` background, `Ⓞ` open),
+> Read when: changing the live-session markers (`Ⓑ` Claude background, `Ⓞ`
+> open in another terminal, for Claude and agy),
 > `src/agent_status.rs`, `src/ui/agent_status.rs`, or anything that depends on
 > how Claude Code's daemon holds a session.
 
@@ -121,7 +122,7 @@ marker.
 | background `working` (and unknown values) | `Ⓑ` | `Working`: a turn is running |
 | background `blocked` | `Ⓑ` | `NeedsInput`: waiting on a permission prompt or user input |
 | background `done` | `Ⓑ` | `Done`: turn finished; worker still alive until retired |
-| `interactive` | `Ⓞ` | `Open`: open in another Claude Code terminal |
+| `interactive` | `Ⓞ` | `Open`: open in another terminal |
 
 The list shows one marker per way of opening: every background state opens the
 same way, so they share `Ⓑ` and only the Prompt legend row tells them apart.
@@ -163,6 +164,32 @@ Known gaps:
   (the daemon keeps attachers in memory only), so `Ⓑ` cannot tell a session
   someone is watching from an unattended one.
 
+## Antigravity and Codex
+
+Observed on agy 1.2.16 and Codex 0.160.0.
+
+**Antigravity (`Ⓞ` only).** A running agy holds an exclusive `flock` on
+`<profile root>/presence/<conversation id>.lock` (the conversation id is the
+s7s session id) and releases it on exit; the file stays, so about 400 stale
+files exist on a long-used machine. `agent_status::query_agy` reports the held
+files. On macOS `F_GETLK` reports flock locks without acquiring anything, so
+the check cannot collide with agy taking the lock; elsewhere it probes with a
+non-blocking shared `flock` and releases it at once. No background or daemon
+holder was observed, so agy sessions only ever show `Ⓞ`, and Enter, delete,
+and rename block exactly as for a Claude `Ⓞ` session. Whether agy itself
+refuses a conversation that is already open is unverified.
+
+**Codex (not marked).** The terminal TUI talks to a shared app-server daemon,
+which is the only writer and holds `thread-writer-locks/<thread id>.lock` plus
+the rollout for every *loaded* thread. A thread stays loaded after its terminal
+exits (still held 30 s later; subagent threads stayed loaded for hours), the
+app-server protocol exposes thread status (`notLoaded`/`idle`/`active`/
+`systemError`) but no attached clients, `tui-thread-reference-capabilities/`
+only records threads ever opened, and a TUI's command line carries an id only
+for `codex resume <id>`. Nothing tells which terminal shows which thread, so
+Codex sessions get no marker and no block. With one daemon writing, two
+terminals on one thread probably do not corrupt it (unverified).
+
 ## Verification
 
 On a CLI upgrade, or when changing these modules:
@@ -175,6 +202,8 @@ On a CLI upgrade, or when changing these modules:
    Prompt legend reads `done` once its turn finishes; after `claude stop <id>`
    and the next sweep it shows nothing.
    Open a disposable session in another terminal (`claude --resume <id>`) and
-   confirm `Ⓞ` appears and clears after that terminal exits.
+   confirm `Ⓞ` appears and clears after that terminal exits. Repeat with a
+   disposable agy conversation (`agy` in a trusted folder): `Ⓞ` while it runs,
+   gone after it exits.
 4. Re-check the resume table above with and without
    `--dangerously-skip-permissions`, then `claude rm <id>`.
