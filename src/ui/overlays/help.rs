@@ -87,19 +87,23 @@ const HELP_PROFILE: &[(&str, &str)] = &[
 ];
 
 /// "List" is the Session screen's workspace pane (← from the session list);
-/// "Detail" is the Workspaces screen it opens with Enter.
+/// "Dialog" is the edit dialog it opens with Enter or `+`.
 const HELP_WORKSPACE: &[(&str, &str)] = &[
     ("←/h", "Session list: show workspace list"),
-    ("↑/↓", "List: open workspace · Detail: move row"),
-    ("enter", "List: edit workspace · Detail: edit row"),
-    ("+", "List: add workspace (name edit starts)"),
+    ("↑/↓", "List: open workspace · Dialog: move row"),
+    ("enter", "List: edit workspace · Dialog: next row / Save"),
+    ("+", "List: add workspace"),
     ("ctrl+d/del", "List: delete workspace"),
     ("←/→", "List: go to profiles / close list"),
-    ("esc", "List: close · Detail: back to list"),
-    ("space", "Detail: toggle folder"),
+    ("esc", "List: close · Dialog: cancel"),
+    (
+        "tab",
+        "Dialog: next group (fields, search, folders, buttons)",
+    ),
+    ("space", "Dialog: toggle folder"),
     (
         "type",
-        "Detail Search row: filter folders · ←/→ text cursor",
+        "Dialog text rows: edit · Search row filters folders",
     ),
 ];
 

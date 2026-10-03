@@ -66,12 +66,11 @@ Exception: while an overlay or the search prompt owns input no pane is focused
 and none fades, so a dialog is not drawn over a faded screen. A selected row then
 reads `selection_inactive_bg` + `selection_fg` + bold. Pane renderers therefore
 compute `dimmed` as "another pane has focus *and* the mode is the table mode",
-not as `!focused`. A Workspaces Detail in-place edit (`UiMode::WorkspaceEdit`)
-is not an overlay: Detail keeps focus and the other panes stay faded.
+not as `!focused`. The workspace edit dialog (`UiMode::WorkspaceEdit`) is an
+overlay like any other: the pane loses focus and the backdrop dims.
 
 Where it applies: Session table, Prompt, and workspace pane (shown only while
-focused); Detail Prompt and Work & Answer; the Workspaces screen's list and
-session table (its Detail pane always has focus).
+focused); Detail Prompt and Work & Answer.
 
 When Session is focused, its selected row uses `selection_bg`/`selection_fg`
 plus bold, and the Prompt fades.
@@ -129,8 +128,7 @@ drives the current decision. Avoid using bold for every value.
   conditional Context Source heading and in Help. The Back action is palette-only.
 - The common column carries `<ctrl+w> Open Workspace` (five rows, the ceiling).
 - The Session screen shows `SHORTCUTS_WORKSPACE_LIST` instead of
-  `SHORTCUTS_SESSION` while its workspace pane has focus; the Workspaces screen
-  shows `SHORTCUTS_WORKSPACE_DETAIL`.
+  `SHORTCUTS_SESSION` while its workspace pane has focus.
 
 ## Dialogs and overlays
 
@@ -167,7 +165,7 @@ Additional rules:
 
 - The profile and model lists carry a `soft_dim()` note beside each label.
 - Every folder list (folder dropdown, Change Folder pick list, folder filter,
-  Workspaces Detail) ends each row with its session count as ` (N)`, right
+  workspace edit dialog) ends each row with its session count as ` (N)`, right
   aligned and in `soft_dim()` (`text::count_note` + `text::fit_before_note`).
   Both the brackets and the dim color are required: several folder rows are
   already dim (unmatched rows, an unfocused pane), and a folder name can end in
@@ -247,60 +245,49 @@ Additional rules:
   fixed rows apart, none of them color alone: the bracketed upper-case label
   (as with `[SCRATCH]`), a `dim` divider between them and the stored workspaces
   (one divider when there is none; the cursor never lands on it), and the
-  `key_hint` color on an unselected row of an unfaded pane. The label is
-  list-only (`workspace::render::ALL_WORKSPACE_LABEL`); Detail, palette rows,
-  and messages keep the name "All". The cursor row is the open workspace (or
-  `[NEW WORKSPACE]`, showing "All").
-- While an overlay or the search prompt owns input the pane is drawn unfocused
-  and undimmed, like the other workspace panes.
+  `key_hint` color on an unselected row. The label is list-only
+  (`workspace::render::ALL_WORKSPACE_LABEL`); palette rows and messages keep
+  the name "All". The cursor row is the open workspace (or `[NEW WORKSPACE]`,
+  showing "All"). Stored workspaces are in name order (see
+  [workspaces.md](./workspaces.md) §The open workspace).
+- While an overlay (the edit dialog included) or the search prompt owns input
+  the pane is drawn unfocused, its cursor row in `selection_inactive_bg` +
+  `selection_fg` + bold.
 
-## Workspaces screen
+## Workspace edit dialog
 
-- Three panes, left to right: `Workspaces` list, `Detail`, and the session
-  table (`session::render::draw_table_with`, the Session screen's table with
-  the caller's focus state). Each uses `titled_block_nav`. Only Detail takes
-  keys, so it is the only thick pane and draws no arrows (`←`/`→` do not leave
-  it); the list (without `[NEW WORKSPACE]`) and the table are display-only.
-- The list and table follow the Prompt-focused Session rule
-  (`workspace::render::row_style`): every row and the table header use
-  `soft_dim()`, and a selected row keeps `selection_inactive_bg`, `soft_dim()`,
-  and a weak `REVERSED` signal. While an overlay or the search prompt owns
-  input no pane is focused or dimmed, so a selected row reads
-  `selection_inactive_bg` + `selection_fg` + bold, as the unfocused session
-  table does.
-- Widths include borders: list 24, Detail 40, sessions take the rest
-  (`workspace::render::pane_widths`). Below 104 columns the Detail pane shrinks
-  first, to 24, keeping 40 for the table; past that the table hides its
-  optional columns under the Session table rules above.
-- The list is the workspace pane's list without `[NEW WORKSPACE]` and its
-  divider: `[ALL]`, a divider, the stored workspaces. Its selected row is the
-  workspace being edited.
-- Detail rows: `Name`, `Includes`, `Excludes` (label column `soft_dim()`, empty
-  values read `(none)` in `soft_dim()`), a divider, `Folders · all folders` /
-  `· N selected`, a `Search` row, then `[✓]`/`[ ]` folder rows with bare
-  basenames and a right-aligned ` (N)` session count. A selected mark is
-  accent + bold, so selection does not rely on the mark alone. A query with no
-  match draws `No matching folders` in `soft_dim()` in the list area.
-- The Search row is a text input, so the cursor row style is never applied to
-  it: the hardware cursor marks it, and a whole-query selection paints only the
-  query text with `selection_fg`/`selection_bg` (not the label or padding),
-  and only while the cursor is on the row, as with the combo-box selection
-  rule. Its label uses the field label column; an empty query reads
-  `type to filter` in `soft_dim()` only while the cursor is elsewhere, because
-  a focused row shows the hardware cursor where the placeholder would start.
-- The Detail footer (divider + one line) resolves the cursor row: the full path
-  of a folder row, what a field does, or on the Search row the hint, the
-  `M of N folders · esc clear` match count, or while the query is selected
-  `M/N · type replaces · → edit`. It is dropped before the folder list
-  would lose its last row, as with the folder dropdown footer.
-- The screen never shows "All" (Enter on it does nothing, and a scope change
-  to it returns to the pane). `draw_detail` still draws a locked pane for it —
-  every value `soft_dim()`, no cursor row, footer `All sessions · cannot be
-  edited` — rather than assuming that.
-- In-place edits draw the input inside the Detail row with the hardware cursor;
-  the status bar shows `enter save · esc cancel`. An edit is not a dialog:
-  `backdrop_dimmed` excludes `UiMode::WorkspaceEdit`, so Detail stays focused
-  and unfaded while it is edited.
+- `workspace::render::draw_workspace_dialog`: a `modal_block` titled
+  ` Edit Workspace ` or ` New Workspace `, with horizontal padding only, over
+  the dimmed Session screen. Width 86 including the outer margin, capped at 80%
+  of the terminal width.
+- Height (`workspace::render::dialog_size`): 13 rows of chrome plus one row per
+  folder, at least three folder rows, capped at 90% of the terminal height. It
+  is sized by every folder, not by the search matches, so typing a query never
+  moves the buttons. Rows past the cap scroll, with the scrollbar on the
+  dialog's right border beside the folder rows.
+- Rows, top to bottom: `Name`, `Includes`, `Excludes` (label column
+  `soft_dim()`), `Matches  N of M sessions` (N in the default color, the rest
+  `soft_dim()`), a divider, `Folders · all folders` / `· N selected`, `Search`,
+  the folder rows, a divider, the footer, a blank row, and the buttons.
+- Text rows (the three fields and Search) are inputs, so the cursor row style
+  is never applied to them: a focused row bolds its label in the accent color
+  and shows the hardware cursor, and a whole-value selection (a new
+  workspace's suggested name, an arrived-on Search query) paints only the text
+  with `selection_fg`/`selection_bg`, as with the combo-box selection rule.
+  An empty unfocused field reads `(none)` and an empty unfocused Search reads
+  `type to filter`, both `soft_dim()`; a focused empty row shows no
+  placeholder because the hardware cursor sits where it would start.
+- Folder rows: `[✓]`/`[ ]`, the bare basename, and a right-aligned ` (N)`
+  session count. A selected mark is accent + bold, so selection does not rely
+  on the mark alone. The cursor folder row uses `selection_bg` + bold. A query
+  with no match draws `No matching folders` in `soft_dim()`.
+- The footer is one line that every state fills: a refused Save's reason in
+  the error color, else what the cursor row means — what a field does, the
+  full path of a folder row, the Search hint / `M of N folders · esc clear` /
+  `M/N · type replaces · → edit`, or what the focused button does.
+- Buttons `[Save] [Cancel]` are centered with one blank row above them and are
+  highlighted only while the button row has focus (Save first).
+- The status bar shows the dialog's keys while it is open.
 
 ## Width and root layout
 

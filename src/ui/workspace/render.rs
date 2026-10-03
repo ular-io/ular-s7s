@@ -1,18 +1,16 @@
-//! Workspace rendering: the workspace list (the Session screen's workspace
-//! pane, and a display-only copy on the Workspaces screen), the Detail pane
-//! (fields, folder search and checklist, and a footer resolving the cursor
-//! row), the reused session table, and the deletion confirmation modal.
+//! Workspace rendering: the Session screen's workspace pane, the edit dialog
+//! (fields, match count, folder search and checklist, a footer resolving the
+//! cursor row, and the Save/Cancel buttons), and the deletion confirmation.
 
 use super::state::{
-    folder_display_label, WorkspaceField, DETAIL_FIELDS, FIRST_FOLDER_ROW, SEARCH_ROW,
+    folder_display_label, WorkspaceDialog, WorkspaceField, DIALOG_FIELDS, FIRST_FOLDER_ROW,
 };
 use crate::theme::Theme;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal, titled_block_nav};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{count_note, fit_before_note, pad_w, truncate_w};
 use crate::ui::render::{centered_fixed_rect, display_path, input_view};
-use crate::ui::{App, UiMode};
-use crate::workspaces::ALL_WORKSPACE_NAME;
+use crate::ui::{App, TextInput, UiMode};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -21,118 +19,107 @@ use ratatui::{
     Frame,
 };
 
-/// Pane widths including borders. The list and Detail panes are capped; the
-/// session table takes the rest and hides optional columns on its own. The
-/// Session screen's workspace pane uses the same list width.
+/// Width of the Session screen's workspace pane, including borders.
 pub(crate) const LIST_MAX_W: u16 = 24;
 /// Fixed rows of the workspace list, outside the stored list. Bracketed upper
 /// case marks a fixed option (as `[SCRATCH]` does), and a divider separates each
 /// from the stored workspaces. Elsewhere "All" keeps its plain name.
 pub(crate) const ALL_WORKSPACE_LABEL: &str = "[ALL]";
 pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
-const DETAIL_MAX_W: u16 = 40;
-/// Session table width protected before the Detail pane may shrink.
-const SESSIONS_MIN_W: u16 = 40;
-const DETAIL_MIN_W: u16 = 24;
-/// Detail field label column (`" Includes "`).
+/// Dialog field label column (`" Includes "`).
 const LABEL_W: usize = 10;
+/// Dialog width including its outer margin, capped at 80% of the terminal.
+const DIALOG_MAX_W: u16 = 86;
+/// Dialog rows besides the folder rows: borders (2); Name, Includes, Excludes,
+/// Matches, divider, Folders heading, Search (7); divider, footer, blank, and
+/// buttons (4).
+const DIALOG_CHROME_H: u16 = 13;
+/// Folder rows kept when there are fewer folders (or none), so the dialog
+/// never collapses around an empty list.
+const DIALOG_MIN_FOLDER_ROWS: u16 = 3;
 
-/// `(list, detail, sessions)` widths for a body `total` cells wide. A narrow
-/// terminal shrinks the Detail pane first, down to `DETAIL_MIN_W`; past that
-/// the session table gives up its optional columns.
-pub(crate) fn pane_widths(total: u16) -> (u16, u16, u16) {
-    let list = LIST_MAX_W.min(total);
-    let rest = total - list;
-    let detail = if rest >= DETAIL_MAX_W + SESSIONS_MIN_W {
-        DETAIL_MAX_W
-    } else {
-        rest.saturating_sub(SESSIONS_MIN_W)
-            .max(DETAIL_MIN_W)
-            .min(rest)
-    };
-    (list, detail, rest - detail)
+/// `(width, height)` of the edit dialog on a `full`-sized terminal: tall
+/// enough to show every one of `folders` rows, capped at 90% of the terminal
+/// height. Sized by every folder rather than the search matches, so typing a
+/// query never moves the buttons.
+pub(crate) fn dialog_size(full: Rect, folders: usize) -> (u16, u16) {
+    let width = DIALOG_MAX_W.min((u32::from(full.width) * 8 / 10) as u16);
+    let rows = (folders as u32).max(u32::from(DIALOG_MIN_FOLDER_ROWS));
+    let want = u32::from(DIALOG_CHROME_H) + rows;
+    let cap = u32::from(full.height) * 9 / 10;
+    (width, want.min(cap) as u16)
 }
 
-pub(crate) fn draw_workspace_screen(f: &mut Frame, app: &App, area: Rect) {
-    let body = if app.mode == UiMode::Keyword {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(3)])
-            .split(area);
-        crate::ui::session::render::draw_search_prompt(f, app, rows[0]);
-        rows[1]
-    } else {
-        area
-    };
-    let (list_w, detail_w, _) = pane_widths(body.width);
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(list_w),
-            Constraint::Length(detail_w),
-            Constraint::Min(0),
-        ])
-        .split(body);
-    // Only the Detail pane takes keys here. As on the Session and Detail
-    // screens, the other panes fade while it owns focus; an overlay or the
-    // search prompt leaves none focused or dimmed.
-    let active = matches!(app.mode, UiMode::Table | UiMode::WorkspaceEdit);
-    let display_only = PaneFocus {
-        focused: false,
-        dimmed: active,
-    };
-    draw_list(f, app, cols[0], display_only, false);
-    let detail = PaneFocus {
-        focused: active,
-        dimmed: false,
-    };
-    draw_detail(f, app, cols[1], detail);
-    crate::ui::session::render::draw_table_with(
-        f,
-        app,
-        cols[2],
-        false,
-        display_only.dimmed,
-        (false, false),
-    );
-}
-
-/// The Session screen's workspace pane: the list with `[NEW WORKSPACE]` last,
-/// focused while it takes keys.
+/// The Session screen's workspace pane: `[ALL]`, the stored workspaces, then
+/// `[NEW WORKSPACE]`, focused while it takes keys.
 pub(crate) fn draw_workspace_pane(f: &mut Frame, app: &App, area: Rect) {
-    let pane = PaneFocus {
-        focused: app.mode == UiMode::Table,
-        dimmed: false,
-    };
-    draw_list(f, app, area, pane, true);
+    let th = &app.theme;
+    let focused = app.mode == UiMode::Table;
+    let block = titled_block_nav(" Workspaces ", focused, false, true, true, th);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width < 3 || inner.height == 0 {
+        return;
+    }
+    // Display rows: `Some((label, fixed))` is a cursor row, `None` a divider the
+    // cursor never lands on. A list with no stored workspace keeps one divider.
+    let stored = &app.workspaces.workspaces;
+    let mut rows: Vec<Option<(&str, bool)>> = vec![Some((ALL_WORKSPACE_LABEL, true)), None];
+    rows.extend(stored.iter().map(|w| Some((w.name.as_str(), false))));
+    if !stored.is_empty() {
+        rows.push(None);
+    }
+    rows.push(Some((NEW_WORKSPACE_LABEL, true)));
+    // Cursor rows in display order, so the pane cursor maps onto its display row.
+    let cursor_row = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.is_some())
+        .nth(app.workspace_pane_cursor())
+        .map_or(0, |(i, _)| i);
+    let view = inner.height as usize;
+    let scroll = follow(app.workspace.list_scroll.get(), cursor_row, view);
+    app.workspace.list_scroll.set(scroll);
+
+    // One-cell margins on both sides; the selected highlight spans them.
+    let inner_w = inner.width as usize;
+    let text_w = inner_w.saturating_sub(2);
+    let mut lines = Vec::new();
+    for (i, row) in rows.iter().enumerate().skip(scroll).take(view) {
+        lines.push(match row {
+            Some((name, fixed)) => {
+                let selected = i == cursor_row;
+                let mut style = row_style(th, selected, focused);
+                // Fixed rows also take the key-hint color; the selection keeps its own.
+                if *fixed && !selected {
+                    style = style.fg(th.key_hint);
+                }
+                Line::from(Span::styled(
+                    format!(" {} ", pad_w(&truncate_w(name, text_w), text_w)),
+                    style,
+                ))
+            }
+            None => divider(inner_w, th),
+        });
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+    draw_vscrollbar(f, area, focused, scroll, rows.len(), view, th);
 }
 
-#[derive(Clone, Copy)]
-struct PaneFocus {
-    focused: bool,
-    /// Another pane owns focus, so this one renders `soft_dim()`.
-    dimmed: bool,
-}
-
-/// Row style shared by the list and Detail panes, mirroring the session table:
-/// a focused selection is `selection_bg` + bold, a dimmed pane fades every row
-/// and keeps only the weak reversed signal on the selected one.
-fn row_style(th: &Theme, selected: bool, pane: PaneFocus) -> Style {
-    match (selected, pane.focused, pane.dimmed) {
-        (true, true, _) => Style::default()
+/// Cursor row style, mirroring the session table: a focused selection is
+/// `selection_bg` + bold; while a dialog or the search prompt owns input it
+/// keeps `selection_inactive_bg`.
+fn row_style(th: &Theme, selected: bool, focused: bool) -> Style {
+    match (selected, focused) {
+        (true, true) => Style::default()
             .bg(th.selection_bg)
             .fg(th.selection_fg)
             .add_modifier(Modifier::BOLD),
-        (true, false, true) => th
-            .soft_dim()
-            .bg(th.selection_inactive_bg)
-            .add_modifier(Modifier::REVERSED),
-        (true, false, false) => Style::default()
+        (true, false) => Style::default()
             .bg(th.selection_inactive_bg)
             .fg(th.selection_fg)
             .add_modifier(Modifier::BOLD),
-        (false, _, true) => th.soft_dim(),
-        (false, _, false) => Style::default(),
+        (false, _) => Style::default(),
     }
 }
 
@@ -149,267 +136,263 @@ fn follow(scroll: usize, cursor: usize, view: usize) -> usize {
     }
 }
 
-/// "All" first, then the stored workspaces, then `[NEW WORKSPACE]` when
-/// `with_new_row` (the Session screen's pane; the Workspaces screen's copy
-/// only shows which workspace is being edited).
-fn draw_list(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus, with_new_row: bool) {
-    let th = &app.theme;
-    let focused = pane.focused;
-    let block = titled_block_nav(" Workspaces ", focused, pane.dimmed, true, true, th);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    if inner.width < 3 || inner.height == 0 {
-        return;
-    }
-    // Display rows: `Some((label, fixed))` is a cursor row, `None` a divider the
-    // cursor never lands on. A list with no stored workspace keeps one divider.
-    let stored = &app.workspaces.workspaces;
-    let mut rows: Vec<Option<(&str, bool)>> = vec![Some((ALL_WORKSPACE_LABEL, true)), None];
-    rows.extend(stored.iter().map(|w| Some((w.name.as_str(), false))));
-    if with_new_row {
-        if !stored.is_empty() {
-            rows.push(None);
-        }
-        rows.push(Some((NEW_WORKSPACE_LABEL, true)));
-    } else if stored.is_empty() {
-        rows.pop();
-    }
-    let cursor = if with_new_row {
-        app.workspace_pane_cursor()
+/// One text row of the dialog (a field or the folder search). A text input is
+/// never painted as a cursor row: a focused row bolds its label in the accent
+/// color and shows the hardware cursor, and a whole-value selection paints only
+/// the text. `placeholder` fills an empty row only while it is not focused,
+/// because the hardware cursor sits where it would start.
+fn text_row(
+    f: &mut Frame,
+    (x, y, value_w): (u16, u16, usize),
+    label: &str,
+    input: &TextInput,
+    focused: bool,
+    placeholder: &str,
+    th: &Theme,
+) -> Line<'static> {
+    let label_style = if focused {
+        Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
     } else {
-        app.workspaces.active_index().map_or(0, |i| i + 1)
+        th.soft_dim()
     };
-    // Cursor rows in display order, so `cursor` maps onto its display row.
-    let cursor_row = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.is_some())
-        .nth(cursor)
-        .map_or(0, |(i, _)| i);
-    let view = inner.height as usize;
-    let scroll = follow(app.workspace.list_scroll.get(), cursor_row, view);
-    app.workspace.list_scroll.set(scroll);
-
-    // One-cell margins on both sides; the selected highlight spans them.
-    let inner_w = inner.width as usize;
-    let text_w = inner_w.saturating_sub(2);
-    let mut lines = Vec::new();
-    for (i, row) in rows.iter().enumerate().skip(scroll).take(view) {
-        lines.push(match row {
-            Some((name, fixed)) => {
-                let selected = i == cursor_row;
-                let mut style = row_style(th, selected, pane);
-                // Fixed rows also take the key-hint color; the selection and a
-                // faded pane keep their own colors.
-                if *fixed && !selected && !pane.dimmed {
-                    style = style.fg(th.key_hint);
-                }
-                Line::from(Span::styled(
-                    format!(" {} ", pad_w(&truncate_w(name, text_w), text_w)),
-                    style,
-                ))
-            }
-            None => divider(inner_w, th),
-        });
+    let mut spans = vec![Span::styled(
+        pad_w(&format!(" {label}"), LABEL_W),
+        label_style,
+    )];
+    if input.value.is_empty() {
+        if !focused {
+            spans.push(Span::styled(
+                truncate_w(placeholder, value_w),
+                th.soft_dim(),
+            ));
+        }
+    } else {
+        let (visible, _) = input_view(input, value_w);
+        let style = if focused && input.select_all {
+            Style::default().fg(th.selection_fg).bg(th.selection_bg)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(visible, style));
     }
-    f.render_widget(Paragraph::new(lines), inner);
-    draw_vscrollbar(f, area, focused, scroll, rows.len(), view, th);
+    if focused {
+        let (_, cursor_x) = input_view(input, value_w);
+        f.set_cursor_position((x + LABEL_W as u16 + cursor_x, y));
+    }
+    Line::from(spans)
 }
 
-fn draw_detail(f: &mut Frame, app: &App, area: Rect, pane: PaneFocus) {
+/// The workspace edit dialog (`UiMode::WorkspaceEdit`).
+pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
+    let Some(dialog) = &app.workspace.dialog else {
+        return;
+    };
     let th = &app.theme;
-    let focused = pane.focused;
-    let ws = app.workspaces.active_workspace();
-    let locked = ws.is_none();
-    // ←/→ do not leave this pane (Esc does), so no arrows on its frame.
-    let block = titled_block_nav(" Detail ", focused, pane.dimmed, false, false, th);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let full = f.area();
+    let (w, h) = dialog_size(full, dialog.folders.len());
+    let area = centered_fixed_rect(w, h, full);
+    let title = if dialog.created {
+        " New Workspace "
+    } else {
+        " Edit Workspace "
+    };
+    let block = modal_block(title, th.accent).padding(Padding::horizontal(1));
+    let inner = render_modal(f, area, block, th);
     if inner.width < LABEL_W as u16 + 2 || inner.height == 0 {
         return;
     }
-    let state = &app.workspace;
-    let w = inner.width as usize;
-    let value_w = w.saturating_sub(LABEL_W + 1);
-    let edit = state
-        .edit
-        .as_ref()
-        .filter(|_| app.mode == UiMode::WorkspaceEdit);
-    // A locked ("All") pane is never focusable, so no cursor row is drawn there.
-    let cursor = (!locked).then_some(state.detail_cursor);
-    let label_style = th.soft_dim();
-    let value_style = if locked || pane.dimmed {
-        th.soft_dim()
-    } else {
-        Style::default()
-    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7), // fields, matches, divider, heading, search
+            Constraint::Min(0),    // folder rows
+            Constraint::Length(1), // divider
+            Constraint::Length(1), // footer: error or the cursor row
+            Constraint::Length(1), // blank above the buttons
+            Constraint::Length(1), // buttons
+        ])
+        .split(inner);
+    let width = inner.width as usize;
+    let value_w = width.saturating_sub(LABEL_W + 1);
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (row, field) in DETAIL_FIELDS.iter().enumerate() {
-        let (label, value) = match field {
-            WorkspaceField::Name => ("Name", ws.map_or(ALL_WORKSPACE_NAME, |w| &w.name)),
-            WorkspaceField::Includes => ("Includes", ws.map_or("", |w| &w.includes)),
-            WorkspaceField::Excludes => ("Excludes", ws.map_or("", |w| &w.excludes)),
+    let mut head: Vec<Line> = Vec::new();
+    for (row, field) in DIALOG_FIELDS.iter().enumerate() {
+        let (label, placeholder) = match field {
+            WorkspaceField::Name => ("Name", ""),
+            WorkspaceField::Includes => ("Includes", "(none)"),
+            WorkspaceField::Excludes => ("Excludes", "(none)"),
         };
-        let style = row_style(th, cursor == Some(row), pane);
-        let editing = edit.filter(|e| e.field == *field && cursor == Some(row));
-        let value_span = match editing {
-            Some(edit) => {
-                let (visible, cursor_x) = input_view(&edit.input, value_w);
-                f.set_cursor_position((inner.x + LABEL_W as u16 + cursor_x, inner.y + row as u16));
-                Span::styled(pad_w(&visible, value_w), style)
-            }
-            None if value.trim().is_empty() => {
-                Span::styled(pad_w("(none)", value_w), label_style.patch(style))
-            }
-            None => Span::styled(
-                pad_w(&truncate_w(value, value_w), value_w),
-                value_style.patch(style),
-            ),
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                pad_w(&format!(" {label}"), LABEL_W),
-                label_style.patch(style),
-            ),
-            value_span,
-            Span::styled(" ", style),
-        ]));
+        let focused = !dialog.on_buttons && dialog.cursor == row;
+        let y = inner.y + head.len() as u16;
+        head.push(text_row(
+            f,
+            (inner.x, y, value_w),
+            label,
+            dialog.input(*field),
+            focused,
+            placeholder,
+            th,
+        ));
     }
-    lines.push(divider(w, th));
-    let selected = ws.map_or(0, |w| w.folders.len());
+    head.push(Line::from(vec![
+        Span::styled(pad_w(" Matches", LABEL_W), th.soft_dim()),
+        Span::raw(format!("{} ", dialog.matching)),
+        Span::styled(format!("of {} sessions", app.sessions.len()), th.soft_dim()),
+    ]));
+    head.push(divider(width, th));
+    let selected = dialog.draft.folders.len();
     let scope = if selected == 0 {
         "all folders".to_string()
     } else {
         format!("{selected} selected")
     };
-    lines.push(Line::from(vec![
-        Span::styled(" Folders ", label_style.add_modifier(Modifier::BOLD)),
-        Span::styled(format!("· {scope}"), label_style),
+    head.push(Line::from(vec![
+        Span::styled(" Folders ", th.soft_dim().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("· {scope}"), th.soft_dim()),
     ]));
+    let y = inner.y + head.len() as u16;
+    head.push(text_row(
+        f,
+        (inner.x, y, value_w),
+        "Search",
+        &dialog.folder_query,
+        dialog.cursor_on_search(),
+        "type to filter",
+        th,
+    ));
+    f.render_widget(Paragraph::new(head), rows[0]);
 
-    // Folder search row: typed into directly while the cursor is on it. It is
-    // an input, so the row is never highlighted: the hardware cursor marks it,
-    // and a whole-query selection paints only the text.
-    let query = &state.folder_query;
-    let search_focused = focused && cursor == Some(SEARCH_ROW) && app.mode == UiMode::Table;
-    let mut search_line = vec![Span::styled(pad_w(" Search", LABEL_W), label_style)];
-    if query.value.is_empty() {
-        // The placeholder would sit after the hardware cursor, so it shows
-        // only while the row is not focused.
-        if !search_focused {
-            search_line.push(Span::styled(
-                truncate_w("type to filter", value_w),
-                label_style,
-            ));
-        }
-    } else {
-        let (visible, _) = input_view(query, value_w);
-        let text_style = if search_focused && query.select_all {
-            Style::default().fg(th.selection_fg).bg(th.selection_bg)
-        } else {
-            value_style
-        };
-        search_line.push(Span::styled(visible, text_style));
-    }
-    if search_focused {
-        let (_, cursor_x) = input_view(query, value_w);
-        f.set_cursor_position((
-            inner.x + LABEL_W as u16 + cursor_x,
-            inner.y + lines.len() as u16,
-        ));
-    }
-    lines.push(Line::from(search_line));
+    draw_dialog_folders(f, app, dialog, area, rows[1]);
+    f.render_widget(Paragraph::new(divider(width, th)), rows[2]);
 
-    // Folder viewport: the footer (divider + path) is dropped before the list
-    // would lose its last usable row.
-    let head = lines.len();
-    let total_h = inner.height as usize;
-    let (view, footer) = match total_h.saturating_sub(head) {
-        h if h > 2 => (h - 2, true),
-        h => (h, false),
+    let (note, note_style) = match &dialog.error {
+        Some(err) => (err.clone(), Style::default().fg(th.error)),
+        None => (dialog_footer(dialog), th.soft_dim()),
     };
-    let folder_cursor = cursor.and_then(|c| c.checked_sub(FIRST_FOLDER_ROW));
+    f.render_widget(
+        Paragraph::new(truncate_w(&format!(" {note}"), width)).style(note_style),
+        rows[3],
+    );
+
+    // Buttons are highlighted only while the button row has focus.
+    let (focused_style, unfocused) = button_styles(th);
+    let (save_style, cancel_style) = match (dialog.on_buttons, dialog.save_focused) {
+        (false, _) => (unfocused, unfocused),
+        (true, true) => (focused_style, unfocused),
+        (true, false) => (unfocused, focused_style),
+    };
+    let buttons = Line::from(vec![
+        Span::styled("   Save   ", save_style),
+        Span::raw("     "),
+        Span::styled("  Cancel  ", cancel_style),
+    ]);
+    f.render_widget(
+        Paragraph::new(buttons).alignment(Alignment::Center),
+        rows[5],
+    );
+}
+
+/// Folder checklist: `[✓]`/`[ ]`, the bare basename, and a right-aligned
+/// ` (N)` session count, scrolled to keep the cursor visible.
+fn draw_dialog_folders(
+    f: &mut Frame,
+    app: &App,
+    dialog: &WorkspaceDialog,
+    dialog_area: Rect,
+    list: Rect,
+) {
+    let th = &app.theme;
+    let width = list.width as usize;
+    let view = list.height as usize;
+    let folder_cursor = dialog
+        .cursor_folder()
+        .and(dialog.cursor.checked_sub(FIRST_FOLDER_ROW));
     let scroll = follow(
-        state.folder_scroll.get(),
-        folder_cursor.unwrap_or(state.folder_scroll.get()),
+        dialog.folder_scroll.get(),
+        folder_cursor.unwrap_or(dialog.folder_scroll.get()),
         view,
     );
-    state.folder_scroll.set(scroll);
+    dialog.folder_scroll.set(scroll);
     // " [✓] " before the label and one trailing space.
-    let label_w = w.saturating_sub(6);
-    let shown = state.visible.len();
-    for (i, folder) in state.visible_folders().enumerate().skip(scroll).take(view) {
-        let checked = ws.is_some_and(|w| w.has_folder(folder));
+    let label_w = width.saturating_sub(6);
+    let mut lines = Vec::new();
+    for (i, folder) in dialog.visible_folders().enumerate().skip(scroll).take(view) {
+        let checked = dialog.draft.has_folder(folder);
         let mark = if checked { "[✓]" } else { "[ ]" };
-        let label = folder_display_label(folder);
-        let style = row_style(th, folder_cursor == Some(i), pane);
-        // A dimmed pane drops the accent, as the session table drops agent
-        // colors, but keeps a checked mark bold.
-        let mark_style = match (checked && !locked, pane.dimmed) {
-            (true, false) => Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-            (true, true) => th.soft_dim().add_modifier(Modifier::BOLD),
-            (false, _) => th.soft_dim(),
+        let style = row_style(th, folder_cursor == Some(i), true);
+        let mark_style = if checked {
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+        } else {
+            th.soft_dim()
         };
-        let note = count_note(state.folder_counts.get(folder).copied().unwrap_or(0));
+        let note = count_note(dialog.folder_counts.get(folder).copied().unwrap_or(0));
         lines.push(Line::from(vec![
             Span::styled(" ", style),
             Span::styled(mark, mark_style.patch(style)),
             Span::styled(" ", style),
             Span::styled(
-                fit_before_note(&label, label_w, &note),
-                value_style.patch(style),
+                fit_before_note(&folder_display_label(folder), label_w, &note),
+                style,
             ),
             Span::styled(note, style.patch(th.soft_dim())),
             Span::styled(" ", style),
         ]));
     }
-    if shown == 0 && !query.value.is_empty() && view > 0 {
-        lines.push(Line::from(Span::styled(
-            truncate_w(" No matching folders", w),
-            th.soft_dim(),
-        )));
-    }
-    while lines.len() < head + view {
-        lines.push(Line::from(""));
-    }
-    if footer {
-        lines.push(divider(w, th));
-        let note = if locked {
-            "All sessions · cannot be edited".to_string()
-        } else if let Some(folder) = state.cursor_folder().filter(|_| folder_cursor.is_some()) {
-            display_path(folder)
-        } else if state.cursor_on_search() {
-            let total = state.folders.len();
-            if query.value.is_empty() {
-                "Type to filter folders · ↑↓ move".to_string()
-            } else if query.select_all {
-                format!("{shown}/{total} · type replaces · → edit")
-            } else {
-                format!("{shown} of {total} folders · esc clear")
-            }
+    if dialog.visible.is_empty() && view > 0 {
+        let empty = if dialog.folder_query.value.is_empty() {
+            " No session folders"
         } else {
-            match state.cursor_field() {
-                Some(WorkspaceField::Name) => "enter rename".to_string(),
-                Some(WorkspaceField::Includes) => "Sessions must contain every word".to_string(),
-                Some(WorkspaceField::Excludes) => "Sessions with any word are hidden".to_string(),
-                None => String::new(),
-            }
+            " No matching folders"
         };
         lines.push(Line::from(Span::styled(
-            truncate_w(&format!(" {note}"), w),
+            truncate_w(empty, width),
             th.soft_dim(),
         )));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    f.render_widget(Paragraph::new(lines), list);
+    let shown = dialog.visible.len();
     if shown > view && view > 0 {
+        // The dialog frame sits one cell inside its outer margin.
         let sb = Rect::new(
-            area.x,
-            inner.y + head as u16 - 1,
-            area.width,
+            dialog_area.x + 1,
+            list.y - 1,
+            dialog_area.width.saturating_sub(2),
             view as u16 + 2,
         );
-        draw_vscrollbar(f, sb, focused, scroll, shown, view, th);
+        draw_vscrollbar(f, sb, true, scroll, shown, view, th);
+    }
+}
+
+/// Footer line resolving the cursor row: the full path of a folder row, what
+/// a field does, the folder search state, or what a button does.
+fn dialog_footer(dialog: &WorkspaceDialog) -> String {
+    if dialog.on_buttons {
+        return match (dialog.save_focused, dialog.created) {
+            (true, true) => "Add the workspace and open it".to_string(),
+            (true, false) => "Save the changes".to_string(),
+            (false, _) => "Discard the changes".to_string(),
+        };
+    }
+    if let Some(folder) = dialog.cursor_folder() {
+        return display_path(folder);
+    }
+    if dialog.cursor_on_search() {
+        let shown = dialog.visible.len();
+        let total = dialog.folders.len();
+        let query = &dialog.folder_query;
+        return if query.value.is_empty() {
+            "Type to filter folders · ↑↓ move".to_string()
+        } else if query.select_all {
+            format!("{shown}/{total} · type replaces · → edit")
+        } else {
+            format!("{shown} of {total} folders · esc clear")
+        };
+    }
+    match dialog.cursor_field() {
+        Some(WorkspaceField::Name) => "Unique name, listed in the palette".to_string(),
+        Some(WorkspaceField::Includes) => "Sessions must contain every word".to_string(),
+        Some(WorkspaceField::Excludes) => "Sessions with any word are hidden".to_string(),
+        None => String::new(),
     }
 }
 
@@ -469,15 +452,18 @@ pub(crate) fn draw_workspace_delete_confirm(f: &mut Frame, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::pane_widths;
+    use super::dialog_size;
+    use ratatui::layout::Rect;
 
     #[test]
-    fn panes_keep_their_caps_and_shrink_detail_first() {
-        assert_eq!(pane_widths(200), (24, 40, 136));
-        assert_eq!(pane_widths(104), (24, 40, 40));
-        assert_eq!(pane_widths(100), (24, 36, 40));
-        // Detail stops at its minimum; the session table absorbs the rest.
-        assert_eq!(pane_widths(70), (24, 24, 22));
-        assert_eq!(pane_widths(30), (24, 6, 0));
+    fn dialog_fits_every_folder_up_to_ninety_percent_of_the_terminal() {
+        let term = |w, h| Rect::new(0, 0, w, h);
+        // 13 rows of chrome plus one row per folder.
+        assert_eq!(dialog_size(term(200, 50), 10), (86, 23));
+        // Fewer than three folders still leaves three rows.
+        assert_eq!(dialog_size(term(200, 50), 0), (86, 16));
+        // Many folders stop at 90% of the height (45 of 50, 21 of 24).
+        assert_eq!(dialog_size(term(200, 50), 500), (86, 45));
+        assert_eq!(dialog_size(term(80, 24), 500), (64, 21));
     }
 }

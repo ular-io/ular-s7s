@@ -409,7 +409,6 @@ fn dispatch_event(app: &mut App, ev: Event) {
                     Screen::Session => app.on_key_table(key),
                     Screen::Profile => app.on_key_profile_table(key),
                     Screen::Detail => app.on_key_detail(key),
-                    Screen::Workspace => app.on_key_workspace(key),
                 },
                 UiMode::Keyword => app.on_key_keyword(key),
                 UiMode::AgentModal => app.on_key_agent_modal(key),
@@ -426,7 +425,7 @@ fn dispatch_event(app: &mut App, ev: Event) {
                 UiMode::ThemeSelect => app.on_key_theme_select(key),
                 UiMode::Help => app.on_key_help(key),
                 UiMode::Message => app.on_key_message(key),
-                UiMode::WorkspaceEdit => app.on_key_workspace_edit(key),
+                UiMode::WorkspaceEdit => app.on_key_workspace_dialog(key),
                 UiMode::WorkspaceDeleteConfirm => app.on_key_workspace_delete_confirm(key),
             }
         }

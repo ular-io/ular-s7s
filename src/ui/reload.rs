@@ -111,11 +111,14 @@ mod tests {
         app
     }
 
-    /// Workspace pane `+`: a new workspace with its name in edit.
-    fn start_new_workspace(app: &mut App) {
+    /// Workspace pane `+`, then the dialog's Save button (BackTab from the
+    /// Name row wraps to the buttons, Save focused).
+    fn add_new_workspace(app: &mut App) {
         use crossterm::event::{KeyCode, KeyModifiers};
         app.open_workspace_pane();
         app.on_key_table(key(KeyCode::Char('+'), KeyModifiers::NONE));
+        app.on_key_workspace_dialog(key(KeyCode::BackTab, KeyModifiers::SHIFT));
+        app.on_key_workspace_dialog(key(KeyCode::Enter, KeyModifiers::NONE));
     }
 
     fn names(app: &App) -> Vec<String> {
@@ -165,35 +168,29 @@ mod tests {
 
         // This instance still lists none of them; adding and moving the cursor
         // must not drop "Theirs" from the file.
-        start_new_workspace(&mut app);
-        app.on_key_workspace_edit(key(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        add_new_workspace(&mut app);
         app.set_active_workspace(None);
         let stored = WorkspaceStore::load(&path).unwrap();
         let stored: Vec<&str> = stored.workspaces.iter().map(|w| w.name.as_str()).collect();
-        assert_eq!(stored, ["Theirs", "New Workspace"]);
+        assert_eq!(stored, ["New Workspace", "Theirs"]);
     }
 
     #[test]
-    fn a_name_saved_elsewhere_keeps_the_edit_open() {
+    fn a_name_saved_elsewhere_keeps_the_dialog_open() {
         let root = TempBookmarkStore::new();
         let mut app = app_with_stores(&root);
         let path = app.workspaces_path.clone().unwrap();
         let theirs = Workspace::new("theirs".into(), "New Workspace".into());
         WorkspaceStore::commit(&path, &[WorkspaceChange::Upsert(theirs)]).unwrap();
 
-        start_new_workspace(&mut app);
-        app.on_key_workspace_edit(key(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        ));
+        add_new_workspace(&mut app);
         assert_eq!(app.mode, UiMode::WorkspaceEdit);
-        assert!(app
-            .status_msg
+        let dialog = app.workspace.dialog.as_ref().expect("dialog");
+        assert!(dialog
+            .error
             .as_deref()
             .is_some_and(|m| m.contains("already exists")));
+        assert!(app.workspaces.workspaces.is_empty(), "nothing was added");
     }
 
     #[test]

@@ -162,33 +162,36 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 `←` on the session list opens the workspace list on its left; the session list and
 Prompt stay, narrower (the Prompt is hidden when it would be under 40 columns). The
 first row `[ALL]` = every session, the last row `[NEW WORKSPACE]` adds one; dividers
-set both apart from your workspaces. The list cursor is the open workspace, so the
-session list follows it as you move.
+set both apart from your workspaces, which are listed by name. The list cursor is the
+open workspace, so the session list follows it as you move.
 
 | Key | Action |
 | :-- | :-- |
 | `↑` / `↓`, `home` / `end` | Open another workspace (`[NEW WORKSPACE]` shows All) |
 | `+` | Add a workspace from any row (same as `enter` on `[NEW WORKSPACE]`) |
-| `enter` | Edit the workspace on the Workspaces screen (nothing on All). On `[NEW WORKSPACE]`: add one and type its name there |
+| `enter` | Edit the workspace in the edit dialog (nothing on All). On `[NEW WORKSPACE]`: add one in the same dialog |
 | `ctrl+d` / `del` | Delete the workspace after confirmation (sessions are untouched) |
 | `→` / `l`, `esc` | Close the list and return to the session list |
 | `←` / `h` | Go to Profile |
 | `/` | Keyword search (`esc` returns to the list, `enter` to the session list) |
 
-The Workspaces screen edits one workspace in its Detail pane, beside the list and
-its sessions. `esc` returns to the workspace list; `←`/`→` do not leave it.
+The edit dialog changes a draft of one workspace: its name, include/exclude words,
+and folders. It grows to show every folder, up to 90% of the terminal height. Nothing
+is saved until you press **Save**; `esc` or **Cancel** discards the changes (a new
+workspace is then not added).
 
 | Key | Action |
 | :-- | :-- |
-| `↑` / `↓`, `home` / `end` | Move row |
-| `enter` | Edit Name / Includes / Excludes in place (`enter` saves, `esc` restores; a new workspace's name `esc` discards it) |
+| typing | Edit the Name / Includes / Excludes / Search row under the cursor |
+| `↑` / `↓` | Move row (past the last folder onto the buttons) |
+| `tab` / `shift+tab` | Next / previous group: each field, Search, folders, buttons |
+| `enter` | Text row: next row · folder: toggle · button: Save or Cancel |
 | `space` | Toggle a folder (`[✓]` = included; none checked = every folder) |
-| Search row | Type to filter folders; `esc` clears the filter first |
-| `esc` | Back to the workspace list |
+| `esc` | Clear the folder search first, then cancel |
 
 Includes require every word, excludes hide a session containing any word; both search
 the same text as `/`. Folders compare full paths, so two projects with the same folder
-name stay apart. Typing includes/excludes updates the list on every keystroke.
+name stay apart. `Matches` shows how many sessions the draft selects while you edit.
 Workspaces are stored in `~/.config/s7s/workspaces.json`.
 
 ## Session Bookmarks

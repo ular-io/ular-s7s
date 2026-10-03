@@ -157,12 +157,9 @@ impl App {
                 self.screen == Screen::Profile && !self.profiles.profiles.is_empty()
             }
             SearchSessions | FilterByAgent | FilterByFolder | FilterBookmarkedSessions => {
-                matches!(self.screen, Screen::Session | Screen::Workspace)
+                self.screen == Screen::Session
             }
-            ClearFilters => {
-                matches!(self.screen, Screen::Session | Screen::Workspace)
-                    && self.filter.is_active()
-            }
+            ClearFilters => self.screen == Screen::Session && self.filter.is_active(),
             ToggleToolLogs => self.screen == Screen::Detail,
             RefreshAll | EditConfig | ChangeTheme | OpenHelp | ExitApp => true,
         }

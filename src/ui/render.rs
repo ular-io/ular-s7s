@@ -97,16 +97,6 @@ const SHORTCUTS_WORKSPACE_LIST: [&[(&str, &str)]; 2] = [
     ],
 ];
 
-/// Workspaces screen columns (only its Detail pane takes keys).
-const SHORTCUTS_WORKSPACE_DETAIL: [&[(&str, &str)]; 2] = [
-    &[("/", "Search")],
-    &[
-        ("enter", "Edit"),
-        ("space", "Toggle Folder"),
-        ("esc", "Back"),
-    ],
-];
-
 /// Column 3 shared across all views (screen rotation, refreshes, help).
 const SHORTCUTS_COMMON: &[(&str, &str)] = &[
     (":", "Quick Command"),
@@ -140,8 +130,6 @@ pub fn draw(f: &mut Frame, app: &App) {
         super::profile::render::draw_profile_table(f, app, root[1]);
     } else if app.screen == Screen::Detail {
         super::detail::render::draw_detail(f, app, root[1]);
-    } else if app.screen == Screen::Workspace {
-        super::workspace::render::draw_workspace_screen(f, app, root[1]);
     } else if app.mode == UiMode::Keyword {
         // Keyword mode: overlays search prompt box on top of the main body (k9s-style).
         let body = Layout::default()
@@ -175,6 +163,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         UiMode::ThemeSelect => super::overlays::theme::draw_theme_select(f, app),
         UiMode::Help => super::overlays::help::draw_help(f, app),
         UiMode::Message => super::overlays::message::draw_message_modal(f, app),
+        UiMode::WorkspaceEdit => super::workspace::render::draw_workspace_dialog(f, app),
         UiMode::WorkspaceDeleteConfirm => {
             super::workspace::render::draw_workspace_delete_confirm(f, app)
         }
@@ -411,7 +400,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Screen::Session => &SHORTCUTS_SESSION,
         Screen::Profile => &SHORTCUTS_PROFILE,
         Screen::Detail => &SHORTCUTS_DETAIL,
-        Screen::Workspace => &SHORTCUTS_WORKSPACE_DETAIL,
     };
     let left_cols: [&[(&str, &str)]; 3] = [screen_cols[0], screen_cols[1], SHORTCUTS_COMMON];
     // Keys are padded to each column's widest `<key>` so action descriptions start at
@@ -891,14 +879,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             "enter open/select  ·  ↑↓ move focus  ·  tab focus  ·  space select  ·  → complete  ·  esc close",
             dim_style,
         ))
-    } else if matches!(app.mode, UiMode::Rename | UiMode::WorkspaceEdit) {
+    } else if app.mode == UiMode::Rename {
         Line::from(Span::styled("enter save  ·  esc cancel", dim_style))
-    } else if app.screen == Screen::Workspace
-        && app.mode == UiMode::Table
-        && !app.filter.is_active()
-    {
+    } else if app.mode == UiMode::WorkspaceEdit {
         Line::from(Span::styled(
-            "↑↓ move  ·  enter edit  ·  space toggle folder  ·  esc back",
+            "↑↓ move  ·  tab next group  ·  space toggle folder  ·  enter on Save saves  ·  esc cancel",
             dim_style,
         ))
     } else if app.screen == Screen::Session
@@ -1021,7 +1006,7 @@ mod tests {
     use super::{
         input_view, pad_w, preview_turn_lines, truncate_w, usage_spans, PreviewTurnLine,
         SHORTCUTS_COMMON, SHORTCUTS_DETAIL, SHORTCUTS_PROFILE, SHORTCUTS_SESSION,
-        SHORTCUTS_WORKSPACE_DETAIL, SHORTCUTS_WORKSPACE_LIST,
+        SHORTCUTS_WORKSPACE_LIST,
     };
     use crate::ui::TextInput;
     use crate::usage::{ResetCountdown, UsageEntry, UsagePhase, UsageSnapshot, UsageWindow};
@@ -1347,7 +1332,6 @@ mod tests {
             .chain(SHORTCUTS_DETAIL.iter())
             .chain(SHORTCUTS_PROFILE.iter())
             .chain(SHORTCUTS_WORKSPACE_LIST.iter())
-            .chain(SHORTCUTS_WORKSPACE_DETAIL.iter())
             .chain(std::iter::once(&SHORTCUTS_COMMON))
         {
             assert!(
