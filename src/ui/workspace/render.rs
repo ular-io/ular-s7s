@@ -1,6 +1,7 @@
 //! Workspace rendering: the Session screen's workspace pane, the edit dialog
-//! (field boxes, match count, folder search and checklist, a footer resolving
-//! the cursor row, and the Save/Cancel buttons), and the deletion confirmation.
+//! (field boxes and the match count beside the folder search and checklist, a
+//! footer resolving the cursor row, and the Save/Cancel buttons), and the
+//! deletion confirmation.
 
 use super::state::{
     folder_display_label, WorkspaceDialog, WorkspaceField, DIALOG_FIELDS, FIRST_FOLDER_ROW,
@@ -30,24 +31,31 @@ pub(crate) const ALL_WORKSPACE_LABEL: &str = "[ALL]";
 pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
 /// Label column of the dialog's unboxed rows (`" Matches "`, `" Search "`).
 const LABEL_W: usize = 10;
-/// Dialog width including its outer margin, capped at 80% of the terminal.
+/// Dialog width including its outer margin, capped at 90% of the terminal
+/// rather than the usual 80%: the body is split into two columns.
 const DIALOG_MAX_W: u16 = 86;
-/// Dialog rows besides the folder rows: borders (2) and top padding (1); the
-/// Name box and the Includes/Excludes boxes side by side (6); Matches, divider,
-/// Folders heading, Search (4); divider, footer, blank, and buttons (4).
-const DIALOG_CHROME_H: u16 = 17;
+/// Dialog rows besides the body: borders (2) and top padding (1); divider,
+/// footer, blank, and buttons (4).
+const DIALOG_CHROME_H: u16 = 7;
+/// Left column height: the Name, Includes, and Excludes boxes (9) and Matches.
+const FIELDS_H: u16 = 10;
+/// Right column rows above the folder rows: the Folders heading and Search.
+const FOLDER_HEAD_H: u16 = 2;
+/// Separator column between the two body columns: a space and `│`.
+const COLUMN_GAP_W: u16 = 2;
 /// Folder rows kept when there are fewer folders (or none), so the dialog
 /// never collapses around an empty list.
 const DIALOG_MIN_FOLDER_ROWS: u16 = 3;
 
 /// `(width, height)` of the edit dialog on a `full`-sized terminal: tall
-/// enough to show every one of `folders` rows, capped at 90% of the terminal
-/// height. Sized by every folder rather than the search matches, so typing a
-/// query never moves the buttons.
+/// enough for the field column and every one of `folders` rows, capped at 90%
+/// of the terminal height. Sized by every folder rather than the search
+/// matches, so typing a query never moves the buttons.
 pub(crate) fn dialog_size(full: Rect, folders: usize) -> (u16, u16) {
-    let width = DIALOG_MAX_W.min((u32::from(full.width) * 8 / 10) as u16);
+    let width = DIALOG_MAX_W.min((u32::from(full.width) * 9 / 10) as u16);
     let rows = (folders as u32).max(u32::from(DIALOG_MIN_FOLDER_ROWS));
-    let want = u32::from(DIALOG_CHROME_H) + rows;
+    let body = u32::from(FIELDS_H).max(u32::from(FOLDER_HEAD_H) + rows);
+    let want = u32::from(DIALOG_CHROME_H) + body;
     let cap = u32::from(full.height) * 9 / 10;
     (width, want.min(cap) as u16)
 }
@@ -202,13 +210,7 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Name box
-            Constraint::Length(3), // Includes and Excludes boxes
-            Constraint::Length(1), // matches
-            Constraint::Length(1), // divider
-            Constraint::Length(1), // Folders heading
-            Constraint::Length(1), // search
-            Constraint::Min(0),    // folder rows
+            Constraint::Min(0),    // body: fields | folders
             Constraint::Length(1), // divider
             Constraint::Length(1), // footer: error or the cursor row
             Constraint::Length(1), // blank above the buttons
@@ -216,42 +218,33 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
         ])
         .split(inner);
     let width = inner.width as usize;
-    let value_w = width.saturating_sub(LABEL_W + 1);
-
-    let words = Layout::default()
+    let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Fill(1),
-            Constraint::Length(1),
+            Constraint::Length(COLUMN_GAP_W),
             Constraint::Fill(1),
         ])
-        .split(rows[1]);
-    for (row, field) in DIALOG_FIELDS.iter().enumerate() {
-        let (label, placeholder, rect) = match field {
-            WorkspaceField::Name => (" Name ", "", rows[0]),
-            WorkspaceField::Includes => (" Includes ", "(none)", words[0]),
-            WorkspaceField::Excludes => (" Excludes ", "(none)", words[2]),
-        };
-        let focused = !dialog.on_buttons && dialog.cursor == row;
-        form_input(
-            f,
-            rect,
-            label,
-            dialog.input(*field),
-            focused,
-            placeholder,
-            th,
-        );
-    }
+        .split(rows[0]);
+    draw_dialog_fields(f, app, dialog, columns[0]);
+
+    // Column separator, joined to the divider below the body with `┴`.
+    let sep_x = columns[1].x + COLUMN_GAP_W - 1;
+    let sep = vec![Line::from("│"); rows[0].height as usize];
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(pad_w(" Matches", LABEL_W), th.soft_dim()),
-            Span::raw(format!("{} ", dialog.matching)),
-            Span::styled(format!("of {} sessions", app.sessions.len()), th.soft_dim()),
-        ])),
-        rows[2],
+        Paragraph::new(sep).style(Style::default().fg(th.dim)),
+        Rect::new(sep_x, rows[0].y, 1, rows[0].height),
     );
-    joined_divider(f, area, rows[3].y, th);
+
+    let right = columns[2];
+    let folder_col = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Folders heading
+            Constraint::Length(1), // search
+            Constraint::Min(0),    // folder rows
+        ])
+        .split(right);
     let selected = dialog.draft.folders.len();
     let scope = if selected == 0 {
         "all folders".to_string()
@@ -263,19 +256,23 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
             Span::styled(" Folders ", th.soft_dim().add_modifier(Modifier::BOLD)),
             Span::styled(format!("· {scope}"), th.soft_dim()),
         ])),
-        rows[4],
+        folder_col[0],
     );
+    let value_w = (right.width as usize).saturating_sub(LABEL_W + 1);
     let search = search_row(
         f,
-        (inner.x, rows[5].y, value_w),
+        (right.x, folder_col[1].y, value_w),
         &dialog.folder_query,
         dialog.cursor_on_search(),
         th,
     );
-    f.render_widget(Paragraph::new(search), rows[5]);
+    f.render_widget(Paragraph::new(search), folder_col[1]);
+    draw_dialog_folders(f, app, dialog, area, folder_col[2]);
 
-    draw_dialog_folders(f, app, dialog, area, rows[6]);
-    joined_divider(f, area, rows[7].y, th);
+    joined_divider(f, area, rows[1].y, th);
+    f.buffer_mut()[(sep_x, rows[1].y)]
+        .set_symbol("┴")
+        .set_style(Style::default().fg(th.dim));
 
     let (note, note_style) = match &dialog.error {
         Some(err) => (err.clone(), Style::default().fg(th.error)),
@@ -283,7 +280,7 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     };
     f.render_widget(
         Paragraph::new(truncate_w(&format!(" {note}"), width)).style(note_style),
-        rows[8],
+        rows[2],
     );
 
     // Buttons are highlighted only while the button row has focus.
@@ -300,7 +297,47 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     ]);
     f.render_widget(
         Paragraph::new(buttons).alignment(Alignment::Center),
-        rows[10],
+        rows[4],
+    );
+}
+
+/// Left body column: the Name, Includes, and Excludes boxes stacked, then the
+/// Matches count.
+fn draw_dialog_fields(f: &mut Frame, app: &App, dialog: &WorkspaceDialog, area: Rect) {
+    let th = &app.theme;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    for (row, field) in DIALOG_FIELDS.iter().enumerate() {
+        let (label, placeholder) = match field {
+            WorkspaceField::Name => (" Name ", ""),
+            WorkspaceField::Includes => (" Includes ", "(none)"),
+            WorkspaceField::Excludes => (" Excludes ", "(none)"),
+        };
+        let focused = !dialog.on_buttons && dialog.cursor == row;
+        form_input(
+            f,
+            rows[row],
+            label,
+            dialog.input(*field),
+            focused,
+            placeholder,
+            th,
+        );
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(pad_w(" Matches", LABEL_W), th.soft_dim()),
+            Span::raw(format!("{} ", dialog.matching)),
+            Span::styled(format!("of {} sessions", app.sessions.len()), th.soft_dim()),
+        ])),
+        rows[3],
     );
 }
 
@@ -470,12 +507,14 @@ mod tests {
     #[test]
     fn dialog_fits_every_folder_up_to_ninety_percent_of_the_terminal() {
         let term = |w, h| Rect::new(0, 0, w, h);
-        // 17 rows of chrome plus one row per folder.
-        assert_eq!(dialog_size(term(200, 50), 10), (86, 27));
-        // Fewer than three folders still leaves three rows.
-        assert_eq!(dialog_size(term(200, 50), 0), (86, 20));
-        // Many folders stop at 90% of the height (45 of 50, 21 of 24).
+        // 7 rows of chrome plus the Folders heading, Search, and a row per folder.
+        assert_eq!(dialog_size(term(200, 50), 10), (86, 19));
+        // The field column (10 rows) sets the floor for a few folders.
+        assert_eq!(dialog_size(term(200, 50), 0), (86, 17));
+        assert_eq!(dialog_size(term(200, 50), 8), (86, 17));
+        // Many folders stop at 90% of the height (45 of 50, 21 of 24), and the
+        // width at 90% of a narrow terminal.
         assert_eq!(dialog_size(term(200, 50), 500), (86, 45));
-        assert_eq!(dialog_size(term(80, 24), 500), (64, 21));
+        assert_eq!(dialog_size(term(80, 24), 500), (72, 21));
     }
 }

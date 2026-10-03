@@ -162,6 +162,13 @@ Additional rules:
 - Wrap a form's text inputs in `form_input` boxes. The one unboxed text input
   in a form is a search line that filters a list right below it (the workspace
   dialog's Search row), drawn like the Select Folders search line.
+- A form that also edits a long list (the workspace edit dialog) splits its body
+  into two columns: the fields stacked on the left, the list on the right, with
+  an unbordered `dim` `│` separator joined to the divider below as `┴`. The
+  footer, divider, and buttons span both columns. Such a dialog may take up to
+  90% of the terminal width instead of 80%. Keys keep one linear row order
+  across both columns; `←`/`→` stay with the text cursor, so they never switch
+  columns.
 - Keep action order `[Confirm/Execute] [Cancel]`.
 - A text-input Enter must not submit a form. Submission occurs only when the
   confirm button owns focus; Enter on Cancel closes the dialog.
@@ -279,19 +286,24 @@ Additional rules:
 - `workspace::render::draw_workspace_dialog`: a `modal_block` titled
   ` Edit Workspace ` or ` New Workspace ` with the standard dialog padding (one
   blank row under the title), over the dimmed Session screen. Width 86
-  including the outer margin, capped at 80% of the terminal width.
-- Height (`workspace::render::dialog_size`): 17 rows of chrome plus one row per
-  folder, at least three folder rows, capped at 90% of the terminal height (a
-  24-row terminal keeps four folder rows). It is sized by every folder, not by
-  the search matches, so typing a query never moves the buttons. Rows past the
-  cap scroll, with the scrollbar on the dialog's right border beside the folder
-  rows.
-- Rows, top to bottom: the `Name` box, the `Includes` and `Excludes` boxes side
-  by side (two boxes on one row instead of two rows keep the folder list usable
-  on a 24-row terminal), `Matches  N of M sessions` (N in the default color, the
-  rest `soft_dim()`), a joined divider, `Folders · all folders` /
-  `· N selected`, `Search`, the folder rows, a joined divider, the footer, a
-  blank row, and the buttons.
+  including the outer margin, capped at 90% of the terminal width (the
+  two-column exception above).
+- Body in two columns of equal width (`Constraint::Fill`), separated by a
+  `dim` `│` joined to the divider below as `┴`:
+  - left (`draw_dialog_fields`): the `Name`, `Includes`, and `Excludes` boxes
+    stacked, then `Matches  N of M sessions` (N in the default color, the rest
+    `soft_dim()`) — ten rows;
+  - right: `Folders · all folders` / `· N selected`, `Search`, then the folder
+    rows filling the rest of the column.
+- Below the body, across the dialog: a joined divider, the footer, a blank
+  row, and the buttons.
+- Height (`workspace::render::dialog_size`): 7 rows of chrome plus the taller
+  column — the ten-row field column, or the Folders heading, Search, and one
+  row per folder (at least three) — capped at 90% of the terminal height (a
+  24-row terminal keeps twelve folder rows). It is sized by every folder, not
+  by the search matches, so typing a query never moves the buttons. Rows past
+  the cap scroll, with the scrollbar on the dialog's right border beside the
+  folder rows.
 - The three fields are `form_input` boxes. A whole-value selection (a new
   workspace's suggested name) paints only the text with
   `selection_fg`/`selection_bg`, as with the combo-box selection rule. An empty
