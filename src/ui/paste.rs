@@ -26,11 +26,7 @@ impl App {
             UiMode::NewSession => self.paste_into_new_session(text),
             UiMode::QuickCommand => self.paste_into_quick(text),
             UiMode::FolderModal => self.paste_into_folder_query(text),
-            UiMode::WorkspaceEdit => self.paste_into_workspace_edit(text),
-            // The Workspaces Detail folder search takes input without an edit mode.
-            UiMode::Table if self.workspace_search_focused() => {
-                self.paste_into_workspace_search(text)
-            }
+            UiMode::WorkspaceEdit => self.paste_into_workspace_dialog(text),
             // No editable field: a paste must not act as a key press.
             UiMode::Table
             | UiMode::AgentModal

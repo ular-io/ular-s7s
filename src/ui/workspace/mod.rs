@@ -1,7 +1,7 @@
 //! Workspaces: the Session screen's workspace pane (`←` from the session list,
-//! `Focus::Workspaces`) and the Workspaces screen, entered with Enter on a
-//! workspace row, whose Detail pane edits that workspace's name,
-//! include/exclude words, and folders beside the session table scoped to it.
+//! `Focus::Workspaces`) and the edit dialog it opens with Enter or `+`, which
+//! edits a draft of one workspace's name, include/exclude words, and folders
+//! and saves it only with its Save button.
 //!
 //! The pane cursor is the open workspace (`WorkspaceStore::active`), so moving
 //! it changes what the session list shows; the palette's

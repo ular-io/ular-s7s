@@ -27,16 +27,11 @@ pub(crate) fn modal_block(title: &str, color: Color) -> Block<'static> {
 
 /// Dialog modes that fade the screen behind them. ThemeSelect is excluded because
 /// the backdrop IS the live theme preview; Help repaints the full frame anyway;
-/// Table/Keyword are not dialogs, nor is WorkspaceEdit (the Detail row itself is
-/// the input, so fading it would make the pane being edited look inactive).
+/// Table/Keyword are not dialogs.
 pub(crate) fn backdrop_dimmed(mode: UiMode) -> bool {
     !matches!(
         mode,
-        UiMode::Table
-            | UiMode::Keyword
-            | UiMode::WorkspaceEdit
-            | UiMode::ThemeSelect
-            | UiMode::Help
+        UiMode::Table | UiMode::Keyword | UiMode::ThemeSelect | UiMode::Help
     )
 }
 
@@ -181,6 +176,8 @@ mod tests {
             UiMode::ProjectDirConfirm,
             UiMode::QuickCommand,
             UiMode::Message,
+            UiMode::WorkspaceEdit,
+            UiMode::WorkspaceDeleteConfirm,
         ] {
             assert!(backdrop_dimmed(mode), "{mode:?} must dim");
         }

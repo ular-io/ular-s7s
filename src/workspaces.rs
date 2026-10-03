@@ -1,7 +1,7 @@
 //! User-defined session workspaces: named, s7s-owned scopes over the session
 //! index (include words, exclude words, and a folder set). The Session screen's
-//! workspace pane opens, adds, and deletes them and the Workspaces screen edits
-//! one; the open workspace narrows every session list in the TUI.
+//! workspace pane opens and deletes them and its edit dialog adds or edits one;
+//! the open workspace narrows every session list in the TUI.
 //!
 //! Not to be confused with `session_workspace` (cwd facts captured for
 //! s7s-created sessions) or the scratch workspace (`scratch.rs`): this module
@@ -133,6 +133,7 @@ impl WorkspaceStore {
         if store.version != STORE_VERSION {
             bail!("unsupported workspace version {}", store.version);
         }
+        store.sort();
         if store.active_index().is_none() {
             store.active = None;
         }
@@ -186,8 +187,28 @@ impl WorkspaceStore {
                 }
                 store.apply(change);
             }
+            store.sort();
             store.save(path)
         })
+    }
+
+    /// Orders workspaces by name as text (case-insensitive, NFC), so Latin
+    /// names precede Hangul ones and digits precede both. Every list shows this
+    /// order; ties fall back to the exact name, then the id.
+    pub(crate) fn sort(&mut self) {
+        self.workspaces.sort_by_cached_key(|w| {
+            (
+                normalize::nfc_lower(w.name.trim()),
+                w.name.clone(),
+                w.id.clone(),
+            )
+        });
+    }
+
+    /// Replaces the workspace with the same id, or adds it, keeping the order.
+    pub(crate) fn upsert(&mut self, ws: Workspace) {
+        self.apply(&WorkspaceChange::Upsert(ws));
+        self.sort();
     }
 
     pub(crate) fn active_index(&self) -> Option<usize> {
@@ -310,6 +331,39 @@ mod tests {
             .workspaces
             .push(Workspace::new("2".into(), NEW_WORKSPACE_NAME.into()));
         assert_eq!(store.next_new_name(), format!("{NEW_WORKSPACE_NAME} 2"));
+    }
+
+    #[test]
+    fn workspaces_are_ordered_by_name_as_text() {
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let path = root.path.with_file_name("workspaces.json");
+        let mut store = WorkspaceStore::default();
+        for (id, name) in [
+            ("1", "\u{D55C}\u{AE00}"),
+            ("2", "beta"),
+            ("3", "Alpha"),
+            ("4", "10x"),
+        ] {
+            store
+                .workspaces
+                .push(Workspace::new(id.into(), name.into()));
+        }
+        store.save(&path).unwrap();
+        let names = |store: &WorkspaceStore| -> Vec<String> {
+            store.workspaces.iter().map(|w| w.name.clone()).collect()
+        };
+        let loaded = WorkspaceStore::load(&path).unwrap();
+        assert_eq!(names(&loaded), ["10x", "Alpha", "beta", "\u{D55C}\u{AE00}"]);
+
+        let mut loaded = loaded;
+        loaded.upsert(Workspace::new("5".into(), "Gamma".into()));
+        let mut renamed = loaded.workspaces[0].clone();
+        renamed.name = "zeta".into();
+        loaded.upsert(renamed);
+        assert_eq!(
+            names(&loaded),
+            ["Alpha", "beta", "Gamma", "zeta", "\u{D55C}\u{AE00}"]
+        );
     }
 
     #[test]

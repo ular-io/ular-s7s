@@ -52,9 +52,6 @@ pub enum Screen {
     Profile,
     /// Session details view (per-question workspace tasks/answers). Drill-down screen entered via → arrow key from search preview.
     Detail,
-    /// Workspaces view between Profile and Session: workspace list, its Detail
-    /// pane, and the session table scoped to the open workspace.
-    Workspace,
 }
 
 /// UI modes determining input event dispatching branches (TUI state machine).
@@ -96,8 +93,8 @@ pub enum UiMode {
     Help,
     /// Generic alert dialog (info / warning / error). Reverts to the prior UI mode upon dismissal.
     Message,
-    /// In-place edit of a workspace name / include / exclude value on the
-    /// Workspaces screen (no dialog; the field itself becomes the input).
+    /// Workspace edit dialog (name, include/exclude words, folders; Save/Cancel),
+    /// opened from the Session screen's workspace pane.
     WorkspaceEdit,
     /// Workspace deletion confirmation modal.
     WorkspaceDeleteConfirm,
@@ -140,8 +137,7 @@ pub struct App {
     /// `None` disables saving (unit tests). A store that failed to load stays
     /// on disk untouched: every save re-reads it and refuses to overwrite it.
     pub(crate) workspaces_path: Option<PathBuf>,
-    /// Workspace pane `[NEW WORKSPACE]` row, Workspaces screen Detail cursor,
-    /// and in-place edit.
+    /// Workspace pane `[NEW WORKSPACE]` row and the workspace edit dialog.
     pub workspace: workspace::WorkspaceScreenState,
     /// Workspace index pending deletion (present when mode == WorkspaceDeleteConfirm).
     pub pending_workspace_delete: Option<usize>,
@@ -387,7 +383,6 @@ impl App {
             background: BackgroundState::default(),
         };
         app.recompute();
-        app.refresh_workspace_folders();
         app
     }
 
@@ -425,7 +420,7 @@ impl App {
     /// detail target on Detail. The Profile screen has no focused session.
     pub(crate) fn focused_session_index(&self) -> Option<usize> {
         match self.screen {
-            Screen::Session | Screen::Workspace => self.filtered.get(self.selected).copied(),
+            Screen::Session => self.filtered.get(self.selected).copied(),
             Screen::Detail => self.detail.as_ref().map(|d| d.session_idx),
             Screen::Profile => None,
         }
