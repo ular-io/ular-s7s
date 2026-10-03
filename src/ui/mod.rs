@@ -26,6 +26,7 @@ pub use detail::state::{DetailFocus, SessionDetailState};
 pub use new_session::state::{
     ModelOption, NewSessionFocus, NewSessionRequest, NewSessionState, SessionContextRef,
 };
+pub use overlays::attach::AttachRequest;
 pub use overlays::change_folder::{ChangeFolderFocus, ChangeFolderState};
 pub use overlays::confirm::{RenameFocus, RenameModalState};
 pub use overlays::filters::ModalState;
@@ -68,6 +69,8 @@ pub enum UiMode {
     FolderModal,
     /// Session deletion confirmation modal.
     DeleteConfirm,
+    /// Attach/Cancel question for a Claude session held by Claude Code's daemon.
+    AttachConfirm,
     /// Session renaming modal.
     Rename,
     /// Session folder change dialog (palette-only `Change Folder`). Re-points
@@ -193,6 +196,10 @@ pub struct App {
     pub pending_delete: Option<usize>,
     /// Focused button in the session deletion confirmation modal: Delete (true) or Cancel (false).
     pub delete_ok_focused: bool,
+    /// Background session awaiting the Attach/Cancel answer.
+    pub pending_attach: Option<overlays::attach::PendingAttach>,
+    /// Focused button in the attach confirmation: Attach (true) or Cancel (false).
+    pub attach_ok_focused: bool,
     /// Incremental search keyword in the folder filter modal.
     pub folder_query: String,
     /// Folder indices in the stable order captured when the folder modal opens.
@@ -251,6 +258,8 @@ pub struct App {
     pub quit_grace_until: Option<std::time::Instant>,
     /// Request to resume the session at the specified sessions index, if set.
     pub resume_request: Option<usize>,
+    /// Request to attach to a background Claude session, if set.
+    pub attach_request: Option<AttachRequest>,
     /// Request to start a new session in the specified profile/folder, if set.
     pub new_session_request: Option<NewSessionRequest>,
     /// Request to execute the agent for initial setup (login) under the specified profile ID, if set.
@@ -353,6 +362,8 @@ impl App {
             message: None,
             pending_delete: None,
             delete_ok_focused: false,
+            pending_attach: None,
+            attach_ok_focused: false,
             folder_query: String::new(),
             folder_order: Vec::new(),
             folder_visible: Vec::new(),
@@ -377,6 +388,7 @@ impl App {
             quit_armed: false,
             quit_grace_until: None,
             resume_request: None,
+            attach_request: None,
             new_session_request: None,
             login_request: None,
             terminal_request: None,
@@ -766,6 +778,9 @@ impl App {
                 ],
                 MessageKind::Error,
             );
+            return;
+        }
+        if self.divert_live_session(idx, agent_status::LiveAction::Resume) {
             return;
         }
         self.resume_request = Some(idx);

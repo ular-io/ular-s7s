@@ -54,6 +54,27 @@ impl LiveStatus {
         }
     }
 
+    /// Who holds the session, as one sentence for dialogs and CLI errors.
+    pub fn holder_sentence(self) -> String {
+        match self {
+            LiveStatus::Open => "This session is open in another Claude Code terminal.".to_string(),
+            status => format!(
+                "Claude Code is running this session in the background ({}).",
+                status.state_label()
+            ),
+        }
+    }
+
+    /// Short state word for dialogs.
+    pub fn state_label(self) -> &'static str {
+        match self {
+            LiveStatus::Working => "working",
+            LiveStatus::NeedsInput => "needs input",
+            LiveStatus::Done => "done",
+            LiveStatus::Open => "open",
+        }
+    }
+
     /// Title marker. Every background state shares `Ⓑ` because they open the
     /// same way; the state itself is told by [`Self::description`].
     pub fn glyph(self) -> char {
@@ -64,8 +85,17 @@ impl LiveStatus {
     }
 }
 
-/// Session id → status for the live sessions of one config dir.
-pub type StatusMap = HashMap<String, LiveStatus>;
+/// One live holder of a session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveEntry {
+    pub status: LiveStatus,
+    /// Background job id that `claude attach` takes (the agent view's short
+    /// id); `None` for interactive holders.
+    pub job: Option<String>,
+}
+
+/// Session id → live holder for one config dir.
+pub type StatusMap = HashMap<String, LiveEntry>;
 
 /// Parses `claude agents --json`. Unknown or missing fields are skipped per
 /// entry; a document that is not a JSON array yields `None`. When one session
@@ -82,20 +112,26 @@ pub fn parse(json: &str) -> Option<StatusMap> {
         let Some(id) = entry.get("sessionId").and_then(|v| v.as_str()) else {
             continue;
         };
-        let status = match entry.get("kind").and_then(|v| v.as_str()) {
-            Some("background") => match entry.get("state").and_then(|v| v.as_str()) {
-                Some("blocked") => LiveStatus::NeedsInput,
-                Some("done") => LiveStatus::Done,
-                _ => LiveStatus::Working,
+        let live = match entry.get("kind").and_then(|v| v.as_str()) {
+            Some("background") => LiveEntry {
+                status: match entry.get("state").and_then(|v| v.as_str()) {
+                    Some("blocked") => LiveStatus::NeedsInput,
+                    Some("done") => LiveStatus::Done,
+                    _ => LiveStatus::Working,
+                },
+                job: entry.get("id").and_then(|v| v.as_str()).map(str::to_string),
             },
-            Some("interactive") => LiveStatus::Open,
+            Some("interactive") => LiveEntry {
+                status: LiveStatus::Open,
+                job: None,
+            },
             _ => continue,
         };
         let id = id.to_ascii_lowercase();
-        if status == LiveStatus::Open && map.contains_key(&id) {
+        if live.status == LiveStatus::Open && map.contains_key(&id) {
             continue;
         }
-        map.insert(id, status);
+        map.insert(id, live);
     }
     Some(map)
 }
@@ -146,6 +182,35 @@ pub fn query(profile: &Profile) -> Option<StatusMap> {
     parse(&out)
 }
 
+/// Live holder of `session` right now, for the `s7s session` mutations. `None`
+/// for non-Claude sessions and when the query fails.
+pub fn live_holder(profile: &Profile, session: &crate::model::Session) -> Option<LiveEntry> {
+    if session.agent != Agent::Claude {
+        return None;
+    }
+    query(profile)?.remove(&session.id.to_ascii_lowercase())
+}
+
+impl LiveEntry {
+    /// How to release the session before deleting or renaming it.
+    pub fn release_hint(&self) -> String {
+        match self.status {
+            LiveStatus::Open => "Exit it in that terminal first, then try again.".to_string(),
+            _ => format!(
+                "Stop it with `claude stop {}`, or wait until Claude Code retires it (1 hour idle).",
+                self.job.as_deref().unwrap_or("<id>")
+            ),
+        }
+    }
+}
+
+/// Explains a live holder on stderr for `s7s session` mutations (`what` is the
+/// refused verb).
+pub fn print_live_refusal(entry: &LiveEntry, what: &str) {
+    eprintln!("error: cannot {what}: {}", entry.status.holder_sentence());
+    eprintln!("hint: {}", entry.release_hint());
+}
+
 /// Queries every Claude profile on a worker thread. Each profile yields one
 /// `(profile_id, result)` message; the channel disconnects when all are done.
 pub fn spawn_fetch(profiles: Vec<Profile>) -> Receiver<(String, Option<StatusMap>)> {
@@ -192,7 +257,7 @@ mod tests {
         // A background job whose worker is gone resumes normally.
         assert!(!map.contains_key("8403d2ca-4333-4edd-a0e7-8c045e064663"));
         assert_eq!(
-            map["c3cbc2a0-0bd0-44b3-9fba-a782c578ec9d"],
+            map["c3cbc2a0-0bd0-44b3-9fba-a782c578ec9d"].status,
             LiveStatus::Open
         );
         let unknown_kind = parse(r#"[{"kind":"something-new","sessionId":"x","pid":1}]"#).unwrap();
@@ -207,7 +272,7 @@ mod tests {
             r#"[{"kind":"background","sessionId":"x","pid":2,"state":"done"},
                 {"kind":"interactive","sessionId":"x","pid":1}]"#,
         ] {
-            assert_eq!(parse(json).unwrap()["x"], LiveStatus::Done);
+            assert_eq!(parse(json).unwrap()["x"].status, LiveStatus::Done);
         }
     }
 
@@ -215,17 +280,27 @@ mod tests {
     fn maps_agent_view_states_and_lowercases_ids() {
         let map = parse(SAMPLE).unwrap();
         assert_eq!(
-            map["8d1d04b2-b528-4be2-8401-de08b92c8c8d"],
+            map["8d1d04b2-b528-4be2-8401-de08b92c8c8d"].status,
             LiveStatus::Done
         );
         assert_eq!(
-            map["09066cde-981a-4bd3-9ea1-fdbc014c3cc8"],
+            map["09066cde-981a-4bd3-9ea1-fdbc014c3cc8"].status,
             LiveStatus::NeedsInput
         );
         assert_eq!(
-            map["f4c965a4-b28a-4c37-8ccd-a5bffaf23cef"],
+            map["f4c965a4-b28a-4c37-8ccd-a5bffaf23cef"].status,
             LiveStatus::Working
         );
+    }
+
+    #[test]
+    fn background_entries_carry_their_attach_id() {
+        let map = parse(SAMPLE).unwrap();
+        assert_eq!(
+            map["8d1d04b2-b528-4be2-8401-de08b92c8c8d"].job.as_deref(),
+            Some("8d1d04b2")
+        );
+        assert_eq!(map["c3cbc2a0-0bd0-44b3-9fba-a782c578ec9d"].job, None);
     }
 
     #[test]
@@ -240,6 +315,6 @@ mod tests {
         let map =
             parse(r#"[{"kind":"background","sessionId":"x","pid":1,"state":"something-new"}]"#)
                 .unwrap();
-        assert_eq!(map["x"], LiveStatus::Working);
+        assert_eq!(map["x"].status, LiveStatus::Working);
     }
 }

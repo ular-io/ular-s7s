@@ -10,6 +10,7 @@
 //!
 //! - `filters` — agent and folder multi-select filter modals (`ModalState`).
 //! - `confirm` — session rename and delete confirmation dialogs.
+//! - `attach` — the Attach/Cancel question for a Claude background session.
 //! - `change_folder` — the session folder change dialog, which re-points where a
 //!   session opens without moving files (`ChangeFolderState`).
 //! - `message` — the reusable alert dialog (`show_message`).
@@ -25,6 +26,7 @@
 //! Session flow in `ui::render`. The session-deletion filesystem work invoked
 //! by the delete dialog stays in `ui::mod` as cross-feature `App` coordination.
 
+pub(crate) mod attach;
 pub(crate) mod change_folder;
 pub(crate) mod confirm;
 pub(crate) mod filters;

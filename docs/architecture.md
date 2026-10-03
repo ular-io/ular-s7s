@@ -109,7 +109,8 @@ discrete request fields drained by `runtime`.
 | Quick Command and terminal-command input | `ui/quick/` |
 | Context-source navigation stack | `ui/context_jump.rs` |
 | Bookmark actions and title decoration | `ui/bookmarks.rs` |
-| Claude live-session status sweeps and markers | `ui/agent_status.rs` (CLI client: `agent_status.rs`) |
+| Claude live-session status sweeps, markers, and live-session blocking | `ui/agent_status.rs` (CLI client: `agent_status.rs`) |
+| Attach/Cancel dialog for a background session | `ui/overlays/attach.rs` (handover: `runtime::handover_attach`) |
 | Clipboard projections | `ui/copy.rs` |
 | Paste routing | `ui/paste.rs` |
 | Reusable input/modal/scroll/text primitives | `ui/components/` |
@@ -137,7 +138,8 @@ snapshots publish the staged cache by rename; discarded or late snapshots remove
 the temporary file without overwriting the current index. This keeps a completed
 background scan from restoring deleted sessions or older title/folder data.
 
-Resume, new session, login, and terminal commands suspend the TUI, run
+Resume, attach (`claude attach` for a background session), new session,
+login, and terminal commands suspend the TUI, run
 synchronously through `resume.rs`, then restore and rescan.
 
 See [ui-style-guide.md](./ui-style-guide.md) for visual changes and

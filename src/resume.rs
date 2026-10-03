@@ -27,21 +27,43 @@ pub fn run(
     let cmd = template
         .replace("{id}", &shell_quote(&session.id))
         .replace("{cwd}", &shell_quote(&cwd));
-    let cmd = prefix_env(profile, &cmd, true);
+    run_agent_in(&cwd, prefix_env(profile, &cmd, true))
+}
 
-    // Execute after navigating to target directory. If cwd is valid, prepend a cd command.
+/// Runs an agent command in a session folder through the login shell (so PATH
+/// reaches claude/codex/etc.), with Claude's session variables stripped. An
+/// empty `cwd` runs in place.
+fn run_agent_in(cwd: &str, cmd: String) -> std::io::Result<ExitStatus> {
     let full = if cwd.is_empty() {
         cmd
     } else {
-        format!("cd {} && {}", shell_quote(&cwd), cmd)
+        format!("cd {} && {}", shell_quote(cwd), cmd)
     };
-
-    // Execute via login shell to ensure PATH to claude/codex/etc. is available.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
     let mut child = Command::new(shell);
     child.arg("-lc").arg(&full);
     sanitize_agent_env(&mut child);
     run_status(&mut child)
+}
+
+/// Attaches the terminal to a Claude background session (`claude attach <job>`)
+/// with the same profile env, shell, and folder rules as resume. Blocks until
+/// the user leaves (ctrl+z, or ← then ctrl+c twice); the worker keeps running.
+pub fn run_attach(
+    session: &Session,
+    job: &str,
+    profile: Option<&Profile>,
+) -> std::io::Result<ExitStatus> {
+    let cmd = format!("claude attach {}", shell_quote(job));
+    run_agent_in(
+        &session.cwd.to_string_lossy(),
+        prefix_env(profile, &cmd, true),
+    )
+}
+
+/// Attach command string shown on the handover screen.
+pub fn preview_attach(job: &str, profile: Option<&Profile>) -> String {
+    prefix_env(profile, &format!("claude attach {job}"), false)
 }
 
 /// Starts a new session in the specified directory. Blocks until the child terminates and returns the exit status.

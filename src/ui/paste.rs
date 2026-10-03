@@ -31,6 +31,7 @@ impl App {
             UiMode::Table
             | UiMode::AgentModal
             | UiMode::DeleteConfirm
+            | UiMode::AttachConfirm
             | UiMode::ProfileDeleteConfirm
             | UiMode::ProfileDirConfirm
             | UiMode::ProjectDirConfirm
