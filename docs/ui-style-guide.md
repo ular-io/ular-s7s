@@ -102,7 +102,14 @@ drives the current decision. Avoid using bold for every value.
   width remains. Do not put cursor-dependent actions in the global header.
 - `ui/copy.rs` mirrors the metadata content without visual hints. Keep copied and
   rendered content aligned.
-- Bookmarked titles carry `Ⓑ  ` in the table and metadata grids. This prefix is
+- Claude live-session markers (`Ⓑ` background, `Ⓞ` open) follow `♥` in the
+  same prefix (`♥ Ⓑ  title`), bold and display-only; they do not tint the row. See
+  [background-sessions.md](./background-sessions.md).
+- The Prompt pane's Session block explains each marker the session carries in
+  `- <marker> : <meaning>` rows under Name (bold marker, soft-dim text,
+  truncated to the pane). Detail and Context Source blocks and `ui/copy.rs`
+  omit them.
+- Bookmarked titles carry `♥ ` in the table and metadata grids. This prefix is
   display-only; clipboard text retains the original title. In the table the
   marker is bold even on an unselected or unfocused row, without changing the
   title text's tone. The entire bookmarked row uses `bookmark_bg`, including

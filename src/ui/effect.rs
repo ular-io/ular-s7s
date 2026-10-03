@@ -195,6 +195,7 @@ impl App {
         self.refresh_all = RefreshAllPhase::Scanning;
         self.background
             .spawn_refresh(self.profiles.profiles.clone(), self.detail_key());
+        self.request_agent_status();
     }
 
     /// Ends a completed refresh cycle after its completion frame renders.

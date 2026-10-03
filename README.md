@@ -34,6 +34,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
 - **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
+- **Claude Live-Session Markers**: Claude sessions that Claude Code is running in the background (after `←` on an empty prompt, `/bg`, or `claude --bg`) show `Ⓑ` before the title, and sessions open in another Claude Code terminal show `Ⓞ`; the Prompt pane explains each marker (for `Ⓑ`: working, needs input, or done). Markers refresh every 30 seconds — [Details](docs/background-sessions.md).
 - **Workspaces**: Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it; s7s always starts with All open.
 - **Project-Free Scratch Sessions**: Pick `[SCRATCH]` at the top of the New Session folder list to start an agent with no project attached — for a question or a quick check. It runs in a shared folder (`~/.config/s7s/scratch`) that is emptied on every start and carries a policy file telling the agent to ask you for a target directory before writing anything, so nothing important is left in a throwaway location.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
@@ -128,7 +129,7 @@ leaves the ordinary session list behind the dialog.
 | `ctrl+n` | New Session (Profile/Model/Folder dialog; typing a bare name instead of a path offers to create a new project folder under `~/.config/s7s/projects`; the folder list starts with `[SCRATCH]` for a project-free session; a prefilled path starts selected, so typing replaces it and `→` keeps it for editing) |
 | `ctrl+shift+n` | New Session with Context (attach selected session as past context, see below) |
 | `ctrl+o` | Go to Context Source (move to the session the selected one was launched from; clears filters if they hide it) |
-| `ctrl+b` | Toggle Bookmark (show `Ⓑ  ` before the title; also available on Detail) |
+| `ctrl+b` | Toggle Bookmark (show `♥ ` before the title; also available on Detail) |
 | `ctrl+w` | Open/close a workspace (the palette opens with `open workspace` typed; picking a row returns to this screen with that scope) |
 | `ctrl+r` | Rename Session |
 | `ctrl+d` / `del` | Confirm Delete Session |
@@ -197,7 +198,7 @@ Workspaces are stored in `~/.config/s7s/workspaces.json`.
 ## Session Bookmarks
 
 Press `ctrl+b` to add or remove a bookmark on the selected session. Bookmarked
-titles show a bold `Ⓑ  ` in the list and Prompt/Detail metadata. Bookmarked rows
+titles show a bold `♥ ` in the list and Prompt/Detail metadata. Bookmarked rows
 also have a subtle background tint; the selected row keeps its usual highlight.
 Bookmarked sessions appear first, with the latest activity first within each
 group.

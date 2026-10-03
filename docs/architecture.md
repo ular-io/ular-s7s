@@ -109,6 +109,7 @@ discrete request fields drained by `runtime`.
 | Quick Command and terminal-command input | `ui/quick/` |
 | Context-source navigation stack | `ui/context_jump.rs` |
 | Bookmark actions and title decoration | `ui/bookmarks.rs` |
+| Claude live-session status sweeps and markers | `ui/agent_status.rs` (CLI client: `agent_status.rs`) |
 | Clipboard projections | `ui/copy.rs` |
 | Paste routing | `ui/paste.rs` |
 | Reusable input/modal/scroll/text primitives | `ui/components/` |
@@ -216,6 +217,7 @@ None is watched; an instance reloads all three only at startup and on `ctrl+u`
 | Scan, list, filter | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | `session-context.md` when turn selection changes |
 | Rename/title | `rename.rs`, `title.rs`, parser title paths | `session-title-compat.md` |
 | Session bookmarks | `bookmarks.rs`, `ui/bookmarks.rs`, `filter.rs` | `bookmarks.md` |
+| Claude live-session markers | `agent_status.rs`, `ui/agent_status.rs`, `ui/background.rs`, `runtime.rs` (idle wait) | `background-sessions.md` |
 | Workspaces | `workspaces.rs`, `ui/workspace/*`, `ui/quick/registry.rs` | `workspaces.md` |
 | Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli.rs`) | `session-context.md` §Delete |
 | Work handoff | `session_handoff.rs`, `config.rs` (`handoff_instruction`) | `session-context.md` §Handoff |

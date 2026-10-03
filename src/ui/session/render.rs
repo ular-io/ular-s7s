@@ -237,7 +237,8 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|&i| {
             let s = &app.sessions[i];
-            let bookmarked = app.bookmarks.contains(s);
+            let marks = app.title_marks(s);
+            let bookmarked = marks.bookmarked;
             let (tag, color) = agent_tag(s.agent, th);
             let tag_style = if table_dimmed {
                 th.soft_dim()
@@ -256,7 +257,7 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
                 TableColumn::Updated => Cell::from(Span::styled(s.date_str(), text_style)),
                 TableColumn::Title => Cell::from(crate::ui::bookmarks::styled_title(
                     truncate_w(&app.session_display_title(s), layout.title_w),
-                    bookmarked,
+                    marks,
                     text_style,
                 )),
                 TableColumn::Q => Cell::from(Span::styled(
@@ -379,7 +380,8 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
     if let Some(s) = app.current() {
         lines.extend(session_meta_lines(
             s,
-            app.bookmarks.contains(s),
+            app.title_marks(s),
+            true,
             inner_w,
             th,
             dimmed,
@@ -394,7 +396,7 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
             lines.extend(context_source_lines(
                 src,
                 resolved,
-                resolved.is_some_and(|s| app.bookmarks.contains(s)),
+                resolved.map(|s| app.title_marks(s)).unwrap_or_default(),
                 inner_w,
                 th,
                 dimmed,
