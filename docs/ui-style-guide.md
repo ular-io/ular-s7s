@@ -167,8 +167,10 @@ Additional rules:
   an unbordered `dim` `│` separator joined to the divider below as `┴`. The
   footer, divider, and buttons span both columns. Such a dialog may take up to
   90% of the terminal width instead of 80%. Keys keep one linear row order
-  across both columns; `←`/`→` stay with the text cursor, so they never switch
-  columns.
+  across both columns. On a text row `←`/`→` stay with the text cursor; on a
+  list row of the right column `←` returns to the left column (the field last
+  edited). There is no `→` into the list: a text row owns `→`, and Tab already
+  reaches it.
 - Keep action order `[Confirm/Execute] [Cancel]`.
 - A text-input Enter must not submit a form. Submission occurs only when the
   confirm button owns focus; Enter on Cancel closes the dialog.

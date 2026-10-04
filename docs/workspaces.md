@@ -91,7 +91,9 @@ Words match through `filter::token_matches`, the same text as `/` search
   shown, the buttons), wrapping. On text rows `←`/`→`/`Home`/`End` move the text
   cursor and Enter moves to the next row — a text row never submits. On folder
   rows `space` or Enter toggles, `j`/`k` move, `g`/`G`/`Home`/`End` jump to the
-  first/last folder. On the buttons `←`/`→`/`h`/`l` switch between Save
+  first/last folder, and `←`/`h` return to the left column, on the field last
+  edited (Name until one is; moving over a field does not count). On the
+  buttons `←`/`→`/`h`/`l` switch between Save
   (focused first) and Cancel, and Enter runs the focused one. ctrl/alt
   combinations do nothing, so the palette, `ctrl+u`, `ctrl+w`, `/`, and
   delete are unavailable while the dialog is open.

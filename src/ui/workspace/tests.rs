@@ -381,6 +381,48 @@ fn tab_moves_between_fields_search_folders_and_buttons() {
 }
 
 #[test]
+fn left_on_a_folder_row_returns_to_the_field_last_edited() {
+    let mut app = app_with_workspace();
+    on_api_dialog(&mut app);
+    // Nothing edited yet: Name.
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert!(dialog(&app).cursor_folder().is_some());
+    press(&mut app, KeyCode::Left);
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Name));
+
+    // Passing over a field does not count; editing Includes does.
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "api");
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert!(dialog(&app).cursor_folder().is_some());
+    press(&mut app, KeyCode::Char('h'));
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
+
+    // On a text row ← stays with the text cursor, Search included.
+    let cursor = dialog(&app).includes.cursor;
+    press(&mut app, KeyCode::Left);
+    assert_eq!(dialog(&app).includes.cursor, cursor - 1);
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    assert!(dialog(&app).cursor_on_search());
+    press(&mut app, KeyCode::Left);
+    assert!(dialog(&app).cursor_on_search());
+
+    // The buttons keep ← for Save/Cancel.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Tab);
+    assert!(dialog(&app).on_buttons);
+    press(&mut app, KeyCode::Left);
+    assert!(dialog(&app).on_buttons);
+    assert!(!dialog(&app).save_focused);
+}
+
+#[test]
 fn space_toggles_folders_by_full_path_in_the_draft() {
     let mut app = app_with_workspace();
     on_api_dialog(&mut app);
