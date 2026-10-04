@@ -278,6 +278,26 @@ s7s session list
 s7s session list --folder ular-s7s --agent codex --limit 5
 ```
 
+#### `s7s session change-folder`
+
+Changes where explicit Claude or Codex sessions open on their next s7s resume.
+
+```bash
+# Inspect the validated plan without saving folder mappings
+s7s session change-folder <ID1> <ID2> --to ~/projects/app --dry-run
+
+# Apply the entire batch, preserving unrelated mappings
+s7s session change-folder <ID1> <ID2> --to ~/projects/app
+```
+
+- Files and transcripts are unchanged. Running sessions keep their current
+  directory. An open s7s TUI picks up changes on `Ctrl+U`.
+- Every ID must resolve uniquely; use `--agent` / `--profile` to disambiguate.
+  A missing, ambiguous, or Antigravity target rejects the whole batch.
+- The destination must already exist; relative paths use the command's working
+  directory. Duplicate IDs count once. The batch is saved and verified under a
+  shared writer lock. See [Session folder](docs/session-folder.md).
+
 #### `s7s session rename` / `s7s session delete`
 
 ```bash

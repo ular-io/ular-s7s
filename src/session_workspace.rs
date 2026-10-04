@@ -102,17 +102,43 @@ impl WorkspaceStore {
 
 /// Persists one cwd without discarding mappings captured by earlier handoffs.
 pub(crate) fn record(path: &Path, profile_id: &str, session_id: &str, cwd: &Path) -> Result<()> {
-    let mut store = WorkspaceStore::load_checked(path)?;
-    store
-        .profiles
-        .entry(profile_id.to_string())
-        .or_default()
-        .insert(session_id.to_string(), cwd.to_path_buf());
-    store.save(path)
+    record_many(path, &[(profile_id, session_id)], cwd)
+}
+
+/// Read, merge, replace, and verify under one lock shared by CLI, TUI,
+/// handoffs, and deletion. No partial batch is ever published.
+pub(crate) fn record_many(path: &Path, targets: &[(&str, &str)], cwd: &Path) -> Result<()> {
+    if targets.is_empty() {
+        return Err(anyhow!("no session workspace targets"));
+    }
+    crate::store_lock::with_store_lock(path, || {
+        let mut store = WorkspaceStore::load_checked(path)?;
+        for &(profile_id, session_id) in targets {
+            store
+                .profiles
+                .entry(profile_id.to_string())
+                .or_default()
+                .insert(session_id.to_string(), cwd.to_path_buf());
+        }
+        store.save(path)?;
+        let stored = WorkspaceStore::load_checked(path)?;
+        for &(profile_id, session_id) in targets {
+            if stored.cwd(profile_id, session_id) != Some(cwd) {
+                return Err(anyhow!(
+                    "folder verification failed for {profile_id}/{session_id}"
+                ));
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Removes one mapping after an explicit s7s session deletion.
 pub(crate) fn remove(path: &Path, profile_id: &str, session_id: &str) -> Result<()> {
+    crate::store_lock::with_store_lock(path, || remove_locked(path, profile_id, session_id))
+}
+
+fn remove_locked(path: &Path, profile_id: &str, session_id: &str) -> Result<()> {
     let mut store = WorkspaceStore::load_checked(path)?;
     let mut changed = false;
     let mut remove_profile = false;
@@ -180,5 +206,43 @@ mod tests {
         assert!(!path.exists());
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn concurrent_batches_and_deletion_preserve_unrelated_mappings() {
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let path = root.path.with_file_name("session_workspaces.json");
+        record(&path, "p", "delete-me", Path::new("/old")).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(9));
+        let mut threads: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let a = format!("{i}-a");
+                    let b = format!("{i}-b");
+                    barrier.wait();
+                    record_many(&path, &[("p", &a), ("p", &b)], Path::new("/new")).unwrap();
+                })
+            })
+            .collect();
+        let delete_path = path.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            remove(&delete_path, "p", "delete-me").unwrap();
+        }));
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let store = WorkspaceStore::load(&path);
+        assert!(store.cwd("p", "delete-me").is_none());
+        for i in 0..8 {
+            for suffix in ["a", "b"] {
+                assert_eq!(
+                    store.cwd("p", &format!("{i}-{suffix}")),
+                    Some(Path::new("/new"))
+                );
+            }
+        }
     }
 }

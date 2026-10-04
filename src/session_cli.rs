@@ -5,6 +5,7 @@
 //!   search <query>  List sessions matching a keyword (+ folder/agent/profile filters).
 //!   list            List sessions by filter only, with no keyword.
 //!   rename <id> <t> Set one session's display title.
+//!   change-folder  Set the next resume folder for explicit session IDs.
 //!   delete <id>     Remove one session's on-disk artifacts (irreversible).
 //!   handoff         Park a task in a new session to pick up later.
 //!
@@ -21,7 +22,9 @@ use clap::{Args, Subcommand};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// Query and manage previous sessions (search/list, show, rename, delete, handoff).
+mod change_folder;
+
+/// Query and manage previous sessions, including next-resume folder changes.
 #[derive(Args, Debug)]
 pub struct SessionArgs {
     #[command(subcommand)]
@@ -38,6 +41,8 @@ pub enum SessionCommand {
     List(ListArgs),
     /// Set one session's display title
     Rename(RenameArgs),
+    /// Change where explicit Claude or Codex sessions open next time
+    ChangeFolder(change_folder::ChangeFolderArgs),
     /// Delete one session's on-disk artifacts (irreversible)
     Delete(DeleteArgs),
     /// Park a task in a new session to resume later
@@ -228,6 +233,7 @@ pub fn run(args: &SessionArgs) -> i32 {
         SessionCommand::Search(a) => run_search(a),
         SessionCommand::List(a) => run_list(a),
         SessionCommand::Rename(a) => run_rename(a),
+        SessionCommand::ChangeFolder(a) => change_folder::run(a),
         SessionCommand::Delete(a) => run_delete(a),
         SessionCommand::Handoff(a) => run_handoff(a),
     }

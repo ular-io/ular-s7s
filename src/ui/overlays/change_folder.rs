@@ -12,7 +12,6 @@
 //! header — so an override would make the list disagree with where the work
 //! happens. See [session-folder.md](../../../docs/session-folder.md).
 
-use crate::model::Agent;
 use crate::ui::components::modal::{button_styles, modal_block, render_modal};
 use crate::ui::components::text::{count_note, fit_before_note};
 use crate::ui::new_session::input::resolve_input_path;
@@ -152,11 +151,8 @@ impl App {
             self.status_msg = Some("No session selected".to_string());
             return;
         };
-        if session.agent == Agent::Antigravity {
-            self.status_msg = Some(
-                "Antigravity keeps a resumed session in its original folder — changing it here would not move the work"
-                    .to_string(),
-            );
+        if let Err(err) = crate::session_folder::validate_agent(session.agent) {
+            self.status_msg = Some(err.to_string());
             return;
         }
         let current = session.cwd.to_string_lossy().into_owned();
@@ -228,14 +224,10 @@ impl App {
         } else {
             resolve_input_path(&raw)
         };
-        let folder = match std::fs::canonicalize(&path) {
-            Ok(path) if path.is_dir() => path,
-            Ok(_) => {
-                state.error = Some("Path is not a directory".to_string());
-                return;
-            }
+        let folder = match crate::session_folder::validate_folder(&path) {
+            Ok(folder) => folder,
             Err(err) => {
-                state.error = Some(format!("Cannot open path: {err}"));
+                state.error = Some(format!("{err:#}"));
                 return;
             }
         };

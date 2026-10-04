@@ -13,7 +13,7 @@ verification details belong to the domain documents routed from `AGENTS.md`.
 | --- | --- |
 | `s7s` | `runtime::run_loop` driving `ui::App` |
 | `s7s <dir>` | `runtime::resolve_startup_dir` then the New Session dialog |
-| `s7s session show/search/list/rename/delete/handoff` | `session_cli::run` |
+| `s7s session show/search/list/rename/change-folder/delete/handoff` | `session_cli::run` |
 | `s7s --print`, `--rebuild-cache` | `runtime`, `scan`, `cache` |
 | `s7s --usage-probe`, `--model-probe` | `usage`, `models`, `probe` |
 | `s7s demo` | `demo` |
@@ -195,7 +195,7 @@ without a project.
 | `~/.config/s7s/models.json` | app | JSON |
 | `~/.config/s7s/theme.json` | app | JSON |
 | `~/.config/s7s/{quick,terminal}_history.json` | app | JSON |
-| `~/.config/s7s/session_workspaces.json` | app | JSON; cwd captured for s7s-created sessions whose agent store omits it |
+| `~/.config/s7s/session_workspaces.json` | app | JSON; per-profile/session folder overrides and handoff cwd records |
 | `~/.config/s7s/bookmarks.json` | app | versioned JSON; bookmarks keyed by agent/profile/session identity |
 | `~/.config/s7s/workspaces.json` | app | versioned JSON; user-defined session scopes and the open one (unrelated to `session_workspaces.json`) |
 | `~/.config/s7s/projects/` | app/user | directories |
@@ -206,11 +206,14 @@ without a project.
 Rule: user-edited configuration is TOML; app-owned state is JSON; the session
 index is a disposable cache.
 
-Several s7s instances may run at once. `profiles.json` and `workspaces.json`
+Several s7s instances may run at once. `profiles.json`, `workspaces.json`, and
+`session_workspaces.json`
 are saved per change: lock (`store_lock::with_store_lock`), re-read, apply the
 change by id, atomic replace. `bookmarks.json` re-reads before each toggle.
-None is watched; an instance reloads all three only at startup and on `ctrl+u`
-(`ui/reload.rs`). Theme, histories, and `models.json` are not reloaded.
+Profiles, workspaces, and bookmarks are not watched; an instance reloads those
+three only at startup and on `ctrl+u` (`ui/reload.rs`). Theme, histories, and
+`models.json` are not reloaded.
+Folder overrides are re-read on each session scan, including `Ctrl+U`.
 
 ## Cross-cutting change map
 
@@ -222,6 +225,7 @@ None is watched; an instance reloads all three only at startup and on `ctrl+u`
 | Claude live-session markers | `agent_status.rs`, `ui/agent_status.rs`, `ui/background.rs`, `runtime.rs` (idle wait) | `background-sessions.md` |
 | Workspaces | `workspaces.rs`, `ui/workspace/*`, `ui/quick/registry.rs` | `workspaces.md` |
 | Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli.rs`) | `session-context.md` §Delete |
+| Session folder | `session_folder.rs`, `session_workspace.rs`, `session_cli/change_folder.rs`, `ui/overlays/change_folder.rs` | `session-folder.md` |
 | Work handoff | `session_handoff.rs`, `config.rs` (`handoff_instruction`) | `session-context.md` §Handoff |
 | Detailed context/CLI | `session_context/*`, `session_cli.rs` | `session-context.md` |
 | Usage/model probes | `usage.rs`, `models.rs`, `probe/*` | `usage-display.md`, `models.md` |

@@ -10,8 +10,11 @@ per session, and `src/scan.rs::apply_workspace_cwd` decides which one wins.
 
 ## Change Folder
 
-Palette-only command (`:` → `Change Folder`), implemented in
-`src/ui/overlays/change_folder.rs`. It is deliberately narrow:
+The TUI palette command (`:` → `Change Folder`) and
+`s7s session change-folder` share validation and persistence in
+`src/session_folder.rs`. The dialog is implemented in
+`src/ui/overlays/change_folder.rs`; the CLI adapter is
+`src/session_cli/change_folder.rs`. Both are deliberately narrow:
 
 - It changes **only where the session opens next time**.
 - It moves no file and never rewrites the agent's transcript, so every absolute
@@ -22,23 +25,65 @@ Palette-only command (`:` → `Change Folder`), implemented in
   (`ui::cwds_by_latest`), then the scratch workspace if no session has run
   there; typed matches move to the top without changing that order. Each row
   ends with the folder's total session count as a dim ` (N)`.
-- The value is written to `~/.config/s7s/session_workspaces.json` by
-  `AppEffect::ChangeSessionFolder`, and dropping that record restores the folder
-  the agent recorded. `session_delete` clears the record for every agent.
+- The value is written to `~/.config/s7s/session_workspaces.json` by the shared
+  folder-change service. `session_delete` clears the record for every agent.
+- A running session keeps its current directory. The saved override is consumed
+  on the next s7s resume, not by direct resumes outside s7s.
 
 Changed sessions are not marked in the list — that was an explicit decision, so
 the only way back is to set the original folder again. The original is never
 lost: it stays in the agent's own storage.
+
+## CLI
+
+```bash
+s7s session change-folder <ID>... --to <DIR> [--agent AGENT] [--profile ID] [--dry-run]
+```
+
+- Full, explicit IDs only; no folder-name selector. Existing `session list`
+  folder filters compare basenames, which cannot distinguish two projects with
+  the same name. Duplicate IDs are ignored, keeping the first occurrence order.
+- One quiet incremental scan resolves the entire batch. Every ID must match
+  exactly one session under the optional agent/profile constraints. A missing
+  profile, missing ID, ambiguous ID, or Antigravity target fails the complete
+  batch before any folder mapping is written.
+- `--to` must name an existing directory. Relative paths resolve against the
+  command's current directory; `~/` is expanded. Unlike the TUI's project-name
+  shorthand, a bare CLI name is a relative path, not an s7s-managed project.
+  Symlinks resolve to the canonical absolute destination.
+- `--dry-run` validates and prints the plan without writing the folder store or
+  taking its writer lock. The ordinary incremental session scan may still update
+  the disposable index cache, as it does for `session list`.
+- Output includes each session's agent/profile, full ID, and before/after full
+  paths. Successful changes print only after the stored mappings are re-read
+  and verified. Exit codes: 0 on success (including dry-run), 1 for resolution,
+  validation or storage failures, 2 for argument errors.
+
+## Shared store writes
+
+`session_workspace::record_many` holds `store_lock::with_store_lock` across
+re-reading the file, merging every batch mapping, atomic replacement, and
+read-back verification. Unrelated mappings and handoff cwd records are retained.
+Single-session TUI writes and handoffs use the same operation; deletion's
+mapping cleanup holds the same lock. Concurrent writers cannot drop each
+other's changes by saving an old snapshot. A malformed or unsupported-version
+store fails a write instead of being replaced by an empty store.
+
+An already-open TUI picks up CLI changes on `Ctrl+U`; no full cache rebuild is
+needed. To restore a session, explicitly set its original directory again.
 
 ## Why Antigravity is refused
 
 `Change Folder` returns a message instead of opening for Antigravity sessions
 (`quick::input::change_folder_candidate` dims the palette row;
 `open_change_folder_at` refuses as well, so every entry point gives the reason).
+The CLI and shared service enforce the same refusal, including mixed batches.
 
-The three CLIs do not agree on what a resumed session's folder is. Verified
-against claude 2.1.278, codex-cli 0.155.1 and agy 1.2.8 by starting a disposable
-session in one folder and resuming it from another:
+The three CLIs do not agree on what a resumed session's folder is. Claude
+2.1.289 and codex-cli 0.160.0 were rechecked using disposable sessions, a CLI
+folder-change batch, and the s7s resume launcher with non-interactive agent
+templates: `pwd` followed the saved destination. The Antigravity behavior was
+verified separately against agy 1.2.8:
 
 | | resume by id from another folder | working directory after resume | does the session learn the folder changed |
 | --- | --- | --- | --- |

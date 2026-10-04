@@ -1,5 +1,6 @@
 //! Cross-process exclusion for app-owned JSON stores that several running s7s
-//! instances read-modify-write (`profiles.json`, `workspaces.json`).
+//! instances read-modify-write (`profiles.json`, `workspaces.json`,
+//! `session_workspaces.json`).
 //!
 //! A writer holds the lock from re-reading the file until its atomic replace
 //! lands, so two instances saving at once cannot both start from the same old

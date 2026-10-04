@@ -239,17 +239,16 @@ impl App {
     /// Records the session's new folder in the s7s-owned store and rescans, so
     /// the list column and the next resume follow it together. The agent's own
     /// storage is untouched: the folder written there stays as the session's
-    /// starting folder, and dropping the record restores it.
+    /// starting folder and can be set explicitly again to restore it.
     fn run_change_session_folder(&mut self, idx: usize, folder: PathBuf) {
         let Some(session) = self.sessions.get(idx).cloned() else {
             self.status_msg = Some("Folder change target no longer exists".to_string());
             return;
         };
-        match crate::session_workspace::record(
-            &crate::config::session_workspaces_path(),
-            &session.profile_id,
-            &session.id,
+        match crate::session_folder::change(
+            &[&session],
             &folder,
+            &crate::config::session_workspaces_path(),
         ) {
             Ok(()) => {
                 self.change_folder = None;

@@ -36,6 +36,8 @@ src/session_context/
 ```
 
 - `src/session_cli.rs` owns the `show` and `search` commands.
+- `src/session_cli/change_folder.rs` adapts the shared folder-change service;
+  its contract is [session-folder.md](./session-folder.md#cli).
 - `src/handoff.rs` adapts the shared model for Markdown export; it must not grow
   a second parser.
 - Detail UI and CLI output consume the same `SessionContext` model.

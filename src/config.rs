@@ -184,7 +184,7 @@ pub fn cache_path() -> PathBuf {
     }
 }
 
-/// Durable cwd facts captured while s7s creates Antigravity handoffs.
+/// Durable per-session folder overrides and cwd facts captured for handoffs.
 /// Unlike `index.bin`, this is app-owned source data and survives a cache rebuild.
 pub(crate) fn session_workspaces_path() -> PathBuf {
     config_base_dir().join("session_workspaces.json")
