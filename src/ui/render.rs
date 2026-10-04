@@ -910,7 +910,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled("enter save  ·  esc cancel", dim_style))
     } else if app.mode == UiMode::WorkspaceEdit {
         Line::from(Span::styled(
-            "↑↓ move  ·  tab next group  ·  space toggle folder  ·  enter on Save saves  ·  esc cancel",
+            "↑↓ move  ·  tab next group  ·  space toggle folder  ·  ← fields  ·  enter on Save saves  ·  esc cancel",
             dim_style,
         ))
     } else if app.screen == Screen::Session

@@ -51,6 +51,9 @@ pub struct WorkspaceDialog {
     pub on_buttons: bool,
     /// Save (true) or Cancel (false) within the button row.
     pub save_focused: bool,
+    /// Field row last edited (Name until one is): `←` on a folder row returns
+    /// there, to the left column.
+    pub last_field: usize,
     /// Folder rows in an order captured when the dialog opens (the draft's
     /// selected folders first, then the rest by latest activity). Toggling does
     /// not reorder, so the cursor stays on the row it toggled.
@@ -87,6 +90,7 @@ impl WorkspaceDialog {
             cursor: 0,
             on_buttons: false,
             save_focused: true,
+            last_field: 0,
             folders: Vec::new(),
             folder_counts: HashMap::new(),
             folder_query: TextInput::new(String::new()),

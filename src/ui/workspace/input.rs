@@ -235,8 +235,9 @@ impl App {
     /// Handles keys in the workspace edit dialog. Text rows (the fields and
     /// the folder search) take typing directly; ↑/↓ move one row, Tab/BackTab
     /// move between groups (each field, search, folders, buttons); space or
-    /// Enter toggles a folder; Enter on a field moves on, and only the Save
-    /// button saves. Esc clears a folder query first, then cancels.
+    /// Enter toggles a folder, and ←/`h` on a folder returns to the field last
+    /// edited; Enter on a field moves on, and only the Save button saves. Esc
+    /// clears a folder query first, then cancels.
     pub fn on_key_workspace_dialog(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
         let Some(dialog) = self.workspace.dialog.as_mut() else {
@@ -319,6 +320,9 @@ impl App {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
             KeyCode::Char(' ') | KeyCode::Enter => self.toggle_workspace_folder(),
+            // Back to the left column. Text rows keep ←/→ for the text cursor,
+            // so only a folder row switches columns.
+            KeyCode::Left | KeyCode::Char('h') => dialog.cursor = dialog.last_field,
             KeyCode::Char('k') => self.workspace_dialog_move(-1),
             KeyCode::Char('j') => self.workspace_dialog_move(1),
             KeyCode::Home | KeyCode::Char('g') => dialog.cursor = FIRST_FOLDER_ROW,
@@ -374,6 +378,7 @@ impl App {
             dialog.folder_scroll.set(0);
             return;
         }
+        dialog.last_field = dialog.cursor;
         dialog.draft.includes = dialog.includes.value.clone();
         dialog.draft.excludes = dialog.excludes.value.clone();
         self.update_workspace_matching();
