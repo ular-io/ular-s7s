@@ -27,6 +27,7 @@ pub mod scratch;
 pub mod session_cli;
 pub mod session_context;
 pub mod session_delete;
+mod session_folder;
 pub mod session_handoff;
 mod session_workspace;
 mod store_lock;

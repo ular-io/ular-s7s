@@ -58,7 +58,8 @@ CACHE:    <OS cache dir>/s7s/index.bin — macOS ~/Library/Caches/s7s
 SESSION:   `s7s session search <query>` lists matching sessions and
            `s7s session list` lists them by filter alone; `s7s session show <id>`
            renders one session's context; `s7s session rename <id> <title>` sets a
-           title and `s7s session delete <id> --yes` removes a session for good.
+           title; `s7s session change-folder <id> --to <dir>` changes the next
+           resume folder; `s7s session delete <id> --yes` removes a session for good.
            `s7s session handoff --title <t>` parks a task in a new session to pick
            up later. Run `s7s session --help` or `s7s session <cmd> --help`."
 )]
@@ -106,7 +107,7 @@ impl Cli {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Query and manage previous sessions: search/list, show, rename, delete, handoff
+    /// Query and manage previous sessions: search/list, show, rename, change-folder, delete, handoff
     Session(session_cli::SessionArgs),
     /// Run s7s in demo mode using mock English sessions (disposable sandbox under the OS cache dir)
     Demo,

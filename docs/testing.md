@@ -22,11 +22,11 @@ the change area below and run every check listed for it.
 | Model list / New Session model dropdown | `--model-probe` cross-check against `/model`, `codex debug models`, `agy models` (the CLIs do not reject invalid model names — agy silently falls back — so s7s owns list accuracy) | [models.md](./models.md) |
 | Rewind / backtrack parsing (claude `parentUuid` branch, codex rollout segments with `history_base` and legacy `thread_rolled_back`, agy replayed user step indices) | Perform a real rewind in the CLI and compare the saved-file diff against the s7s preview. For codex, confirm a new `_<segment id>` rollout appeared, the thread is listed once, and its turns match `thread/turns/list` from `codex app-server`. For agy, verify that the truncated DB and transcript suffix reduction agree, including answers, work, and assistant search results | [session-context.md](./session-context.md) |
 | Compaction parsing (claude `compact_boundary` / `isCompactSummary`) | Run `/compact` in a real session, then confirm s7s still lists the turns recorded before the boundary and does not count the summary as a question | [session-context.md](./session-context.md) |
-| `s7s session` mutating subcommands (`rename`, `delete`) | Run both against a disposable session and confirm the on-disk effect, not just the exit code | §Session CLI mutation checks below |
+| `s7s session` mutating subcommands (`rename`, `delete`, `change-folder`) | Run against disposable sessions and confirm the on-disk effect, not just the exit code | §Session CLI mutation checks below; §Session folder checks |
 | `s7s session handoff` | Park one disposable handoff per agent and confirm the store, the profile scoping, and that the new session did not act | §Session handoff checks below |
 | Session context parser (`src/session_context/`) or list parser turn selection | `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade | §Session context checks below |
 | Session activity time / Updated ordering | `cargo test real_data_index_snapshot -- --ignored --nocapture`; compare Updated against the real CLI record, then resume and exit without input and verify it is unchanged | §Session activity checks below |
-| Session folder override (`Change Folder`, `src/ui/overlays/change_folder.rs`, `scan::apply_workspace_cwd`) | Change one disposable session's folder, confirm the list column and the resume launch directory both follow, then set it back. Confirm the palette row is refused for an Antigravity session | §Session folder checks below · [session-folder.md](./session-folder.md) |
+| Session folder override (`Change Folder`, `session change-folder`, `session_folder.rs`, `scan::apply_workspace_cwd`) | CLI dry-run/batch/refusal/store-preservation checks, TUI refresh, and real resume `pwd` checks for Claude/Codex; set the original folder back. Confirm Antigravity is refused | §Session folder checks below · [session-folder.md](./session-folder.md) |
 | Scratch workspace (`scratch.rs`, the folder dropdown `[SCRATCH]` row) | Start a session on the `[SCRATCH]` row, write a file into the folder from inside the session, exit, and start again: the file must be gone and both policy files present with their current text. Confirm the agent asks for a target directory instead of writing there or picking its own path | [architecture.md](./architecture.md) §Scratch workspace |
 | New Session dialog layout / UI | `cargo build --release` is **mandatory**, plus a PTY/TUI visual check | [ui-style-guide.md](./ui-style-guide.md) |
 | Panel focus / TUI style | Manual TUI or PTY visual check | [ui-style-guide.md](./ui-style-guide.md) |
@@ -153,6 +153,24 @@ transcript. Verify both halves of "the list and the launch directory agree".
    session and that deleting such a session removes its record.
 5. Select an Antigravity session: the palette row must be dimmed, and triggering
    it must refuse with a reason instead of opening the dialog.
+6. Run `session change-folder <ID> --to <DIR> --dry-run`: verify the full
+   before/after paths and confirm the folder store is unchanged. A real write
+   must be visible in `session show`, `session list`, and an open TUI after
+   `Ctrl+U`. Confirm the transcript bytes stay unchanged until actual resume.
+7. Change a Claude and a Codex session in one batch. Verify both mappings and
+   that unrelated mappings survive; passing a duplicate ID must count it once.
+   Missing/ambiguous IDs, missing profiles, a nonexistent destination, a file
+   destination, and a mixed Antigravity batch must write nothing. Corrupt or
+   newer-version stores must not be overwritten.
+8. Resume disposable sessions from the saved destination with the real Claude
+   and Codex CLIs and check `pwd`; then set their original folders back. If
+   using non-interactive CLI resume for this probe, also verify the s7s launcher
+   consumes the scanned cwd rather than the transcript's original directory.
+9. Concurrent TUI/CLI/handoff writes and deletion cleanup must retain every
+   unrelated mapping. Automated coverage:
+   `session_cli::change_folder::tests`,
+   `session_workspace::tests::concurrent_batches_and_deletion_preserve_unrelated_mappings`,
+   and the existing `ui::overlays::tests::change_folder_*` checks.
 
 On an agent CLI upgrade, re-run the resume comparison behind the table in
 [session-folder.md](./session-folder.md): start a disposable session in one
