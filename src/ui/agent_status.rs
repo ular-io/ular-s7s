@@ -1,7 +1,7 @@
 //! Scheduling and application of live-session status sweeps (Claude, agy).
 //!
-//! A sweep runs `claude agents --json` once per Claude profile on a worker
-//! (`crate::agent_status`). It starts at launch, with every session rescan
+//! A sweep runs `claude agents --json` once per Claude profile, each on its own
+//! worker (`crate::agent_status`). It starts at launch, with every session rescan
 //! (handover return, mutations, `ctrl+u`), and every [`AGENT_STATUS_INTERVAL`]
 //! while the TUI is idle. Results replace the profile's previous map; a failed
 //! query clears it so a stale marker never outlives its source.

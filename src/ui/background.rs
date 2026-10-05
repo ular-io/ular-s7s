@@ -25,7 +25,8 @@ pub(crate) struct BackgroundState {
     models_rxs: Vec<Receiver<(String, models::ModelsResult)>>,
     /// Profile IDs with active model queries (prevents duplicate PTY queries for the same profile).
     models_loading: HashSet<String>,
-    /// One active live-session sweep over every Claude and agy profile.
+    /// One active live-session sweep over every Claude and agy profile (one
+    /// worker per profile, all sending into this receiver).
     agent_status_rx: Option<Receiver<(String, Option<agent_status::StatusMap>)>>,
 }
 
