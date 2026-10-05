@@ -292,25 +292,24 @@ pub fn print_live_refusal(entry: &LiveEntry, what: &str) {
     eprintln!("hint: {}", entry.release_hint());
 }
 
-/// Queries every Claude and agy profile on a worker thread. Each profile
-/// yields one `(profile_id, result)` message; the channel disconnects when all
-/// are done.
+/// Queries every Claude and agy profile, each on its own worker thread, so a
+/// slow `claude agents --json` never delays another profile's markers. Each
+/// profile yields one `(profile_id, result)` message; the channel disconnects
+/// when all are done.
 pub fn spawn_fetch(profiles: Vec<Profile>) -> Receiver<(String, Option<StatusMap>)> {
     let (tx, rx) = mpsc::channel();
-    let targets: Vec<Profile> = profiles
+    for profile in profiles
         .into_iter()
         .filter(|p| p.agent != Agent::Codex && p.path.is_dir())
-        .collect();
-    let _ = std::thread::Builder::new()
-        .name("s7s-agent-status".into())
-        .spawn(move || {
-            for profile in targets {
+    {
+        let tx = tx.clone();
+        let _ = std::thread::Builder::new()
+            .name("s7s-agent-status".into())
+            .spawn(move || {
                 let result = query(&profile);
-                if tx.send((profile.id.clone(), result)).is_err() {
-                    break;
-                }
-            }
-        });
+                let _ = tx.send((profile.id, result));
+            });
+    }
     rx
 }
 
@@ -423,6 +422,49 @@ mod tests {
         assert_eq!(map.len(), 1, "{map:?}");
         assert_eq!(map["aaaa-open"].status, LiveStatus::Open);
         assert_eq!(map["aaaa-open"].job, None);
+    }
+
+    #[test]
+    fn a_slow_claude_query_does_not_delay_another_profile() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let dir = root.path.with_file_name("sweep");
+        let claude_root = dir.join("claude");
+        let agy_root = dir.join("agy");
+        std::fs::create_dir_all(&claude_root).unwrap();
+        std::fs::create_dir_all(&agy_root).unwrap();
+        let bin = dir.join("slow-claude");
+        std::fs::write(&bin, "#!/bin/sh\nsleep 2\necho '[]'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // No other unit test runs `claude agents --json`.
+        std::env::set_var("S7S_AGENTS_CLAUDE_BIN", &bin);
+
+        let profile = |id: &str, agent, path: &Path| Profile {
+            id: id.into(),
+            agent,
+            name: id.into(),
+            path: path.to_path_buf(),
+            oauth_token: None,
+            active: true,
+            shortcut: None,
+            builtin: false,
+        };
+        // Claude first: the order a single sequential worker would follow.
+        let rx = spawn_fetch(vec![
+            profile("claude", Agent::Claude, &claude_root),
+            profile("agy", Agent::Antigravity, &agy_root),
+        ]);
+        let started = Instant::now();
+        let (first, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first, "agy");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let (second, result) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(second, "claude");
+        assert_eq!(result, Some(StatusMap::new()));
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_err(),
+            "sweep done"
+        );
     }
 
     #[test]

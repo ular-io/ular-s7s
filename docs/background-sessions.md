@@ -142,7 +142,10 @@ observed; IDE and desktop sessions are unverified.
 `src/ui/agent_status.rs` schedules sweeps: on the first loop pass after launch,
 after every synchronous rescan (`refresh_sessions`: handover returns and
 mutations), with `ctrl+u`, and every 30 s while idle (the event-loop wait is
-bounded by the next due time). A sweep replaces each profile's map; a failed
+bounded by the next due time). A sweep queries each Claude and agy profile on
+its own thread (`agent_status::spawn_fetch`) and applies each profile's result
+as it arrives, so one slow `claude agents --json` does not delay the markers of
+other profiles. A sweep replaces each profile's map; a failed
 query clears it, so a stale marker never outlives its source. Matching is by
 `(profile_id, lowercase session id)` for Claude sessions only.
 
