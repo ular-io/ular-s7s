@@ -48,6 +48,26 @@ active documentation.
   restate what the code already makes obvious. Any file containing Korean may be
   added to `.gitignore` only after the user approves.
 
+### Source file size
+
+- A source file (`*.rs`, counted with `wc -l`, inline `#[cfg(test)]` modules
+  included) is at most 500 lines. Generated files are exempt.
+- The limit is enforced **incrementally, only on files a change already
+  edits**. Many existing files are over it; do not split files the change does
+  not otherwise touch, and do not open a bulk split.
+  - New file: at most 500 lines.
+  - Edited file at or under 500: stays at or under 500. If the change would push
+    it over, split it in the same change.
+  - Edited file over 500: bring it to 500 or fewer in the same task. Split by
+    responsibility into sibling modules (tests by topic, e.g.
+    `src/ui/new_session/combo_tests.rs`), not by line count.
+- Do the split as its own commit before the behavior change: moves only, no
+  logic edits, `scripts/check.sh` passing. A reviewer can then read the
+  behavior commit without the move noise.
+- Do not keep a list of over-limit files in documentation; it goes stale.
+  Find them with
+  `find src -name '*.rs' -exec wc -l {} + | awk '$1 > 500 && $2 != "total"'`.
+
 ### Compatibility with external CLIs
 
 - Assume an agent CLI upgrade may have changed its storage structure or rename
