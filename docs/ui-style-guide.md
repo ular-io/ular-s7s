@@ -187,6 +187,9 @@ Additional rules:
 - Clamp dynamic list modals to a usable minimum height when there are no results.
 - A popup drawn over background text must clear enough adjacent cells to remove
   both halves of a clipped double-width glyph before painting its border.
+  Limit those extra cells to rows over the backdrop: a popup that starts inside
+  its dialog (the New Session dropdown) must not clear the dialog's own border,
+  or one side of the dialog's bottom edge loses its `━` next to the popup.
 - Theme selection does not dim its backdrop because the background is the live
   preview.
 

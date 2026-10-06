@@ -286,15 +286,22 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         // character straddling the left border is erased instead of bleeding half
         // a glyph into the frame — the same margin technique as `render_modal`.
         // The border stays at `popup_rect.x` to remain joined with the combo box.
-        let left_margin = u16::from(popup_rect.x > 0);
-        let clear_rect = Rect {
-            x: popup_rect.x - left_margin,
-            y: popup_rect.y,
-            width: popup_rect.width + left_margin,
-            height: popup_rect.height,
-        };
-        f.render_widget(Clear, clear_rect);
-        f.render_widget(Block::default().style(th.base_style()), clear_rect);
+        // Inside the dialog that column is already base-filled padding, and the
+        // dialog's bottom border row must keep its `━` so both sides look the
+        // same, so the margin only covers rows below the dialog.
+        f.render_widget(Clear, popup_rect);
+        f.render_widget(Block::default().style(th.base_style()), popup_rect);
+        let below_dialog = area.bottom().max(popup_rect.y);
+        if popup_rect.x > 0 && popup_rect.bottom() > below_dialog {
+            let margin_rect = Rect {
+                x: popup_rect.x - 1,
+                y: below_dialog,
+                width: 1,
+                height: popup_rect.bottom() - below_dialog,
+            };
+            f.render_widget(Clear, margin_rect);
+            f.render_widget(Block::default().style(th.base_style()), margin_rect);
+        }
         // Active dropdown combo boxes are focused (thick borders);
         // style popup frames in thick borders to join lines seamlessly.
         let popup_block = Block::default()

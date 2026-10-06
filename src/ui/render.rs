@@ -2040,6 +2040,42 @@ mod tests {
         assert_ne!(buffer[(label_x, label_y)].fg, app.theme.muted);
     }
 
+    /// The blank column cleared left of the popup erases backdrop CJK glyphs
+    /// below the dialog, but must not cut the dialog's own bottom border: the
+    /// `━` beside each corner stays so both sides of the popup match.
+    #[test]
+    fn folder_dropdown_keeps_the_dialog_bottom_border_on_both_sides() {
+        let mut app = session_app();
+        app.theme = crate::theme::default_theme();
+        app.mode = crate::ui::UiMode::NewSession;
+        let mut state = new_session_state(None);
+        state.focus = crate::ui::NewSessionFocus::Folder;
+        state.dropdown_open = true;
+        state.folders = (0..12)
+            .map(|i| std::path::PathBuf::from(format!("/tmp/work/f{i}")))
+            .collect();
+        state.reorder_folders();
+        app.new_session = Some(state);
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 34)).expect("terminal");
+        terminal.draw(|f| super::draw(f, &app)).expect("draw");
+        // The dialog's corners come before the popup's, which sit further down.
+        let (left_x, bottom_y) = find_cell(&terminal, "┗");
+        let (right_x, right_y) = find_cell(&terminal, "┛");
+        assert_eq!(bottom_y, right_y);
+        let buffer = terminal.backend().buffer();
+        let row = |from: u16, to: u16| -> String {
+            (from..=to)
+                .map(|x| buffer[(x, bottom_y)].symbol())
+                .collect()
+        };
+        assert_eq!(row(left_x, left_x + 2), "┗━┃");
+        assert_eq!(row(right_x - 2, right_x), "┃━┛");
+        // Below the dialog the margin column left of the popup stays blank.
+        assert_eq!(buffer[(left_x + 1, bottom_y + 1)].symbol(), " ");
+        assert_eq!(buffer[(left_x + 2, bottom_y + 1)].symbol(), "┃");
+    }
+
     /// Every dropdown row, the fixed scratch row included, ends with a dim `(N)`.
     #[test]
     fn folder_dropdown_rows_end_with_a_dim_session_count() {
