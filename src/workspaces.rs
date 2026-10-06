@@ -18,6 +18,7 @@ use crate::model::Session;
 use crate::normalize;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -28,6 +29,109 @@ pub(crate) const NEW_WORKSPACE_NAME: &str = "New Workspace";
 
 /// Reserved label of the fixed "every session" row; never a stored workspace name.
 pub(crate) const ALL_WORKSPACE_NAME: &str = "All";
+/// Plain name of the synthetic scope used in titles, messages, and the palette.
+pub(crate) const UNASSIGNED_WORKSPACE_NAME: &str = "None-Workspace";
+
+/// Canonical fixed-scope name, if a proposed workspace name would conflict.
+pub(crate) fn reserved_name(name: &str) -> Option<&'static str> {
+    let key = normalize::nfc_lower(name.trim());
+    [ALL_WORKSPACE_NAME, UNASSIGNED_WORKSPACE_NAME]
+        .into_iter()
+        .find(|reserved| key == normalize::nfc_lower(reserved))
+}
+
+/// Shared by ordinary matching and prepared membership so their word rules
+/// remain identical. Callers supply already-normalized tokens.
+fn words_match<'a>(
+    session: &Session,
+    includes: impl IntoIterator<Item = &'a str>,
+    excludes: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    includes
+        .into_iter()
+        .all(|word| token_matches(session, word))
+        && !excludes
+            .into_iter()
+            .any(|word| token_matches(session, word))
+}
+
+/// The synthetic scope is never stored as a workspace or a reserved id. The
+/// existing JSON field stays an optional workspace id; synthetic scopes save
+/// as null, and every startup still opens All.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Option<String>", into = "Option<String>")]
+pub(crate) enum WorkspaceScope {
+    #[default]
+    All,
+    Unassigned,
+    Workspace(String),
+}
+
+impl From<Option<String>> for WorkspaceScope {
+    fn from(id: Option<String>) -> Self {
+        id.map_or(Self::All, Self::Workspace)
+    }
+}
+
+impl From<WorkspaceScope> for Option<String> {
+    fn from(scope: WorkspaceScope) -> Self {
+        match scope {
+            WorkspaceScope::Workspace(id) => Some(id),
+            WorkspaceScope::All | WorkspaceScope::Unassigned => None,
+        }
+    }
+}
+
+impl WorkspaceScope {
+    pub(crate) fn id(&self) -> Option<&str> {
+        match self {
+            Self::Workspace(id) => Some(id),
+            Self::All | Self::Unassigned => None,
+        }
+    }
+}
+
+/// Prepared once per membership rebuild, rather than normalizing the same
+/// words and linearly searching folder selections for every session.
+struct PreparedWorkspace<'a> {
+    folders: HashSet<&'a Path>,
+    includes: Vec<String>,
+    excludes: Vec<String>,
+}
+
+impl<'a> PreparedWorkspace<'a> {
+    fn new(workspace: &'a Workspace) -> Self {
+        let words = |text: &str| {
+            normalize::nfc_lower(text)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        };
+        Self {
+            folders: workspace.folders.iter().map(PathBuf::as_path).collect(),
+            includes: words(&workspace.includes),
+            excludes: words(&workspace.excludes),
+        }
+    }
+
+    fn matches(&self, session: &Session) -> bool {
+        (self.folders.is_empty() || self.folders.contains(session.cwd.as_path()))
+            && words_match(
+                session,
+                self.includes.iter().map(String::as_str),
+                self.excludes.iter().map(String::as_str),
+            )
+    }
+}
+
+/// Indexed by the current session vector, independent of ordinary UI filters.
+pub(crate) fn membership(sessions: &[Session], workspaces: &[Workspace]) -> Vec<bool> {
+    let prepared: Vec<_> = workspaces.iter().map(PreparedWorkspace::new).collect();
+    sessions
+        .iter()
+        .map(|session| prepared.iter().any(|workspace| workspace.matches(session)))
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Workspace {
@@ -65,11 +169,8 @@ impl Workspace {
             return false;
         }
         let includes = normalize::nfc_lower(&self.includes);
-        if !includes.split_whitespace().all(|t| token_matches(s, t)) {
-            return false;
-        }
         let excludes = normalize::nfc_lower(&self.excludes);
-        !excludes.split_whitespace().any(|t| token_matches(s, t))
+        words_match(s, includes.split_whitespace(), excludes.split_whitespace())
     }
 
     pub(crate) fn has_folder(&self, folder: &Path) -> bool {
@@ -90,12 +191,11 @@ impl Workspace {
 pub(crate) struct WorkspaceStore {
     version: u32,
     pub workspaces: Vec<Workspace>,
-    /// Id of the open workspace; `None` is the fixed "All" scope. In memory it
-    /// is this instance's scope; on disk it is the scope last opened by any
-    /// instance, read only at startup so another instance's cursor never
-    /// changes what this one lists.
+    /// This instance's open scope. JSON keeps the original optional-id format:
+    /// All and Unassigned serialize as null. Startup opens All; reload preserves
+    /// this instance's scope, never another instance's last cursor.
     #[serde(default)]
-    pub active: Option<String>,
+    pub active: WorkspaceScope,
 }
 
 /// One persisted edit, applied by id onto the current file contents.
@@ -105,8 +205,8 @@ pub(crate) enum WorkspaceChange {
     /// another instance deleted it meanwhile: the edit being saved wins).
     Upsert(Workspace),
     Remove(String),
-    /// Scope opened by this instance, remembered for the next startup.
-    Opened(Option<String>),
+    /// Scope opened by this instance, saved in the legacy optional-id format.
+    Opened(WorkspaceScope),
 }
 
 impl Default for WorkspaceStore {
@@ -114,7 +214,7 @@ impl Default for WorkspaceStore {
         Self {
             version: STORE_VERSION,
             workspaces: Vec::new(),
-            active: None,
+            active: WorkspaceScope::All,
         }
     }
 }
@@ -134,9 +234,7 @@ impl WorkspaceStore {
             bail!("unsupported workspace version {}", store.version);
         }
         store.sort();
-        if store.active_index().is_none() {
-            store.active = None;
-        }
+        store.validate_active();
         Ok(store)
     }
 
@@ -144,14 +242,14 @@ impl WorkspaceStore {
     /// `active` (the last scope of whichever instance saved last) is dropped.
     pub(crate) fn load_at_startup(path: &Path) -> Result<Self> {
         let mut store = Self::load(path)?;
-        store.active = None;
+        store.active = WorkspaceScope::All;
         Ok(store)
     }
 
     /// Atomic whole-file replace. Callers outside tests go through
     /// [`Self::commit`] so the replace starts from the current file. No fsync:
-    /// the file is rewritten on every workspace cursor move, and losing the
-    /// latest move in a crash only reopens the previous scope.
+    /// the file is rewritten on every workspace cursor move; startup ignores
+    /// the saved cursor and always opens All.
     fn save(&self, path: &Path) -> Result<()> {
         crate::store_lock::replace_file(path, &serde_json::to_vec_pretty(self)?)
     }
@@ -165,7 +263,7 @@ impl WorkspaceStore {
                 }
             }
             WorkspaceChange::Remove(id) => self.workspaces.retain(|w| &w.id != id),
-            WorkspaceChange::Opened(id) => self.active = id.clone(),
+            WorkspaceChange::Opened(scope) => self.active = scope.clone(),
         }
     }
 
@@ -212,7 +310,7 @@ impl WorkspaceStore {
     }
 
     pub(crate) fn active_index(&self) -> Option<usize> {
-        let id = self.active.as_deref()?;
+        let id = self.active.id()?;
         self.workspaces.iter().position(|w| w.id == id)
     }
 
@@ -224,15 +322,22 @@ impl WorkspaceStore {
     pub(crate) fn set_active(&mut self, idx: Option<usize>) {
         self.active = idx
             .and_then(|i| self.workspaces.get(i))
-            .map(|w| w.id.clone());
+            .map(|w| w.id.clone())
+            .into();
+    }
+
+    pub(crate) fn validate_active(&mut self) {
+        if matches!(self.active, WorkspaceScope::Workspace(_)) && self.active_index().is_none() {
+            self.active = WorkspaceScope::All;
+        }
     }
 
     /// Whether `name` is free for the workspace at `except` (case-insensitive,
-    /// trimmed). "All" is reserved: the palette lists every workspace as
-    /// `Open Workspace <name>`, so names must identify one row.
+    /// trimmed). Fixed-scope names are reserved because the palette labels each
+    /// workspace `Open Workspace <name>` and must distinguish every row.
     pub(crate) fn name_available(&self, name: &str, except: Option<usize>) -> bool {
         let key = normalize::nfc_lower(name.trim());
-        if key == normalize::nfc_lower(ALL_WORKSPACE_NAME) {
+        if reserved_name(name).is_some() {
             return false;
         }
         !self
@@ -318,6 +423,70 @@ mod tests {
     }
 
     #[test]
+    fn prepared_membership_matches_the_existing_rule_and_unions_workspaces() {
+        let mut api = Workspace::new("a".into(), "A".into());
+        api.folders = vec![PathBuf::from("/a/api")];
+        api.includes = "DEPLOY café".into();
+        api.excludes = "skip".into();
+        let mut title_only = Workspace::new("b".into(), "B".into());
+        title_only.includes = "release".into();
+        let mut sessions = vec![
+            session("/a/api", "deploy café"),
+            session("/a/api", "deploy café skip"),
+            session("/b/api", "deploy café"),
+            session("/a/api", "deploy"),
+            session("/other", "release"),
+        ];
+        sessions[3].assistant_blob = "café".into();
+        sessions[2].id = "long-session-id".into();
+        let workspaces = vec![api, title_only];
+        for workspace in &workspaces {
+            let prepared = PreparedWorkspace::new(workspace);
+            for session in &sessions {
+                assert_eq!(prepared.matches(session), workspace.matches(session));
+            }
+        }
+        assert_eq!(
+            membership(&sessions, &workspaces),
+            [true, false, false, true, true]
+        );
+        assert_eq!(membership(&sessions, &[]), [false; 5]);
+        assert_eq!(
+            membership(&sessions, &[Workspace::new("all".into(), "Any".into())]),
+            [true; 5]
+        );
+
+        let mut by_id = Workspace::new("id".into(), "ID".into());
+        by_id.includes = "LONG-SESSION".into();
+        assert_eq!(
+            membership(&sessions, &[by_id]),
+            [false, false, true, false, false]
+        );
+    }
+
+    #[test]
+    fn unassigned_scope_keeps_the_existing_store_format_and_startup_behavior() {
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let path = root.path.with_file_name("workspaces.json");
+        let mut store = WorkspaceStore {
+            active: WorkspaceScope::Unassigned,
+            ..Default::default()
+        };
+        store.validate_active();
+        assert_eq!(store.active, WorkspaceScope::Unassigned);
+        store.save(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(json["version"], STORE_VERSION);
+        assert!(json["active"].is_null());
+        assert_eq!(json["workspaces"], serde_json::json!([]));
+        assert_eq!(
+            WorkspaceStore::load_at_startup(&path).unwrap().active,
+            WorkspaceScope::All
+        );
+        assert!(!store.name_available(" NONE-workspace ", None));
+    }
+
+    #[test]
     fn names_are_unique_case_insensitively_and_all_is_reserved() {
         let mut store = WorkspaceStore::default();
         store
@@ -379,9 +548,12 @@ mod tests {
         store.save(&path).unwrap();
         assert_eq!(WorkspaceStore::load(&path).unwrap(), store);
 
-        store.active = Some("missing".into());
+        store.active = WorkspaceScope::Workspace("missing".into());
         store.save(&path).unwrap();
-        assert_eq!(WorkspaceStore::load(&path).unwrap().active, None);
+        assert_eq!(
+            WorkspaceStore::load(&path).unwrap().active,
+            WorkspaceScope::All
+        );
     }
 
     #[test]
@@ -396,7 +568,7 @@ mod tests {
         store.save(&path).unwrap();
 
         let started = WorkspaceStore::load_at_startup(&path).unwrap();
-        assert_eq!(started.active, None);
+        assert_eq!(started.active, WorkspaceScope::All);
         assert_eq!(started.workspaces, store.workspaces);
     }
 
@@ -416,14 +588,14 @@ mod tests {
             &path,
             &[
                 WorkspaceChange::Upsert(web.clone()),
-                WorkspaceChange::Opened(Some("web".into())),
+                WorkspaceChange::Opened(WorkspaceScope::Workspace("web".into())),
             ],
         )
         .unwrap();
         let stored = WorkspaceStore::load(&path).unwrap();
         let names: Vec<&str> = stored.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["Api", "Web"]);
-        assert_eq!(stored.active.as_deref(), Some("web"));
+        assert_eq!(stored.active.id(), Some("web"));
 
         let mut renamed = web;
         renamed.name = "Frontend".into();
@@ -461,7 +633,7 @@ mod tests {
         let root = crate::ui::test_support::TempBookmarkStore::new();
         let path = root.path.with_file_name("workspaces.json");
         fs::write(&path, "not json").unwrap();
-        let change = WorkspaceChange::Opened(None);
+        let change = WorkspaceChange::Opened(WorkspaceScope::All);
         assert!(WorkspaceStore::commit(&path, &[change]).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
     }

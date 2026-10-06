@@ -1,7 +1,7 @@
 use super::state::{WorkspaceDialog, WorkspaceField};
 use crate::ui::test_support::*;
 use crate::ui::{App, Focus, Screen, UiMode};
-use crate::workspaces::{Workspace, WorkspaceStore};
+use crate::workspaces::{Workspace, WorkspaceScope, WorkspaceStore};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{backend::TestBackend, Terminal};
 use std::path::PathBuf;
@@ -63,6 +63,7 @@ fn dialog(app: &App) -> &WorkspaceDialog {
 fn on_api_dialog(app: &mut App) {
     on_pane(app);
     press(app, KeyCode::Down);
+    press(app, KeyCode::Down);
     press(app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
     assert_eq!(dialog(app).cursor_field(), Some(WorkspaceField::Name));
@@ -84,6 +85,210 @@ fn visible_ids(app: &App) -> Vec<String> {
         .iter()
         .map(|&i| app.sessions[i].id.clone())
         .collect()
+}
+
+fn on_unassigned(app: &mut App) {
+    app.open_workspace_pane();
+    press(app, KeyCode::Home);
+    press(app, KeyCode::Down);
+    assert_eq!(app.workspace_pane_cursor(), 1);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+}
+
+#[test]
+fn unassigned_is_the_complement_of_all_saved_workspace_conditions() {
+    let mut app = app_with_workspace();
+    // One selected folder can contain both matched and unmatched sessions.
+    let folder = app.sessions[0].cwd.clone();
+    for session in &mut app.sessions {
+        session.cwd = folder.clone();
+    }
+    app.workspaces.workspaces[0].folders = vec![folder];
+    app.workspaces.workspaces[0].includes = "leaf middle root".into();
+    app.workspaces.workspaces[0].excludes = "middle root".into();
+    // Includes are AND, so this first scope covers nothing.
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["leaf", "middle", "root"]);
+
+    app.workspaces.workspaces[0].includes.clear();
+    let mut other = Workspace::new("other".into(), "Other".into());
+    other.includes = "middle".into();
+    app.workspaces.upsert(other);
+    app.invalidate_workspace_membership();
+    app.recompute();
+    assert_eq!(visible_ids(&app), ["root"]);
+    assert!(rendered(&app, 140, 24).contains("Session[None-Workspace: 1]"));
+
+    app.filter.keyword = "absent".into();
+    app.recompute();
+    assert!(app.filtered.is_empty());
+    app.filter = crate::filter::Filter::default();
+    app.recompute();
+    assert_eq!(visible_ids(&app), ["root"]);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+}
+
+#[test]
+fn unassigned_handles_empty_stores_and_unrestricted_workspaces() {
+    let mut app = app_with_context_chain();
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["leaf", "middle", "root"]);
+    press(&mut app, KeyCode::Down);
+    assert!(app.workspace.new_row);
+    assert_eq!(app.workspace_pane_cursor(), 2);
+    assert_eq!(app.workspaces.active, WorkspaceScope::All);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+    app.workspaces
+        .upsert(Workspace::new("all".into(), "Any".into()));
+    app.invalidate_workspace_membership();
+    app.recompute();
+    assert!(app.filtered.is_empty());
+
+    let mut empty = empty_app();
+    on_unassigned(&mut empty);
+    assert!(empty.filtered.is_empty());
+    assert!(rendered(&empty, 80, 24).contains("[NONE-WORKSPACE]"));
+}
+
+#[test]
+fn unassigned_cannot_be_edited_or_deleted_and_new_draft_cancel_keeps_it() {
+    let mut app = app_with_workspace();
+    on_unassigned(&mut app);
+    for code in [KeyCode::Enter, KeyCode::Delete] {
+        press(&mut app, code);
+        assert_eq!(app.mode, UiMode::Table);
+    }
+    ctrl(&mut app, 'd');
+    assert_eq!(app.mode, UiMode::Table);
+    assert_eq!(app.workspaces.workspaces.len(), 1);
+    press(&mut app, KeyCode::Char('+'));
+    assert_eq!(app.mode, UiMode::WorkspaceEdit);
+    type_text(&mut app, "New Scope");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+    assert_eq!(app.workspace_pane_cursor(), 1);
+    press(&mut app, KeyCode::Right);
+    on_pane(&mut app);
+    assert_eq!(app.workspace_pane_cursor(), 1);
+}
+
+#[test]
+fn workspace_save_and_delete_invalidate_unassigned_membership() {
+    let mut app = app_with_workspace();
+    app.workspaces.workspaces[0].includes = "leaf".into();
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["middle", "root"]);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    let includes = &mut app.workspace.dialog.as_mut().unwrap().includes;
+    includes.select_all = true;
+    type_text(&mut app, "middle");
+    save(&mut app);
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["leaf", "root"]);
+    press(&mut app, KeyCode::Down);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["leaf", "middle", "root"]);
+}
+
+#[test]
+fn session_scan_replaces_membership_even_when_the_session_count_is_unchanged() {
+    let mut app = app_with_workspace();
+    app.workspaces.workspaces[0].includes = "leaf".into();
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["middle", "root"]);
+    let mut sessions = app.sessions.clone();
+    sessions[0].search_blob = "renamed".into();
+    sessions[1].search_blob = "leaf".into();
+    sessions.reverse();
+    app.apply_session_scan(
+        crate::scan::ScanResult {
+            sessions,
+            scanned_files: 3,
+            reparsed_files: 2,
+        },
+        None,
+    );
+    assert_eq!(visible_ids(&app), ["root", "leaf"]);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+}
+
+#[test]
+fn unassigned_folder_counts_and_bookmark_filters_use_the_same_scope() {
+    let mut app = app_with_workspace();
+    app.workspaces.workspaces[0].includes = "leaf".into();
+    let root = app.sessions[2].clone();
+    app.bookmarks.set(&root, true);
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["root", "middle"]);
+    app.filter.bookmarked_only = true;
+    app.filter.folders.insert("root".into());
+    app.recompute();
+    app.open_folder_modal();
+    assert_eq!(app.folder_counts.get("root"), Some(&1));
+    assert!(!app.folder_counts.contains_key("leaf"));
+    assert!(!app.folder_counts.contains_key("middle"));
+}
+
+#[test]
+fn unassigned_context_jump_and_back_restore_the_scope() {
+    let mut app = app_with_workspace();
+    app.workspaces.workspaces[0].includes = "middle".into();
+    on_unassigned(&mut app);
+    press(&mut app, KeyCode::Right);
+    ctrl(&mut app, 'o');
+    assert_eq!(app.current().unwrap().id, "middle");
+    assert_eq!(app.workspaces.active, WorkspaceScope::All);
+    app.return_to_jump_origin();
+    assert_eq!(app.current().unwrap().id, "leaf");
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+}
+
+#[test]
+fn unassigned_palette_opens_and_close_returns_to_all() {
+    let mut app = app_with_context_chain();
+    ctrl(&mut app, 'w');
+    assert_eq!(
+        app.quick.as_ref().unwrap().items[0].label,
+        "Open Workspace None-Workspace"
+    );
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+    assert_eq!(app.focus, Focus::Table);
+    ctrl(&mut app, 'w');
+    assert_eq!(
+        app.quick.as_ref().unwrap().items[0].label,
+        "Close Workspace"
+    );
+    assert!(app.quick.as_ref().unwrap().items[0].enabled);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.workspaces.active, WorkspaceScope::All);
+}
+
+#[test]
+fn reload_keeps_unassigned_open_and_recalculates_changed_workspace_rules() {
+    let root = TempBookmarkStore::new();
+    let path = root.path.with_file_name("workspaces.json");
+    let mut app = app_with_workspace();
+    app.workspaces_path = Some(path.clone());
+    app.workspaces.workspaces[0].includes = "leaf".into();
+    on_unassigned(&mut app);
+    assert_eq!(visible_ids(&app), ["middle", "root"]);
+    let mut changed = app.workspaces.workspaces[0].clone();
+    changed.includes = "middle".into();
+    WorkspaceStore::commit(
+        &path,
+        &[crate::workspaces::WorkspaceChange::Upsert(changed)],
+    )
+    .unwrap();
+    app.reload_shared_stores();
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+    assert_eq!(visible_ids(&app), ["leaf", "root"]);
 }
 
 fn names(app: &App) -> Vec<String> {
@@ -108,12 +313,13 @@ fn left_opens_the_pane_right_and_esc_close_it_and_profile_returns_to_it() {
 
     on_pane(&mut app);
     press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Left);
     assert_eq!(app.screen, Screen::Profile);
     press(&mut app, KeyCode::Right);
     assert_eq!(app.screen, Screen::Session);
     assert_eq!(app.focus, Focus::Workspaces, "→ retraces ← from the pane");
-    assert_eq!(app.workspace_pane_cursor(), 1, "on the open workspace");
+    assert_eq!(app.workspace_pane_cursor(), 2, "on the open workspace");
 }
 
 #[test]
@@ -124,23 +330,24 @@ fn pane_cursor_is_the_scope_and_the_new_row_shows_all() {
     assert_eq!(app.filtered.len(), 3, "All lists every session");
 
     press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     assert_eq!(app.active_workspace_name(), Some("Api"));
     assert_eq!(visible_ids(&app), ["leaf"]);
     assert_eq!(app.mode, UiMode::Table, "moving opens no dialog");
 
     press(&mut app, KeyCode::Down);
     assert!(app.workspace.new_row);
-    assert_eq!(app.workspace_pane_cursor(), 2);
+    assert_eq!(app.workspace_pane_cursor(), 3);
     assert_eq!(app.active_workspace_name(), None);
     assert_eq!(app.filtered.len(), 3);
     press(&mut app, KeyCode::Down);
-    assert_eq!(app.workspace_pane_cursor(), 2, "the new row is last");
+    assert_eq!(app.workspace_pane_cursor(), 3, "the new row is last");
 
     press(&mut app, KeyCode::Home);
     assert!(!app.workspace.new_row);
     assert_eq!(app.workspace_pane_cursor(), 0);
     press(&mut app, KeyCode::End);
-    assert_eq!(app.workspace_pane_cursor(), 2, "End goes to the new row");
+    assert_eq!(app.workspace_pane_cursor(), 3, "End goes to the new row");
     press(&mut app, KeyCode::Up);
     assert_eq!(app.active_workspace_name(), Some("Api"));
 
@@ -156,6 +363,7 @@ fn enter_opens_the_edit_dialog_over_the_session_screen_and_esc_cancels() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::Table, "Enter on All does nothing");
 
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
@@ -192,7 +400,7 @@ fn new_row_enter_opens_a_new_workspace_that_exists_only_once_saved() {
     assert!(!app.workspace.new_row);
     assert_eq!(
         app.workspace_pane_cursor(),
-        2,
+        3,
         "the pane cursor lands on it"
     );
     assert_eq!(app.status_msg.as_deref(), Some("Workspace added: Web"));
@@ -202,6 +410,7 @@ fn new_row_enter_opens_a_new_workspace_that_exists_only_once_saved() {
 fn plus_opens_a_new_workspace_from_any_row_and_cancel_keeps_the_pane() {
     let mut app = app_with_workspace();
     on_pane(&mut app);
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down); // On "Api": `+` does not need the new row.
     press(&mut app, KeyCode::Char('+'));
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
@@ -237,7 +446,7 @@ fn the_pane_lists_workspaces_by_name_as_text() {
         ["10x", "Alpha", "Api", "beta", "\u{D55C}\u{AE00}"]
     );
     assert_eq!(app.active_workspace_name(), Some("10x"));
-    assert_eq!(app.workspace_pane_cursor(), 1);
+    assert_eq!(app.workspace_pane_cursor(), 2);
 
     // A rename moves the workspace to its new place; the cursor follows it.
     press(&mut app, KeyCode::Enter);
@@ -251,7 +460,7 @@ fn the_pane_lists_workspaces_by_name_as_text() {
         ["Alpha", "Api", "beta", "zeta", "\u{D55C}\u{AE00}"]
     );
     assert_eq!(app.active_workspace_name(), Some("zeta"));
-    assert_eq!(app.workspace_pane_cursor(), 4);
+    assert_eq!(app.workspace_pane_cursor(), 5);
 }
 
 #[test]
@@ -263,6 +472,7 @@ fn duplicate_empty_and_reserved_names_are_refused_with_the_dialog_open() {
         ("api", "already exists"),
         ("  ", "cannot be empty"),
         ("all", "reserved"),
+        ("none-workspace", "reserved"),
     ] {
         let d = app.workspace.dialog.as_mut().unwrap();
         d.name = crate::ui::TextInput::new(String::new());
@@ -664,6 +874,7 @@ fn ctrl_d_in_the_pane_deletes_after_confirmation_and_keeps_the_row() {
         .push(Workspace::new("ws-web".into(), "Web".into()));
     on_pane(&mut app);
     press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     ctrl(&mut app, 'd');
     assert_eq!(app.mode, UiMode::WorkspaceDeleteConfirm);
     press(&mut app, KeyCode::Enter); // Cancel is focused first.
@@ -730,7 +941,8 @@ fn ctrl_w_palette_opens_and_closes_workspaces_on_the_session_screen() {
     ctrl(&mut app, 'w');
     let state = app.quick.as_ref().expect("palette");
     assert_eq!(state.input.value, "open workspace ");
-    assert_eq!(state.items[0].label, "Open Workspace Api");
+    assert_eq!(state.items[0].label, "Open Workspace None-Workspace");
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.screen, Screen::Session);
     assert_eq!(app.active_workspace_name(), Some("Api"));
@@ -751,6 +963,7 @@ fn ctrl_w_palette_opens_and_closes_workspaces_on_the_session_screen() {
         labels,
         [
             "Close Workspace",
+            "Open Workspace None-Workspace",
             "Open Workspace Api",
             "Open Workspace Window"
         ]
@@ -808,10 +1021,14 @@ fn saves_reach_the_file_and_a_restart_opens_all() {
     save(&mut app);
 
     let stored = WorkspaceStore::load(&path).expect("saved store");
-    assert_eq!(stored.active.as_deref(), Some("ws-api"));
+    assert_eq!(stored.active.id(), Some("ws-api"));
     assert_eq!(stored.workspaces[0].includes, "leaf");
     let restarted = WorkspaceStore::load_at_startup(&path).expect("saved store");
-    assert_eq!(restarted.active, None, "a start opens All");
+    assert_eq!(
+        restarted.active,
+        crate::workspaces::WorkspaceScope::All,
+        "a start opens All"
+    );
     assert_eq!(restarted.workspaces[0].includes, "leaf");
 }
 
@@ -846,7 +1063,7 @@ fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() 
     let pane: Vec<String> = text
         .lines()
         .skip(6)
-        .take(5)
+        .take(6)
         .map(|l| l.chars().skip(1).take(22).collect::<String>())
         .collect();
     let rule = "─".repeat(22);
@@ -854,6 +1071,7 @@ fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() 
         pane.iter().map(|l| l.trim_end()).collect::<Vec<_>>(),
         [
             " [ALL]",
+            " [NONE-WORKSPACE]",
             rule.as_str(),
             " Api",
             rule.as_str(),
@@ -1108,6 +1326,7 @@ fn panes_without_focus_fade_like_the_session_screen() {
     // Session screen, workspace pane focused: the session table fades.
     on_pane(&mut app);
     press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     let buf = draw_buffer(&app);
     let (pane, table) = (0..24, 24..140);
     assert_eq!(
@@ -1115,7 +1334,7 @@ fn panes_without_focus_fade_like_the_session_screen() {
         app.theme.selection_bg
     );
     // Unselected fixed rows take the key-hint color; workspace names do not.
-    for fixed in ["[ALL]", "[NEW WORKSPACE]"] {
+    for fixed in ["[ALL]", "[NONE-WORKSPACE]", "[NEW WORKSPACE]"] {
         assert_eq!(
             cell_at(&buf, fixed, pane.clone()).fg,
             app.theme.key_hint,

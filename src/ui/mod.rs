@@ -411,12 +411,11 @@ impl App {
     /// Rebuilds the visible list (filters AND the open workspace), keeping
     /// activity order within each bookmark group.
     fn rebuild_filtered(&mut self) {
-        self.filtered = filter::apply_with_bookmarks(&self.sessions, &self.filter, |session| {
+        let mut filtered = filter::apply_with_bookmarks(&self.sessions, &self.filter, |session| {
             self.bookmarks.contains(session)
         });
-        if let Some(ws) = self.workspaces.active_workspace() {
-            self.filtered.retain(|&idx| ws.matches(&self.sessions[idx]));
-        }
+        self.retain_workspace_scope(&mut filtered);
+        self.filtered = filtered;
         self.filtered
             .sort_by_cached_key(|&idx| !self.bookmarks.contains(&self.sessions[idx]));
     }
@@ -707,6 +706,7 @@ impl App {
     }
 
     fn rebuild_all_folders(&mut self) {
+        self.invalidate_workspace_membership();
         self.all_folders = folder_names_by_latest(&self.sessions);
         self.refresh_workspace_folders();
     }

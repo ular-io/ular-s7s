@@ -5,7 +5,7 @@
 
 use super::state::{WorkspaceDialog, FIRST_FOLDER_ROW, SEARCH_ROW};
 use crate::ui::{App, Focus, Screen, UiMode};
-use crate::workspaces::{Workspace, WorkspaceChange, WorkspaceStore};
+use crate::workspaces::{Workspace, WorkspaceChange, WorkspaceScope, WorkspaceStore};
 use std::path::PathBuf;
 
 impl App {
@@ -25,19 +25,39 @@ impl App {
         self.workspace.new_row = false;
     }
 
-    /// Row of the workspace pane cursor: 0 = "All", then the stored
-    /// workspaces, then `[NEW WORKSPACE]`.
+    /// Cursor rows: All, Unassigned, stored workspaces, New Workspace.
     pub(crate) fn workspace_pane_cursor(&self) -> usize {
-        match self.workspaces.active_index() {
-            Some(i) => i + 1,
-            None if self.workspace.new_row => self.workspaces.workspaces.len() + 1,
-            None => 0,
+        match &self.workspaces.active {
+            WorkspaceScope::Unassigned => 1,
+            WorkspaceScope::Workspace(_) => self.workspaces.active_index().map_or(0, |i| i + 2),
+            WorkspaceScope::All if self.workspace.new_row => self.workspaces.workspaces.len() + 2,
+            WorkspaceScope::All => 0,
         }
     }
 
     /// Name of the open workspace, or `None` while "All" is open.
     pub(crate) fn active_workspace_name(&self) -> Option<&str> {
+        if self.workspaces.active == WorkspaceScope::Unassigned {
+            return Some(crate::workspaces::UNASSIGNED_WORKSPACE_NAME);
+        }
         self.workspaces.active_workspace().map(|w| w.name.as_str())
+    }
+
+    pub(crate) fn invalidate_workspace_membership(&mut self) {
+        *self.workspace.membership.get_mut() = None;
+    }
+
+    /// Shared by the session list and the folder filter's counts.
+    pub(crate) fn retain_workspace_scope(&self, indices: &mut Vec<usize>) {
+        if self.workspaces.active == WorkspaceScope::Unassigned {
+            let mut cache = self.workspace.membership.borrow_mut();
+            let membership = cache.get_or_insert_with(|| {
+                crate::workspaces::membership(&self.sessions, &self.workspaces.workspaces)
+            });
+            indices.retain(|&idx| !membership[idx]);
+        } else if let Some(ws) = self.workspaces.active_workspace() {
+            indices.retain(|&idx| ws.matches(&self.sessions[idx]));
+        }
     }
 
     /// Applies `changes` onto the current file (`WorkspaceStore::commit`), so
@@ -101,8 +121,20 @@ impl App {
     /// Opens the workspace at `idx` (`None` = "All"): the scope every session
     /// list shows from now on. Session selection restarts at the top.
     pub(crate) fn set_active_workspace(&mut self, idx: Option<usize>) {
+        let scope = idx
+            .and_then(|i| self.workspaces.workspaces.get(i))
+            .map(|ws| ws.id.clone())
+            .into();
+        self.set_workspace_scope(scope);
+    }
+
+    pub(crate) fn set_workspace_scope(&mut self, scope: WorkspaceScope) {
         let before = self.workspaces.active.clone();
-        self.workspaces.set_active(idx);
+        self.workspaces.active = scope;
+        self.workspaces.validate_active();
+        if self.workspaces.active != WorkspaceScope::All {
+            self.workspace.new_row = false;
+        }
         if self.workspaces.active != before {
             self.persist_workspace_changes(&[self.opened_change()]);
             self.workspace_scope_changed();
@@ -116,17 +148,19 @@ impl App {
         self.recompute();
     }
 
-    /// Restores a workspace by id (context-source Back). An id that no longer
-    /// exists opens "All".
-    pub(crate) fn restore_active_workspace(&mut self, id: Option<&str>) {
-        let idx = id.and_then(|id| self.workspaces.workspaces.iter().position(|w| w.id == id));
-        self.set_active_workspace(idx);
-    }
-
     /// Palette `Open Workspace <name>` / `Close Workspace`: opens the scope and
     /// shows it on the Session screen with the table focused.
     pub(crate) fn open_workspace_from_palette(&mut self, idx: Option<usize>) {
         self.set_active_workspace(idx);
+        self.show_workspace_from_palette();
+    }
+
+    pub(crate) fn open_unassigned_workspace_from_palette(&mut self) {
+        self.set_workspace_scope(WorkspaceScope::Unassigned);
+        self.show_workspace_from_palette();
+    }
+
+    fn show_workspace_from_palette(&mut self) {
         self.switch_screen(Screen::Session);
         self.focus = Focus::Table;
         self.status_msg = Some(match self.active_workspace_name() {
@@ -185,21 +219,24 @@ impl App {
     /// Moves the workspace pane cursor, opening the row's workspace.
     /// `isize::MIN`/`MAX` jump to "All"/`[NEW WORKSPACE]`, which shows "All".
     fn workspace_pane_move(&mut self, delta: isize) {
-        let new_row = self.workspaces.workspaces.len() + 1;
+        let new_row = self.workspaces.workspaces.len() + 2;
         let next = (self.workspace_pane_cursor() as isize)
             .saturating_add(delta)
             .clamp(0, new_row as isize) as usize;
         self.workspace.new_row = next == new_row;
-        let idx = if self.workspace.new_row {
-            None
+        if next == 1 {
+            self.set_workspace_scope(WorkspaceScope::Unassigned);
         } else {
-            next.checked_sub(1)
-        };
-        self.set_active_workspace(idx);
+            let idx = if self.workspace.new_row {
+                None
+            } else {
+                next.checked_sub(2)
+            };
+            self.set_active_workspace(idx);
+        }
     }
 
-    /// Enter on a stored workspace row: edits it in the dialog. "All" has
-    /// nothing to edit, so Enter there does nothing.
+    /// Enter edits a stored workspace. All and Unassigned have nothing to edit.
     fn open_workspace_dialog(&mut self) {
         let Some(ws) = self.workspaces.active_workspace().cloned() else {
             return;
@@ -458,11 +495,10 @@ impl App {
             .workspaces
             .iter()
             .position(|w| w.id == dialog.draft.id);
-        let reserved = crate::normalize::nfc_lower(crate::workspaces::ALL_WORKSPACE_NAME);
         let refusal = if name.is_empty() {
             Some("Workspace name cannot be empty".to_string())
-        } else if crate::normalize::nfc_lower(&name) == reserved {
-            Some("The name All is reserved for every session".to_string())
+        } else if let Some(reserved) = crate::workspaces::reserved_name(&name) {
+            Some(format!("The name {reserved} is reserved for a fixed scope"))
         } else if !self.workspaces.name_available(&name, stored) {
             Some(format!("A workspace named '{name}' already exists"))
         } else {
@@ -479,7 +515,9 @@ impl App {
         let created = dialog.created;
         let mut changes = vec![WorkspaceChange::Upsert(ws.clone())];
         if created {
-            changes.push(WorkspaceChange::Opened(Some(ws.id.clone())));
+            changes.push(WorkspaceChange::Opened(WorkspaceScope::Workspace(
+                ws.id.clone(),
+            )));
         }
         // E.g. another instance saved a workspace under this name meanwhile.
         if !self.persist_workspace_changes(&changes) {
@@ -493,8 +531,9 @@ impl App {
         self.mode = UiMode::Table;
         let id = ws.id.clone();
         self.workspaces.upsert(ws);
+        self.invalidate_workspace_membership();
         if created {
-            self.workspaces.active = Some(id);
+            self.workspaces.active = WorkspaceScope::Workspace(id);
             self.workspace.new_row = false;
         }
         self.workspace_scope_changed();
@@ -516,6 +555,8 @@ impl App {
         let Some(idx) = self.workspaces.active_index() else {
             self.status_msg = Some(if self.workspace.new_row {
                 "Select a workspace to delete".to_string()
+            } else if self.workspaces.active == WorkspaceScope::Unassigned {
+                "The None-Workspace scope cannot be deleted".to_string()
             } else {
                 "The All workspace cannot be deleted".to_string()
             });
@@ -535,6 +576,7 @@ impl App {
             return;
         }
         let removed = self.workspaces.workspaces.remove(idx);
+        self.invalidate_workspace_membership();
         // The cursor stays on the same row: the next workspace, else the previous.
         let len = self.workspaces.workspaces.len();
         let next = if len == 0 {

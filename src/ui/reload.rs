@@ -32,11 +32,10 @@ impl App {
                 Ok(mut store) => {
                     // The file's `active` is another instance's last scope.
                     store.active = self.workspaces.active.clone();
-                    if store.active_index().is_none() {
-                        store.active = None;
-                    }
+                    store.validate_active();
                     scope_changed = store.active != self.workspaces.active;
                     self.workspaces = store;
+                    self.invalidate_workspace_membership();
                 }
                 Err(err) => errors.push(format!("workspaces.json: {err}")),
             }
@@ -146,7 +145,9 @@ mod tests {
             &path,
             &[
                 WorkspaceChange::Upsert(theirs),
-                WorkspaceChange::Opened(Some("theirs".into())),
+                WorkspaceChange::Opened(crate::workspaces::WorkspaceScope::Workspace(
+                    "theirs".into(),
+                )),
             ],
         )
         .unwrap();

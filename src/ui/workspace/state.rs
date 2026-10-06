@@ -1,5 +1,5 @@
 //! Workspace state: the Session screen's workspace pane (the `[NEW WORKSPACE]`
-//! row flag and list scroll) and the edit dialog (a draft of one workspace,
+//! row flag, list scroll, and membership cache) and the edit dialog (a draft of one workspace,
 //! its text fields, its stable folder rows and their search, and the button
 //! row). The workspace list cursor is not stored here — it is
 //! `WorkspaceStore::active`, so the list row the user sits on is always the
@@ -7,7 +7,7 @@
 
 use crate::ui::TextInput;
 use crate::workspaces::Workspace;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -179,6 +179,10 @@ impl WorkspaceDialog {
 
 #[derive(Default)]
 pub struct WorkspaceScreenState {
+    /// Lazy membership over the current session vector and saved workspaces.
+    /// Session replacement/removal and saved workspace changes invalidate it;
+    /// ordinary filters and scope navigation reuse it.
+    pub(crate) membership: RefCell<Option<Vec<bool>>>,
     /// The workspace pane cursor is on `[NEW WORKSPACE]`, below the stored
     /// workspaces. "All" is open meanwhile, and the flag counts only while it is.
     pub new_row: bool,
