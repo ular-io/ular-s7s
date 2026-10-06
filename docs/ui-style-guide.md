@@ -202,6 +202,11 @@ Additional rules:
 ### Dropdown rows
 
 - The profile and model lists carry a `soft_dim()` note beside each label.
+- Single-select rows (the profile and model lists) mark only the committed
+  value, with a bold `●`; every other row gets a one-cell blank in its place,
+  so labels stay aligned and no `○` is drawn. An open popup already reads as a
+  list of choices, so an empty-circle mark on every other row is noise. The
+  cursor row is told apart by `selection_bg`, the committed value by `●`.
 - Every folder list (folder dropdown, Change Folder pick list, folder filter,
   workspace folder checklist) ends each row with its session count as ` (N)`, right
   aligned and in `soft_dim()` (`text::count_note` + `text::fit_before_note`).
