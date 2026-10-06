@@ -1076,6 +1076,64 @@ fn new_session_model_dropdown_selects_and_passes_model() {
     assert_eq!(req.model.as_deref(), Some("opus"));
 }
 
+/// Screen rows of the whole terminal after drawing `app`.
+fn screen_rows(app: &App) -> Vec<String> {
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 34)).expect("terminal");
+    terminal
+        .draw(|f| crate::ui::render::draw(f, app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    let area = *buffer.area();
+    (0..area.height)
+        .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect()
+}
+
+/// Asserts each `needle` is on a popup row and that no row of the popup (the
+/// rows spanned by the needles) carries an empty-circle mark.
+fn assert_bullet_only(rows: &[String], needles: &[&str]) {
+    let lines: Vec<usize> = needles
+        .iter()
+        .map(|needle| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}:\n{}", rows.join("\n")))
+        })
+        .collect();
+    let (first, last) = (lines.iter().min().unwrap(), lines.iter().max().unwrap());
+    for row in &rows[*first..=*last] {
+        assert!(!row.contains('○'), "{}", rows.join("\n"));
+    }
+}
+
+/// Single-select dropdowns mark only the committed value with `●`; the other
+/// rows get a same-width blank, so labels stay aligned and no `○` is drawn.
+#[test]
+fn new_session_dropdowns_mark_only_the_committed_value() {
+    let mut app = app_with_profiles();
+    app.models.insert(
+        "profile-x".to_string(),
+        profile_models(Agent::Claude, &["opus", "fable", "sonnet"], Some("fable")),
+    );
+    app.selected = 1; // s2: profile-x (profile_idx 1), default model "fable".
+    open_new_session_at_profile_focus(&mut app);
+
+    app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open Profile
+    app.on_key_new_session(key(KeyCode::Up, KeyModifiers::NONE)); // cursor off the committed row
+    let rows = screen_rows(&app);
+    assert_bullet_only(&rows, &["┃   claude / Claude", "┃ ● claude / Team"]);
+
+    app.on_key_new_session(key(KeyCode::Esc, KeyModifiers::NONE)); // close the list only
+    app.on_key_new_session(key(KeyCode::Tab, KeyModifiers::NONE)); // Profile -> Model
+    app.on_key_new_session(key(KeyCode::Enter, KeyModifiers::NONE)); // open Model
+    let rows = screen_rows(&app);
+    assert_bullet_only(
+        &rows,
+        &["┃   Default", "┃   opus", "┃ ● fable", "┃   sonnet"],
+    );
+}
+
 #[test]
 fn new_session_default_model_passes_no_model() {
     let mut app = app_with_profiles();

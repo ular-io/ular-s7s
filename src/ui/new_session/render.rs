@@ -305,7 +305,8 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         };
 
         let items: Vec<ListItem> = if profile_open {
-            // Profile list: usage shown next to names, ● indicating committed selection, highlight background indicates cursor focus.
+            // Profile list: usage shown next to names, ● only on the committed row (other
+            // rows get a same-width blank, no ○), highlight background indicates cursor focus.
             let name_w = app
                 .profiles
                 .profiles
@@ -321,7 +322,7 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 .take(list_h)
                 .map(|(i, p)| {
                     let selected = i == state.profile_idx;
-                    let mark = if selected { "●" } else { "○" };
+                    let mark = if selected { "●" } else { " " };
                     let label = pad_w(&format!("{} / {}", p.agent.label(), p.name), name_w);
                     let mut spans = vec![
                         Span::styled(
@@ -344,7 +345,8 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 })
                 .collect()
         } else if model_open {
-            // Model list: ● indicating committed selection, label + description in soft dim, missing model in red.
+            // Model list: ● only on the committed row (same-width blank elsewhere), label +
+            // description in soft dim, missing model in red.
             let label_w = state
                 .model_options
                 .iter()
@@ -359,7 +361,7 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
                 .take(list_h)
                 .map(|(i, opt)| {
                     let selected = i == state.model_idx;
-                    let mark = if selected { "●" } else { "○" };
+                    let mark = if selected { "●" } else { " " };
                     let label = pad_w(&sanitize_single_line(&opt.label), label_w);
                     let note = sanitize_single_line(&opt.note);
                     let label_style = if opt.missing {
