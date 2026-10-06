@@ -30,7 +30,7 @@ pub(crate) const NEW_WORKSPACE_NAME: &str = "New Workspace";
 /// Reserved label of the fixed "every session" row; never a stored workspace name.
 pub(crate) const ALL_WORKSPACE_NAME: &str = "All";
 /// Plain name of the synthetic scope used in titles, messages, and the palette.
-pub(crate) const UNASSIGNED_WORKSPACE_NAME: &str = "None-Workspace";
+pub(crate) const UNASSIGNED_WORKSPACE_NAME: &str = "No Workspace";
 
 /// Canonical fixed-scope name, if a proposed workspace name would conflict.
 pub(crate) fn reserved_name(name: &str) -> Option<&'static str> {
@@ -483,7 +483,7 @@ mod tests {
             WorkspaceStore::load_at_startup(&path).unwrap().active,
             WorkspaceScope::All
         );
-        assert!(!store.name_available(" NONE-workspace ", None));
+        assert!(!store.name_available(" NO workspace ", None));
     }
 
     #[test]

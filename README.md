@@ -35,7 +35,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
 - **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
 - **Live-Session Markers**: Claude sessions that Claude Code is running in the background (after `←` on an empty prompt, `/bg`, or `claude --bg`) show `Ⓑ` before the title, and Claude or Antigravity sessions open in another terminal show `Ⓞ` (Codex sessions are not marked); the Prompt pane explains each marker (for `Ⓑ`: working, needs input, or done). Enter on a `Ⓑ` session asks whether to attach to it (Cancel is the default); a `Ⓞ` session cannot be opened, and neither can be deleted or renamed while it is live. Markers refresh every 30 seconds — [Details](docs/background-sessions.md).
-- **Workspaces**: Use `[NONE-WORKSPACE]` to find sessions outside every saved scope. Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it; s7s always starts with All open.
+- **Workspaces**: Use `[NO WORKSPACE]` to find sessions outside every saved scope. Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it; s7s always starts with All open.
 - **Project-Free Scratch Sessions**: Pick `[SCRATCH]` at the top of the New Session folder list to start an agent with no project attached — for a question or a quick check. It runs in a shared folder (`~/.config/s7s/scratch`) that is emptied on every start and carries a policy file telling the agent to ask you for a target directory before writing anything, so nothing important is left in a throwaway location.
 - **Inter-Session Context Sharing**: Feed summaries or full history of past sessions as bootstrap context when starting a new session (New Session with Context).
 - **Work Handoff**: Park a task you are not doing now in a new session (`s7s session handoff`). The parked session records the work order and stops without acting on it, and keeps a link back to the session it came from, so `ctrl+o` walks to the origin when the work is picked up later.
@@ -162,7 +162,7 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 
 `←` on the session list opens the workspace list on its left; the session list and
 Prompt stay, narrower (the Prompt is hidden when it would be under 40 columns). The
-fixed rows `[ALL]` and `[NONE-WORKSPACE]` come first; `[NEW WORKSPACE]` adds one
+fixed rows `[ALL]` and `[NO WORKSPACE]` come first; `[NEW WORKSPACE]` adds one
 and stays last. Dividers separate those rows from your workspaces, which are listed
 by name. The list cursor is the open scope, so the session list follows it as you
 move.
@@ -171,17 +171,17 @@ move.
 | :-- | :-- |
 | `↑` / `↓`, `home` / `end` | Open another workspace (`[NEW WORKSPACE]` shows All) |
 | `+` | Add a workspace from any row (same as `enter` on `[NEW WORKSPACE]`) |
-| `enter` | Edit the workspace in the edit dialog (nothing on `[ALL]` or `[NONE-WORKSPACE]`). On `[NEW WORKSPACE]`: add one in the same dialog |
+| `enter` | Edit the workspace in the edit dialog (nothing on `[ALL]` or `[NO WORKSPACE]`). On `[NEW WORKSPACE]`: add one in the same dialog |
 | `ctrl+d` / `del` | Delete the workspace after confirmation (sessions are untouched) |
 | `→` / `l`, `esc` | Close the list and return to the session list |
 | `←` / `h` | Go to Profile |
 | `/` | Keyword search (`esc` returns to the list, `enter` to the session list) |
 
-`[NONE-WORKSPACE]`, directly below `[ALL]`, shows sessions that match none of
+`[NO WORKSPACE]`, directly below `[ALL]`, shows sessions that match none of
 the saved workspaces, including their folder and include/exclude conditions.
 Ordinary filters still apply. With no workspaces it shows all sessions; a
 workspace without restrictions leaves it empty. It cannot be edited or deleted.
-The `ctrl+w` palette also offers `Open Workspace None-Workspace`.
+The `ctrl+w` palette also offers `Open Workspace No Workspace`.
 
 The edit dialog changes a draft of one workspace: its name, include/exclude words,
 and folders. It grows to show every folder, up to 90% of the terminal height. Nothing

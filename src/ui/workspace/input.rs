@@ -556,7 +556,7 @@ impl App {
             self.status_msg = Some(if self.workspace.new_row {
                 "Select a workspace to delete".to_string()
             } else if self.workspaces.active == WorkspaceScope::Unassigned {
-                "The None-Workspace scope cannot be deleted".to_string()
+                "The No Workspace scope cannot be deleted".to_string()
             } else {
                 "The All workspace cannot be deleted".to_string()
             });

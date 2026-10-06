@@ -479,7 +479,7 @@ mod tests {
             labels(&items),
             [
                 "Close Workspace",
-                "Open Workspace None-Workspace",
+                "Open Workspace No Workspace",
                 "Open Workspace AAA",
                 "Open Workspace bbb",
                 "Open Workspace ccc"
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(
             labels(&items),
             [
-                "Open Workspace None-Workspace",
+                "Open Workspace No Workspace",
                 "Open Workspace AAA",
                 "Close Workspace"
             ]

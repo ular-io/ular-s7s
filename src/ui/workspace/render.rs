@@ -28,7 +28,7 @@ pub(crate) const LIST_MAX_W: u16 = 24;
 /// case marks a fixed option (as `[SCRATCH]` does), and a divider separates each
 /// from the stored workspaces. Elsewhere "All" keeps its plain name.
 pub(crate) const ALL_WORKSPACE_LABEL: &str = "[ALL]";
-pub(crate) const UNASSIGNED_WORKSPACE_LABEL: &str = "[NONE-WORKSPACE]";
+pub(crate) const UNASSIGNED_WORKSPACE_LABEL: &str = "[NO WORKSPACE]";
 pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
 /// Label column of the dialog's unboxed rows (`" Matches "`, `" Search "`).
 const LABEL_W: usize = 10;

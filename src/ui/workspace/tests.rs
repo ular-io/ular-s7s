@@ -117,7 +117,7 @@ fn unassigned_is_the_complement_of_all_saved_workspace_conditions() {
     app.invalidate_workspace_membership();
     app.recompute();
     assert_eq!(visible_ids(&app), ["root"]);
-    assert!(rendered(&app, 140, 24).contains("Session[None-Workspace: 1]"));
+    assert!(rendered(&app, 140, 24).contains("Session[No Workspace: 1]"));
 
     app.filter.keyword = "absent".into();
     app.recompute();
@@ -148,7 +148,7 @@ fn unassigned_handles_empty_stores_and_unrestricted_workspaces() {
     let mut empty = empty_app();
     on_unassigned(&mut empty);
     assert!(empty.filtered.is_empty());
-    assert!(rendered(&empty, 80, 24).contains("[NONE-WORKSPACE]"));
+    assert!(rendered(&empty, 80, 24).contains("[NO WORKSPACE]"));
 }
 
 #[test]
@@ -255,7 +255,7 @@ fn unassigned_palette_opens_and_close_returns_to_all() {
     ctrl(&mut app, 'w');
     assert_eq!(
         app.quick.as_ref().unwrap().items[0].label,
-        "Open Workspace None-Workspace"
+        "Open Workspace No Workspace"
     );
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
@@ -472,7 +472,7 @@ fn duplicate_empty_and_reserved_names_are_refused_with_the_dialog_open() {
         ("api", "already exists"),
         ("  ", "cannot be empty"),
         ("all", "reserved"),
-        ("none-workspace", "reserved"),
+        ("no workspace", "reserved"),
     ] {
         let d = app.workspace.dialog.as_mut().unwrap();
         d.name = crate::ui::TextInput::new(String::new());
@@ -941,7 +941,7 @@ fn ctrl_w_palette_opens_and_closes_workspaces_on_the_session_screen() {
     ctrl(&mut app, 'w');
     let state = app.quick.as_ref().expect("palette");
     assert_eq!(state.input.value, "open workspace ");
-    assert_eq!(state.items[0].label, "Open Workspace None-Workspace");
+    assert_eq!(state.items[0].label, "Open Workspace No Workspace");
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.screen, Screen::Session);
@@ -963,7 +963,7 @@ fn ctrl_w_palette_opens_and_closes_workspaces_on_the_session_screen() {
         labels,
         [
             "Close Workspace",
-            "Open Workspace None-Workspace",
+            "Open Workspace No Workspace",
             "Open Workspace Api",
             "Open Workspace Window"
         ]
@@ -1071,7 +1071,7 @@ fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() 
         pane.iter().map(|l| l.trim_end()).collect::<Vec<_>>(),
         [
             " [ALL]",
-            " [NONE-WORKSPACE]",
+            " [NO WORKSPACE]",
             rule.as_str(),
             " Api",
             rule.as_str(),
@@ -1334,7 +1334,7 @@ fn panes_without_focus_fade_like_the_session_screen() {
         app.theme.selection_bg
     );
     // Unselected fixed rows take the key-hint color; workspace names do not.
-    for fixed in ["[ALL]", "[NONE-WORKSPACE]", "[NEW WORKSPACE]"] {
+    for fixed in ["[ALL]", "[NO WORKSPACE]", "[NEW WORKSPACE]"] {
         assert_eq!(
             cell_at(&buf, fixed, pane.clone()).fg,
             app.theme.key_hint,

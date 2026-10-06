@@ -28,7 +28,7 @@ workspace (`scratch.rs`).
 - Enter on a workspace row opens the **edit dialog** for it over the Session
   screen (`UiMode::WorkspaceEdit`, `App::open_workspace_dialog`). Enter on
   `[NEW WORKSPACE]`, or `+` on any row, opens it for a new workspace
-  (`App::open_new_workspace_dialog`). Enter on "All" or `[NONE-WORKSPACE]`
+  (`App::open_new_workspace_dialog`). Enter on "All" or `[NO WORKSPACE]`
   does nothing. Closing the dialog returns to the pane. There is no separate
   workspace screen.
 - Palette `Open Workspace Window` shows the pane from any screen.
@@ -64,9 +64,9 @@ workspace (`scratch.rs`).
 
 ### Sessions outside every workspace
 
-- The fixed `[NONE-WORKSPACE]` row follows `[ALL]`, before the divider and
+- The fixed `[NO WORKSPACE]` row follows `[ALL]`, before the divider and
   stored workspaces. It opens `WorkspaceScope::Unassigned` as soon as the
-  cursor moves onto it. The table title and palette use `None-Workspace`.
+  cursor moves onto it. The table title and palette use `No Workspace`.
 - A session is shown only if **none of the saved workspaces matches it**,
   including each workspace's full-path folder condition and include/exclude
   words. This is a complement of all saved scopes, not a test for an unselected
@@ -121,7 +121,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   (focused first) and Cancel, and Enter runs the focused one. ctrl/alt
   combinations do nothing, so the palette, `ctrl+u`, `ctrl+w`, `/`, and
   delete are unavailable while the dialog is open.
-- Save validates the trimmed name: empty, `All`, and `None-Workspace`
+- Save validates the trimmed name: empty, `All`, and `No Workspace`
   (reserved: palette rows are labelled `Open Workspace <name>`, so a name must
   identify one row), and a name another workspace holds case-insensitively are
   refused. A refusal or a failed write (e.g. another instance saved that name
@@ -157,7 +157,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   buttons it is dropped.
 - `ctrl+d`/`del` in the pane asks for confirmation (Cancel focused) and removes
   only the workspace; the cursor stays on the same row. It is the only place a
-  workspace is deleted. "All", `[NONE-WORKSPACE]`, and `[NEW WORKSPACE]` cannot
+  workspace is deleted. "All", `[NO WORKSPACE]`, and `[NEW WORKSPACE]` cannot
   be deleted. On the Session screen `ctrl+d` deletes the workspace only while
   the pane has focus; on the table it deletes the session.
 - `/` opens the shared keyword search from the pane. Esc returns to it;
@@ -169,7 +169,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   palette with `open workspace ` typed. The query stays editable.
 - `build_workspace_items` adds rows only for a non-empty query, so the plain
   `:` palette is unchanged: `Close Workspace` first, then the fixed
-  `Open Workspace None-Workspace`, then `Open Workspace <name>` in list order,
+  `Open Workspace No Workspace`, then `Open Workspace <name>` in list order,
   then the matching registry commands (for this query, `Open Workspace Window`).
   `Close Workspace` carries the `open` alias so the prefilled query lists it.
   While "All" is open it is disabled and sorts after the open rows.
@@ -210,7 +210,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   There is no file watching or polling.
 - On reload, the open workspace stays this instance's own: the file's
   `active` (another instance's last scope) is never applied. If the open
-  workspace was deleted elsewhere, "All" opens. An open `[NONE-WORKSPACE]`
+  workspace was deleted elsewhere, "All" opens. An open `[NO WORKSPACE]`
   stays open and its membership cache is invalidated on a successful reload.
 - An unreadable or newer-version store is never overwritten: startup keeps an
   empty in-memory store and reports it; each save re-reads the file and fails
@@ -245,7 +245,7 @@ edit dialog.
   40-row terminal (it grows with the folders up to 90% of the height and does
   not change while typing a query), and an 80-column terminal (Prompt hidden
   while the pane is open) and a 120-column one (Prompt kept).
-- Release PTY check for `[NONE-WORKSPACE]`: confirm the complement across
+- Release PTY check for `[NO WORKSPACE]`: confirm the complement across
   folder and word conditions, the empty-store and unrestricted-workspace cases,
   Enter/delete protection, `+` Cancel/Save, pane reopen, keyword filters,
   `ctrl+w` open/close, and recomputation after workspace edits and `ctrl+u`.

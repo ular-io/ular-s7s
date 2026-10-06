@@ -48,7 +48,7 @@ ProfileStore
   workspace's scope (`App::retain_workspace_scope`), and stably groups
   bookmarked indices first. Each group preserves the scan's activity order;
   the parsed session vector and CLI projections are not reordered.
-  The synthetic `[NONE-WORKSPACE]` scope excludes the union of saved workspace
+  The synthetic `[NO WORKSPACE]` scope excludes the union of saved workspace
   matches using lazy index membership, invalidated after session index or saved
   workspace changes. It shares scope application with folder-filter counts;
   see [workspaces.md](./workspaces.md).
