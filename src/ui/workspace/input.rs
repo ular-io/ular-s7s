@@ -495,17 +495,9 @@ impl App {
             .workspaces
             .iter()
             .position(|w| w.id == dialog.draft.id);
-        let reserved = [
-            crate::workspaces::ALL_WORKSPACE_NAME,
-            crate::workspaces::UNASSIGNED_WORKSPACE_NAME,
-        ]
-        .iter()
-        .find(|reserved| {
-            crate::normalize::nfc_lower(reserved) == crate::normalize::nfc_lower(&name)
-        });
         let refusal = if name.is_empty() {
             Some("Workspace name cannot be empty".to_string())
-        } else if let Some(reserved) = reserved {
+        } else if let Some(reserved) = crate::workspaces::reserved_name(&name) {
             Some(format!("The name {reserved} is reserved for a fixed scope"))
         } else if !self.workspaces.name_available(&name, stored) {
             Some(format!("A workspace named '{name}' already exists"))

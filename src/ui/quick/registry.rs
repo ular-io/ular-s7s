@@ -370,8 +370,8 @@ fn matches(spec: &CommandSpec, tokens: &[String]) -> bool {
 }
 
 /// Workspace rows for a non-empty query (an empty `:` palette is unchanged):
-/// `Close Workspace` first, then Unassigned and saved `Open Workspace <name>` rows, each
-/// kept when every query token matches its label (or Close's aliases). A
+/// `Close Workspace` first, then Unassigned and saved workspace rows, each kept
+/// when every query token matches its label (or Close's aliases). A
 /// disabled Close (no workspace open) sorts after the open rows.
 pub fn build_workspace_items(query: &str, names: &[&str], scope_open: bool) -> Vec<QuickItem> {
     let tokens: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();

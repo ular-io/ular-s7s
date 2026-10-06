@@ -29,7 +29,31 @@ pub(crate) const NEW_WORKSPACE_NAME: &str = "New Workspace";
 
 /// Reserved label of the fixed "every session" row; never a stored workspace name.
 pub(crate) const ALL_WORKSPACE_NAME: &str = "All";
+/// Plain name of the synthetic scope used in titles, messages, and the palette.
 pub(crate) const UNASSIGNED_WORKSPACE_NAME: &str = "None-Workspace";
+
+/// Canonical fixed-scope name, if a proposed workspace name would conflict.
+pub(crate) fn reserved_name(name: &str) -> Option<&'static str> {
+    let key = normalize::nfc_lower(name.trim());
+    [ALL_WORKSPACE_NAME, UNASSIGNED_WORKSPACE_NAME]
+        .into_iter()
+        .find(|reserved| key == normalize::nfc_lower(reserved))
+}
+
+/// Shared by ordinary matching and prepared membership so their word rules
+/// remain identical. Callers supply already-normalized tokens.
+fn words_match<'a>(
+    session: &Session,
+    includes: impl IntoIterator<Item = &'a str>,
+    excludes: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    includes
+        .into_iter()
+        .all(|word| token_matches(session, word))
+        && !excludes
+            .into_iter()
+            .any(|word| token_matches(session, word))
+}
 
 /// The synthetic scope is never stored as a workspace or a reserved id. The
 /// existing JSON field stays an optional workspace id; synthetic scopes save
@@ -92,14 +116,11 @@ impl<'a> PreparedWorkspace<'a> {
 
     fn matches(&self, session: &Session) -> bool {
         (self.folders.is_empty() || self.folders.contains(session.cwd.as_path()))
-            && self
-                .includes
-                .iter()
-                .all(|word| token_matches(session, word))
-            && !self
-                .excludes
-                .iter()
-                .any(|word| token_matches(session, word))
+            && words_match(
+                session,
+                self.includes.iter().map(String::as_str),
+                self.excludes.iter().map(String::as_str),
+            )
     }
 }
 
@@ -148,11 +169,8 @@ impl Workspace {
             return false;
         }
         let includes = normalize::nfc_lower(&self.includes);
-        if !includes.split_whitespace().all(|t| token_matches(s, t)) {
-            return false;
-        }
         let excludes = normalize::nfc_lower(&self.excludes);
-        !excludes.split_whitespace().any(|t| token_matches(s, t))
+        words_match(s, includes.split_whitespace(), excludes.split_whitespace())
     }
 
     pub(crate) fn has_folder(&self, folder: &Path) -> bool {
@@ -230,8 +248,8 @@ impl WorkspaceStore {
 
     /// Atomic whole-file replace. Callers outside tests go through
     /// [`Self::commit`] so the replace starts from the current file. No fsync:
-    /// the file is rewritten on every workspace cursor move, and losing the
-    /// latest move in a crash only reopens the previous scope.
+    /// the file is rewritten on every workspace cursor move; startup ignores
+    /// the saved cursor and always opens All.
     fn save(&self, path: &Path) -> Result<()> {
         crate::store_lock::replace_file(path, &serde_json::to_vec_pretty(self)?)
     }
@@ -245,7 +263,7 @@ impl WorkspaceStore {
                 }
             }
             WorkspaceChange::Remove(id) => self.workspaces.retain(|w| &w.id != id),
-            WorkspaceChange::Opened(id) => self.active = id.clone(),
+            WorkspaceChange::Opened(scope) => self.active = scope.clone(),
         }
     }
 
@@ -315,14 +333,11 @@ impl WorkspaceStore {
     }
 
     /// Whether `name` is free for the workspace at `except` (case-insensitive,
-    /// trimmed). "All" and "None-Workspace" are reserved: the palette lists every workspace as
-    /// `Open Workspace <name>`, so names must identify one row.
+    /// trimmed). Fixed-scope names are reserved because the palette labels each
+    /// workspace `Open Workspace <name>` and must distinguish every row.
     pub(crate) fn name_available(&self, name: &str, except: Option<usize>) -> bool {
         let key = normalize::nfc_lower(name.trim());
-        if [ALL_WORKSPACE_NAME, UNASSIGNED_WORKSPACE_NAME]
-            .iter()
-            .any(|name| key == normalize::nfc_lower(name))
-        {
+        if reserved_name(name).is_some() {
             return false;
         }
         !self

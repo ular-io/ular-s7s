@@ -1,5 +1,5 @@
 //! Workspace state: the Session screen's workspace pane (the `[NEW WORKSPACE]`
-//! row flag and list scroll) and the edit dialog (a draft of one workspace,
+//! row flag, list scroll, and membership cache) and the edit dialog (a draft of one workspace,
 //! its text fields, its stable folder rows and their search, and the button
 //! row). The workspace list cursor is not stored here — it is
 //! `WorkspaceStore::active`, so the list row the user sits on is always the

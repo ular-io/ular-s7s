@@ -28,15 +28,17 @@ workspace (`scratch.rs`).
 - Enter on a workspace row opens the **edit dialog** for it over the Session
   screen (`UiMode::WorkspaceEdit`, `App::open_workspace_dialog`). Enter on
   `[NEW WORKSPACE]`, or `+` on any row, opens it for a new workspace
-  (`App::open_new_workspace_dialog`). Enter on "All" or `[NONE-WORKSPACE]` does nothing.
-  Closing the dialog returns to the pane. There is no separate workspace screen.
+  (`App::open_new_workspace_dialog`). Enter on "All" or `[NONE-WORKSPACE]`
+  does nothing. Closing the dialog returns to the pane. There is no separate
+  workspace screen.
 - Palette `Open Workspace Window` shows the pane from any screen.
 
 ## The open workspace
 
 - `WorkspaceStore::active` (`WorkspaceScope::All`, `Unassigned`, or
-  `Workspace(id)`) is the single scope state. The pane cursor *is* `active`: moving it changes what the session
-  list shows. Palette rows set the same field. There is no separate cursor.
+  `Workspace(id)`) is the single scope state. The pane cursor *is* `active`:
+  moving it changes what the session list shows. Palette rows set the same
+  field. There is no separate cursor.
 - The pane's last row is the fixed `[NEW WORKSPACE]`, outside the stored list.
   On it `active` is `All`; `WorkspaceScreenState::new_row` records
   that the cursor is there and counts only while `active` is `All`
@@ -51,8 +53,8 @@ workspace (`scratch.rs`).
   rename moves the workspace to its new place and the pane cursor follows it.
 - `App::rebuild_filtered` applies the ordinary filter (keyword, agent, folder,
   profile, bookmark) and then `App::retain_workspace_scope` (AND). Saved scopes
-  use `Workspace::matches`. Bookmark grouping and activity order are unchanged. Clearing filters (`0`, Esc) does not close the
-  workspace.
+  use `Workspace::matches`. Bookmark grouping and activity order are unchanged.
+  Clearing filters (`0`, Esc) does not close the workspace.
 - Changing the scope (or saving the open workspace) resets the session cursor
   to the top.
 - The Session table title shows the scope: `Session[<workspace>, <filters>: N]`.
@@ -122,10 +124,9 @@ Words match through `filter::token_matches`, the same text as `/` search
 - Save validates the trimmed name: empty, `All`, and `None-Workspace`
   (reserved: palette rows are labelled `Open Workspace <name>`, so a name must
   identify one row), and a name another workspace holds case-insensitively are
-  refused. A refusal, or a
-  failed write (e.g. another instance saved that name meanwhile), keeps the
-  dialog open, puts the reason on the notice line in the error color, and
-  returns the cursor to Name; the next edit clears it.
+  refused. A refusal or a failed write (e.g. another instance saved that name
+  meanwhile) keeps the dialog open, puts the reason on the notice line in the
+  error color, and returns the cursor to Name; the next edit clears it.
 - A saved new workspace is opened (`Upsert` + `Opened`) and the pane cursor
   lands on its row. A saved edit is one `Upsert`. Either way the session list
   restarts at the top under the saved scope.
@@ -157,8 +158,8 @@ Words match through `filter::token_matches`, the same text as `/` search
 - `ctrl+d`/`del` in the pane asks for confirmation (Cancel focused) and removes
   only the workspace; the cursor stays on the same row. It is the only place a
   workspace is deleted. "All", `[NONE-WORKSPACE]`, and `[NEW WORKSPACE]` cannot
-  be deleted. On the Session screen `ctrl+d` deletes the workspace only while the pane has focus;
-  on the table it deletes the session.
+  be deleted. On the Session screen `ctrl+d` deletes the workspace only while
+  the pane has focus; on the table it deletes the session.
 - `/` opens the shared keyword search from the pane. Esc returns to it;
   Enter/Tab focus the session list, closing it.
 
@@ -168,11 +169,10 @@ Words match through `filter::token_matches`, the same text as `/` search
   palette with `open workspace ` typed. The query stays editable.
 - `build_workspace_items` adds rows only for a non-empty query, so the plain
   `:` palette is unchanged: `Close Workspace` first, then the fixed
-  `Open Workspace None-Workspace`, then `Open Workspace
-  <name>` in list order, then the matching registry commands (for this query,
-  `Open Workspace Window`). `Close Workspace` carries the `open` alias so the
-  prefilled query lists it. While "All" is open it is disabled and sorts after
-  the open rows.
+  `Open Workspace None-Workspace`, then `Open Workspace <name>` in list order,
+  then the matching registry commands (for this query, `Open Workspace Window`).
+  `Close Workspace` carries the `open` alias so the prefilled query lists it.
+  While "All" is open it is disabled and sorts after the open rows.
 - Running a workspace row opens that scope and switches to the **Session**
   screen with the table focused (the pane closed). Workspace
   rows are not recorded in palette history.

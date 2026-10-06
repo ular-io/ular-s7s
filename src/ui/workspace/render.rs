@@ -61,8 +61,8 @@ pub(crate) fn dialog_size(full: Rect, folders: usize) -> (u16, u16) {
     (width, want.min(cap) as u16)
 }
 
-/// The Session screen's workspace pane: `[ALL]`, `[NONE-WORKSPACE]`, stored workspaces, then
-/// `[NEW WORKSPACE]`, focused while it takes keys.
+/// The Session screen's workspace pane: fixed All/Unassigned rows, saved
+/// workspaces, then New Workspace; focused while it takes keys.
 pub(crate) fn draw_workspace_pane(f: &mut Frame, app: &App, area: Rect) {
     let th = &app.theme;
     let focused = app.mode == UiMode::Table;

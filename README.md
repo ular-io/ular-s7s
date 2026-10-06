@@ -162,9 +162,10 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 
 `←` on the session list opens the workspace list on its left; the session list and
 Prompt stay, narrower (the Prompt is hidden when it would be under 40 columns). The
-first row `[ALL]` = every session, the last row `[NEW WORKSPACE]` adds one; dividers
-set both apart from your workspaces, which are listed by name. The list cursor is the
-open workspace, so the session list follows it as you move.
+fixed rows `[ALL]` and `[NONE-WORKSPACE]` come first; `[NEW WORKSPACE]` adds one
+and stays last. Dividers separate those rows from your workspaces, which are listed
+by name. The list cursor is the open scope, so the session list follows it as you
+move.
 
 | Key | Action |
 | :-- | :-- |
