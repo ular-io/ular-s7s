@@ -231,6 +231,7 @@ fn workspace_save_and_delete_invalidate_unassigned_membership() {
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     let includes = &mut app.workspace.dialog.as_mut().unwrap().includes;
     includes.select_all = true;
     type_text(&mut app, "middle");
@@ -549,7 +550,9 @@ fn include_and_exclude_words_update_the_match_count_and_apply_on_save() {
     let mut app = app_with_workspace();
     on_api_dialog(&mut app);
     assert_eq!(dialog(&app).matching, 3);
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down); // Includes
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
     type_text(&mut app, "lea");
     assert_eq!(dialog(&app).matching, 1);
     assert_eq!(app.filtered.len(), 3, "the session list waits for Save");
@@ -559,8 +562,10 @@ fn include_and_exclude_words_update_the_match_count_and_apply_on_save() {
     assert_eq!(app.filtered.len(), 3);
 
     press(&mut app, KeyCode::Enter);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down); // Excludes
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Excludes));
     type_text(&mut app, "root middle");
     assert_eq!(dialog(&app).matching, 1);
     save(&mut app);
@@ -586,16 +591,22 @@ fn enter_on_a_text_row_moves_on_and_never_saves() {
     on_api_dialog(&mut app);
     type_text(&mut app, "X");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Folders));
+    assert!(
+        dialog(&app).folder_list.is_none(),
+        "moving on opens nothing"
+    );
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Excludes));
     press(&mut app, KeyCode::Enter);
-    assert!(dialog(&app).cursor_on_search());
+    assert!(dialog(&app).on_buttons);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
     assert_eq!(app.active_workspace_name(), Some("Api"));
 }
 
 #[test]
-fn tab_moves_between_fields_search_folders_and_buttons() {
+fn tab_and_arrows_move_through_the_rows_and_the_buttons() {
     let mut app = app_with_workspace();
     on_api_dialog(&mut app);
     let stops = |app: &App| {
@@ -603,7 +614,7 @@ fn tab_moves_between_fields_search_folders_and_buttons() {
         (d.on_buttons, d.cursor)
     };
     let mut seen = vec![stops(&app)];
-    for _ in 0..6 {
+    for _ in 0..5 {
         press(&mut app, KeyCode::Tab);
         seen.push(stops(&app));
     }
@@ -614,83 +625,84 @@ fn tab_moves_between_fields_search_folders_and_buttons() {
             (false, 1),
             (false, 2),
             (false, 3),
-            (false, 4),
-            (true, 4),
+            (true, 3),
             (false, 0)
         ]
     );
     press(&mut app, KeyCode::BackTab);
-    assert!(dialog(&app).on_buttons);
+    assert!(dialog(&app).on_buttons, "BackTab wraps to the buttons");
     press(&mut app, KeyCode::BackTab);
-    assert_eq!(stops(&app), (false, 4), "BackTab lands on the first folder");
+    assert_eq!(stops(&app), (false, 3));
 
-    // ↑/↓ reach the buttons after the last folder and stop there.
-    for _ in 0..5 {
-        press(&mut app, KeyCode::Down);
-    }
+    // ↑/↓ stop at either end instead of wrapping.
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     assert!(dialog(&app).on_buttons);
     press(&mut app, KeyCode::Up);
-    assert_eq!(stops(&app), (false, 6), "back on the last folder");
-
-    // With no folder shown, Tab goes from Search straight to the buttons.
-    press(&mut app, KeyCode::BackTab);
-    assert!(dialog(&app).cursor_on_search());
-    type_text(&mut app, "zz");
-    press(&mut app, KeyCode::Tab);
-    assert!(dialog(&app).on_buttons);
+    assert_eq!(stops(&app), (false, 3));
+    for _ in 0..5 {
+        press(&mut app, KeyCode::Up);
+    }
+    assert_eq!(stops(&app), (false, 0));
 }
 
 #[test]
-fn left_on_a_folder_row_returns_to_the_field_last_edited() {
+fn the_closed_folder_combo_opens_only_with_enter_or_space() {
     let mut app = app_with_workspace();
     on_api_dialog(&mut app);
-    // Nothing edited yet: Name.
-    for _ in 0..4 {
-        press(&mut app, KeyCode::Down);
-    }
-    assert!(dialog(&app).cursor_folder().is_some());
-    press(&mut app, KeyCode::Left);
-    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Name));
-
-    // Passing over a field does not count; editing Includes does.
     press(&mut app, KeyCode::Down);
-    type_text(&mut app, "api");
-    for _ in 0..4 {
-        press(&mut app, KeyCode::Down);
-    }
-    assert!(dialog(&app).cursor_folder().is_some());
-    press(&mut app, KeyCode::Char('h'));
-    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Folders));
+    // Typing, arrows, and paste change nothing on a closed combo.
+    type_text(&mut app, "xq");
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Backspace);
+    app.on_paste("x");
+    assert!(dialog(&app).folder_list.is_none());
+    assert!(!app.quit_armed);
+    assert_eq!(dialog(&app).name.value, "Api");
+    assert_eq!(dialog(&app).includes.value, "");
+    assert!(dialog(&app).folder_query.value.is_empty());
 
-    // On a text row ← stays with the text cursor, Search included.
-    let cursor = dialog(&app).includes.cursor;
-    press(&mut app, KeyCode::Left);
-    assert_eq!(dialog(&app).includes.cursor, cursor - 1);
-    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
-    assert!(dialog(&app).cursor_on_search());
-    press(&mut app, KeyCode::Left);
-    assert!(dialog(&app).cursor_on_search());
+    // Enter and space open the checklist on [ALL FOLDERS]; Esc closes only it.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(dialog(&app).folder_list, Some(0));
+    press(&mut app, KeyCode::Esc);
+    assert!(dialog(&app).folder_list.is_none());
+    assert_eq!(app.mode, UiMode::WorkspaceEdit);
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(dialog(&app).folder_list, Some(0));
+    press(&mut app, KeyCode::Enter);
+    assert!(dialog(&app).folder_list.is_none());
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Folders));
+    // Esc on the closed combo cancels the dialog.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.mode, UiMode::Table);
+}
 
-    // The buttons keep ← for Save/Cancel.
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
-    assert!(dialog(&app).on_buttons);
-    press(&mut app, KeyCode::Left);
-    assert!(dialog(&app).on_buttons);
-    assert!(!dialog(&app).save_focused);
+/// Opens "Api" and its folder checklist, cursor on `[ALL FOLDERS]`.
+fn on_folder_list(app: &mut App) {
+    on_api_dialog(app);
+    press(app, KeyCode::Down);
+    press(app, KeyCode::Enter);
+    assert_eq!(dialog(app).folder_list, Some(0));
+}
+
+fn visible_folder_names(app: &App) -> Vec<String> {
+    dialog(app)
+        .visible_folders()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[test]
-fn space_toggles_folders_by_full_path_in_the_draft() {
+fn space_toggles_folders_and_closing_keeps_the_selection() {
     let mut app = app_with_workspace();
-    on_api_dialog(&mut app);
-    // Rows: Name, Includes, Excludes, Search, then one row per session folder.
+    on_folder_list(&mut app);
+    // Rows: [ALL FOLDERS], then one row per session folder.
     assert_eq!(dialog(&app).folders.len(), 3);
-    for _ in 0..4 {
-        press(&mut app, KeyCode::Down);
-    }
+    assert_eq!(dialog(&app).list_rows(), 4);
+    press(&mut app, KeyCode::Down);
     let folder = dialog(&app).cursor_folder().cloned().expect("folder row");
     press(&mut app, KeyCode::Char(' '));
     assert_eq!(dialog(&app).draft.folders, vec![folder.clone()]);
@@ -704,165 +716,167 @@ fn space_toggles_folders_by_full_path_in_the_draft() {
         Some(&folder),
         "toggling does not reorder rows"
     );
-
-    // Enter toggles too; j/k move on folder rows.
-    press(&mut app, KeyCode::Char('j'));
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(dialog(&app).matching, 2, "multiple folders are allowed");
+    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
-    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(dialog(&app).matching, 2, "multiple folders are allowed");
+
+    // Enter closes without touching the selection, even on an unchecked row.
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(dialog(&app).folder_list.is_none());
+    assert_eq!(dialog(&app).draft.folders.len(), 2);
+
+    // Space on [ALL FOLDERS] clears the selection: every folder again.
+    press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Char(' '));
     assert!(dialog(&app).draft.folders.is_empty());
-    assert_eq!(dialog(&app).matching, 3, "no folder means every folder");
+    assert_eq!(dialog(&app).matching, 3);
 
+    // Esc closes and keeps the toggles too.
+    press(&mut app, KeyCode::Down);
+    let folder = dialog(&app).cursor_folder().cloned().expect("folder row");
     press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Esc);
+    assert!(dialog(&app).folder_list.is_none());
     save(&mut app);
     assert_eq!(app.workspaces.workspaces[0].folders, vec![folder.clone()]);
     assert_eq!(app.filtered.len(), 1);
     assert_eq!(app.sessions[app.filtered[0]].cwd, folder);
 }
 
-/// Opens "Api" and puts the dialog cursor on the folder search row.
-fn on_folder_search(app: &mut App) {
-    on_api_dialog(app);
-    for _ in 0..3 {
-        press(app, KeyCode::Down);
-    }
-    assert!(dialog(app).cursor_on_search());
-}
-
-fn visible_folder_names(app: &App) -> Vec<String> {
-    dialog(app)
-        .visible_folders()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect()
+#[test]
+fn unchecking_the_last_folder_returns_to_every_folder() {
+    let mut app = app_with_workspace();
+    on_folder_list(&mut app);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(dialog(&app).draft.folders.len(), 1, "that folder alone");
+    press(&mut app, KeyCode::Char(' '));
+    assert!(dialog(&app).draft.folders.is_empty());
+    assert_eq!(dialog(&app).matching, 3, "no folder means every folder");
 }
 
 #[test]
-fn folder_search_row_takes_typing_and_arrows_leave_it() {
+fn reopening_the_checklist_lists_the_selection_first() {
     let mut app = app_with_workspace();
-    on_folder_search(&mut app);
-    // Letter shortcuts (j/k/q/g) and space are text on this row.
-    type_text(&mut app, "ro q");
-    assert_eq!(dialog(&app).folder_query.value, "ro q");
+    for s in &mut app.sessions {
+        s.updated_at_ms = match s.id.as_str() {
+            "leaf" => 1,
+            "middle" => 3,
+            _ => 2,
+        };
+    }
+    on_folder_list(&mut app);
+    let order = ["/tmp/middle", "/tmp/root", "/tmp/leaf"];
+    assert_eq!(visible_folder_names(&app), order);
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Down);
+    }
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(visible_folder_names(&app), order, "kept while open");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        visible_folder_names(&app),
+        ["/tmp/leaf", "/tmp/middle", "/tmp/root"]
+    );
+}
+
+#[test]
+fn checklist_search_takes_typing_while_space_still_toggles() {
+    let mut app = app_with_workspace();
+    on_folder_list(&mut app);
+    // Letter shortcuts are text in the open checklist.
+    type_text(&mut app, "jkq");
+    assert_eq!(dialog(&app).folder_query.value, "jkq");
     assert!(!app.quit_armed);
     assert!(visible_folder_names(&app).is_empty());
-    press(&mut app, KeyCode::Backspace);
-    press(&mut app, KeyCode::Backspace);
-    assert_eq!(visible_folder_names(&app), vec!["/tmp/root".to_string()]);
+    assert_eq!(dialog(&app).folder_list, Some(0), "no match: [ALL FOLDERS]");
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Backspace);
+    }
+    assert_eq!(dialog(&app).visible.len(), 3);
 
-    // ↓ leaves the row with the filter kept; space toggles the match.
-    press(&mut app, KeyCode::Down);
+    // A query puts the cursor on the first match, so space toggles it.
+    type_text(&mut app, "ro");
+    assert_eq!(visible_folder_names(&app), ["/tmp/root"]);
     assert_eq!(
         dialog(&app).cursor_folder(),
         Some(&PathBuf::from("/tmp/root"))
     );
     press(&mut app, KeyCode::Char(' '));
     assert_eq!(dialog(&app).draft.folders, vec![PathBuf::from("/tmp/root")]);
+    assert_eq!(dialog(&app).folder_query.value, "ro", "space is no text");
 
-    // ↑ returns to the row with the query selected; → drops the selection,
-    // and typing resumes at the end.
-    press(&mut app, KeyCode::Up);
-    assert!(dialog(&app).cursor_on_search());
-    assert!(dialog(&app).folder_query.select_all);
+    // ←/→/Home/End move the query's text cursor.
+    press(&mut app, KeyCode::Home);
     press(&mut app, KeyCode::Right);
-    assert!(!dialog(&app).folder_query.select_all);
-    press(&mut app, KeyCode::Char('t'));
-    assert_eq!(dialog(&app).folder_query.value, "rot");
-    // Esc clears a query before it cancels the dialog.
+    press(&mut app, KeyCode::Char('o'));
+    assert_eq!(dialog(&app).folder_query.value, "roo");
+    press(&mut app, KeyCode::End);
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Delete);
+    assert_eq!(dialog(&app).folder_query.value, "r");
+
+    // Esc clears the query with the cursor kept on its folder, then closes.
+    type_text(&mut app, "oo");
     press(&mut app, KeyCode::Esc);
     assert!(dialog(&app).folder_query.value.is_empty());
     assert_eq!(dialog(&app).visible.len(), 3);
-    assert_eq!(app.mode, UiMode::WorkspaceEdit);
-    press(&mut app, KeyCode::Up);
-    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Excludes));
-    press(&mut app, KeyCode::Esc);
-    assert_eq!(app.mode, UiMode::Table);
-}
-
-#[test]
-fn arriving_on_the_folder_search_selects_the_query_so_typing_replaces_it() {
-    let mut app = app_with_workspace();
-    on_folder_search(&mut app);
-    type_text(&mut app, "leaf");
-    assert!(
-        !dialog(&app).folder_query.select_all,
-        "typing never selects"
-    );
-    press(&mut app, KeyCode::Up);
-    assert!(!dialog(&app).folder_query.select_all);
-    press(&mut app, KeyCode::Down);
-    assert!(dialog(&app).folder_query.select_all);
-    press(&mut app, KeyCode::Char('m'));
-    assert_eq!(dialog(&app).folder_query.value, "m");
-    assert!(!dialog(&app).folder_query.select_all);
-}
-
-#[test]
-fn folder_search_arrows_move_the_text_cursor() {
-    let mut app = app_with_workspace();
-    on_folder_search(&mut app);
-    type_text(&mut app, "eaf");
-    press(&mut app, KeyCode::Up);
-    press(&mut app, KeyCode::Down);
-    // ← collapses the selection to the start; typing then inserts there.
-    press(&mut app, KeyCode::Left);
-    assert!(!dialog(&app).folder_query.select_all);
-    press(&mut app, KeyCode::Char('l'));
-    assert_eq!(dialog(&app).folder_query.value, "leaf");
-    for _ in 0..10 {
-        press(&mut app, KeyCode::Left);
-    }
-    assert!(dialog(&app).cursor_on_search());
-    press(&mut app, KeyCode::Delete);
-    assert_eq!(dialog(&app).folder_query.value, "eaf");
-    press(&mut app, KeyCode::End);
-    for _ in 0..10 {
-        press(&mut app, KeyCode::Right);
-    }
-    assert!(dialog(&app).cursor_on_search());
-    press(&mut app, KeyCode::Home);
-    press(&mut app, KeyCode::Char('l'));
-    assert_eq!(dialog(&app).folder_query.value, "leaf");
-    assert_eq!(visible_folder_names(&app), vec!["/tmp/leaf".to_string()]);
-}
-
-#[test]
-fn folder_search_enter_jumps_to_the_first_match_and_reopening_clears_it() {
-    let mut app = app_with_workspace();
-    on_folder_search(&mut app);
-    type_text(&mut app, "leaf");
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(app.mode, UiMode::WorkspaceEdit);
     assert_eq!(
         dialog(&app).cursor_folder(),
-        Some(&PathBuf::from("/tmp/leaf"))
+        Some(&PathBuf::from("/tmp/root"))
     );
-
-    press(&mut app, KeyCode::Esc);
+    assert!(dialog(&app).folder_list.is_some());
+    type_text(&mut app, "leaf");
+    press(&mut app, KeyCode::Enter);
+    assert!(dialog(&app).folder_list.is_none());
+    assert_eq!(dialog(&app).visible.len(), 3, "closing drops the query");
+    // Reopening starts with an empty query.
     press(&mut app, KeyCode::Enter);
     assert!(dialog(&app).folder_query.value.is_empty());
-    assert_eq!(dialog(&app).visible.len(), 3);
+    assert_eq!(dialog(&app).draft.folders, vec![PathBuf::from("/tmp/root")]);
 }
 
 #[test]
-fn paste_goes_to_the_text_row_under_the_cursor() {
+fn tab_closes_the_checklist_and_moves_on() {
     let mut app = app_with_workspace();
-    on_folder_search(&mut app);
+    on_folder_list(&mut app);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Tab);
+    assert!(dialog(&app).folder_list.is_none());
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Includes));
+    assert_eq!(dialog(&app).draft.folders.len(), 1);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::BackTab);
+    assert!(dialog(&app).folder_list.is_none());
+    assert_eq!(dialog(&app).cursor_field(), Some(WorkspaceField::Name));
+}
+
+#[test]
+fn paste_goes_to_the_text_input_under_the_cursor() {
+    let mut app = app_with_workspace();
+    on_folder_list(&mut app);
     app.on_paste("tmp/mid");
     assert_eq!(dialog(&app).folder_query.value, "tmp/mid");
-    assert_eq!(visible_folder_names(&app), vec!["/tmp/middle".to_string()]);
+    assert_eq!(visible_folder_names(&app), ["/tmp/middle"]);
 
-    press(&mut app, KeyCode::Up); // Excludes
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down); // Excludes
     app.on_paste("root");
     assert_eq!(dialog(&app).excludes.value, "root");
     assert_eq!(dialog(&app).matching, 2);
 
-    // A folder row owns no text: the paste is dropped.
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
+    // The closed combo owns no text: the paste is dropped.
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Up);
     app.on_paste("x");
-    assert_eq!(dialog(&app).folder_query.value, "tmp/mid");
+    assert_eq!(dialog(&app).includes.value, "");
+    assert!(dialog(&app).folder_query.value.is_empty());
 }
 
 #[test]
@@ -947,19 +961,21 @@ fn ctrl_d_in_the_pane_deletes_after_confirmation_and_keeps_the_row() {
 #[test]
 fn the_dialog_neither_deletes_nor_opens_other_windows() {
     let mut app = app_with_workspace();
-    on_api_dialog(&mut app);
-    for _ in 0..4 {
-        press(&mut app, KeyCode::Down);
+    on_folder_list(&mut app);
+    for open in [true, false] {
+        ctrl(&mut app, 'd');
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Char('+'));
+        press(&mut app, KeyCode::Char(':'));
+        ctrl(&mut app, 'w');
+        ctrl(&mut app, 'u');
+        assert_eq!(app.mode, UiMode::WorkspaceEdit);
+        assert_eq!(dialog(&app).folder_list.is_some(), open);
+        assert!(app.pending_effect.is_none());
+        assert_eq!(app.workspaces.workspaces.len(), 1);
+        // Then the same on the closed combo.
+        press(&mut app, KeyCode::Enter);
     }
-    ctrl(&mut app, 'd');
-    press(&mut app, KeyCode::Delete);
-    press(&mut app, KeyCode::Char('+'));
-    press(&mut app, KeyCode::Char(':'));
-    ctrl(&mut app, 'w');
-    ctrl(&mut app, 'u');
-    assert_eq!(app.mode, UiMode::WorkspaceEdit);
-    assert!(app.pending_effect.is_none());
-    assert_eq!(app.workspaces.workspaces.len(), 1);
 }
 
 #[test]
@@ -1061,6 +1077,7 @@ fn saves_reach_the_file_and_a_restart_opens_all() {
     WorkspaceStore::commit(&path, &[crate::workspaces::WorkspaceChange::Upsert(api)]).unwrap();
     on_api_dialog(&mut app);
     press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
     type_text(&mut app, "leaf");
     assert_eq!(
         WorkspaceStore::load(&path).unwrap().workspaces[0].includes,
@@ -1161,41 +1178,39 @@ fn dialog_rows(text: &str) -> Vec<&str> {
 }
 
 #[test]
-fn edit_dialog_draws_fields_match_count_checked_folders_and_buttons() {
+fn edit_dialog_stacks_the_fields_with_the_folder_combo_second() {
     let mut app = app_with_workspace();
     app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/root")];
     on_api_dialog(&mut app);
     let text = rendered(&app, 140, 40);
     assert!(text.contains(" Edit Workspace "), "{text}");
     let rows = dialog_rows(&text);
-    // Fields are stacked titled boxes in the left column; the focused Name box
-    // is thick, the rest plain. The folders sit in the right column.
-    let name = rows
-        .iter()
-        .find(|l| l.contains("┏ Name ━"))
-        .expect("name box");
-    assert!(name.contains("│ Folders · 1 selected"), "{text}");
-    let value = rows.iter().find(|l| l.contains("┃ Api ")).expect("name");
-    assert!(value.contains("│ Search   type to filter"), "{text}");
-    let includes = rows.iter().position(|l| l.contains("┌ Includes ─"));
-    let excludes = rows.iter().position(|l| l.contains("┌ Excludes ─"));
-    assert_eq!(includes.map(|r| r + 3), excludes, "stacked\n{text}");
+    assert_eq!(rows.len(), 19, "{text}");
+    // One column of titled boxes: the focused Name box is thick, the rest plain.
+    let at = |needle: &str| rows.iter().position(|l| l.contains(needle));
+    let name = at("┏ Name ━").expect("name box");
+    assert_eq!(at("┌ Folders ▾ ─"), Some(name + 3), "{text}");
+    assert_eq!(at("┌ Includes · all words ─"), Some(name + 6), "{text}");
+    assert_eq!(at("┌ Excludes · any word ─"), Some(name + 9), "{text}");
+    assert!(rows[name + 4].contains("│ root "), "{text}");
     assert!(text.contains("│ (none) "), "{text}");
     assert!(text.contains("Matches  1 of 3 sessions"), "{text}");
-    // One blank row under the title, and one divider joined to the side
-    // borders and to the column separator.
+    // One blank row under the title, and like every form no divider and no
+    // column separator.
     let frame = rows[0].find('┏').expect("frame left");
     let blank: String = rows[1].chars().skip(frame + 1).take(20).collect();
     assert_eq!(blank.trim(), "", "{text}");
-    let joined: Vec<_> = rows
-        .iter()
-        .filter(|l| l.contains("┠─") && l.contains("─┨"))
-        .collect();
-    assert_eq!(joined.len(), 1, "{text}");
-    assert!(joined[0].contains("─┴─"), "{text}");
-    assert!(text.contains("Folders · 1 selected"), "{text}");
-    assert!(text.contains("[✓] root"), "{text}");
-    assert!(text.contains("[ ] leaf"), "{text}");
+    assert!(!text.contains('┠') && !text.contains('┴'), "{text}");
+    // Matches, the notice line (empty until a Save is refused), a blank row,
+    // then the buttons.
+    let matches = at("Matches  1 of 3 sessions").expect("matches");
+    let left = rows[matches].chars().position(|c| c == '┃').unwrap();
+    let inside = |r: usize| -> String { rows[r].chars().skip(left + 1).take(50).collect() };
+    assert_eq!(inside(matches + 1).trim(), "", "{text}");
+    assert_eq!(inside(matches + 2).trim(), "", "{text}");
+    assert!(rows[matches + 3].contains("Save"), "{text}");
+    // The checklist is not drawn while the combo is closed.
+    assert!(!text.contains("[ALL FOLDERS]"), "{text}");
     assert!(text.contains("Save"), "{text}");
     assert!(text.contains("Cancel"), "{text}");
     // The session list stays behind the dialog.
@@ -1205,83 +1220,189 @@ fn edit_dialog_draws_fields_match_count_checked_folders_and_buttons() {
     press(&mut app, KeyCode::Char('+'));
     let text = rendered(&app, 140, 40);
     assert!(text.contains(" New Workspace "), "{text}");
+    assert!(text.contains("│ All folders "), "{text}");
 }
 
 #[test]
-fn edit_dialog_grows_with_the_folders_up_to_ninety_percent_of_the_terminal() {
+fn folder_combo_lists_whole_names_beside_a_dim_folder_count() {
     let mut app = app_with_workspace();
-    on_api_dialog(&mut app);
-    // Three folders: 7 rows of chrome plus the 10-row field column, which is
-    // taller than the Folders heading, Search, and three folder rows.
-    let text = rendered(&app, 140, 40);
-    assert_eq!(dialog_rows(&text).len(), 17, "{text}");
-
-    // Thirty folders on a 40-row terminal: capped at 36 rows, scrolling.
-    for i in 0..27 {
-        let mut s = app.sessions[0].clone();
-        s.id = format!("extra-{i}");
-        s.cwd = PathBuf::from(format!("/tmp/extra{i:02}"));
-        app.sessions.push(s);
+    for s in &mut app.sessions {
+        s.updated_at_ms = match s.id.as_str() {
+            "leaf" => 1,
+            "middle" => 3,
+            _ => 2,
+        };
     }
+    app.workspaces.workspaces[0].folders = vec![
+        PathBuf::from("/tmp/leaf"),
+        PathBuf::from("/tmp/middle"),
+        PathBuf::from("/tmp/root"),
+    ];
+    on_api_dialog(&mut app);
+    let summary = |width| {
+        let (names, count) = super::render::folder_summary(dialog(&app), width);
+        (names, count.unwrap_or_default())
+    };
+    let count = "3 folders".to_string();
+    // Checklist order, and the count even when every name fits.
+    assert_eq!(summary(40), ("middle, root, leaf".into(), count.clone()));
+    // Cut at a name boundary, leaving room for `, …` and one gap cell.
+    assert_eq!(summary(25), ("middle, root, …".into(), count.clone()));
+    assert_eq!(summary(15), ("…".into(), count.clone()));
+    assert_eq!(summary(9), (String::new(), count.clone()));
+
+    // Rendered: names in the default color, the count dim at the right edge.
+    let buf = draw_buffer(&app);
+    let names = cell_at(&buf, "middle, root, leaf", 0..140);
+    assert_ne!(names.fg, app.theme.soft_dim().fg.unwrap());
+    let text = rendered(&app, 140, 24);
+    let row = text
+        .lines()
+        .find(|l| l.contains("│ middle, root, leaf "))
+        .expect("combo value");
+    assert!(row.contains("3 folders │"), "{row}");
+    assert_eq!(
+        cell_at(&buf, "3 folders", 0..140).fg,
+        app.theme.soft_dim().fg.unwrap()
+    );
+
+    // One folder is its name alone; none is every folder.
+    app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/root")];
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(dialog(&app).folders.len(), 30);
-    let text = rendered(&app, 140, 40);
-    let rows = dialog_rows(&text);
-    assert_eq!(rows.len(), 36, "{text}");
-    assert!(rows.iter().any(|l| l.contains("Save")), "{text}");
-
-    // Typing a query never changes the height, so the buttons stay put.
-    for _ in 0..3 {
-        press(&mut app, KeyCode::Down);
-    }
-    type_text(&mut app, "leaf");
-    assert_eq!(dialog_rows(&rendered(&app, 140, 40)).len(), 36);
+    assert_eq!(
+        super::render::folder_summary(dialog(&app), 40),
+        ("root".into(), None)
+    );
+    app.workspaces.workspaces[0].folders.clear();
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        super::render::folder_summary(dialog(&app), 40),
+        ("All folders".into(), None)
+    );
 }
 
 #[test]
-fn dialog_folder_rows_end_with_a_session_count_even_when_narrow() {
+fn folder_checklist_joins_the_combo_and_resolves_the_cursor_path() {
+    let mut app = app_with_workspace();
+    app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/root")];
+    on_folder_list(&mut app);
+    let text = rendered(&app, 140, 40);
+    let lines: Vec<&str> = text.lines().collect();
+    // The popup's top edge replaces the combo's bottom border.
+    let top = lines
+        .iter()
+        .position(|l| l.contains("┣━") && l.contains("━┫"))
+        .expect("joined popup edge");
+    assert!(lines[top - 2].contains("┏ Folders ▾ ━"), "{text}");
+    assert!(lines[top + 1].contains(" Search "), "{text}");
+    assert!(lines[top + 2].contains("┠─"), "{text}");
+    assert!(lines[top + 3].contains("[ ] [ALL FOLDERS]"), "{text}");
+    assert!(
+        lines[top + 4].contains("[✓] root"),
+        "selection first
+{text}"
+    );
+    assert!(text.contains("[ ] leaf"), "{text}");
+    assert!(
+        text.contains("Every folder: no folder restriction"),
+        "{text}"
+    );
+    assert!(
+        text.contains("space toggle"),
+        "status bar
+{text}"
+    );
+
+    press(&mut app, KeyCode::Down);
+    let text = rendered(&app, 140, 40);
+    assert!(text.contains(" /tmp/root "), "{text}");
+}
+
+#[test]
+fn checklist_rows_end_with_a_session_count_even_when_narrow() {
     let mut app = app_with_workspace();
     app.sessions[1].cwd = PathBuf::from("/tmp/leaf");
     // A stored folder with no session left still shows its (0).
     app.workspaces.workspaces[0].folders = vec![PathBuf::from("/tmp/gone")];
-    on_api_dialog(&mut app);
-    // The dialog's right border is thick.
+    on_folder_list(&mut app);
+    // The popup's right border is thick, inside the dialog's padding.
     for width in [140, 80] {
         let text = rendered(&app, width, 30);
         let leaf = text
             .lines()
             .find(|l| l.contains("[ ] leaf"))
             .expect("leaf row");
-        assert!(leaf.contains("(2)  ┃"), "{width}: {leaf}");
+        assert!(leaf.contains("(2) ┃"), "{width}: {leaf}");
         let gone = text
             .lines()
             .find(|l| l.contains("[✓] gone"))
             .expect("gone row");
-        assert!(gone.contains("(0)  ┃"), "{width}: {gone}");
+        assert!(gone.contains("(0) ┃"), "{width}: {gone}");
+        let all = text
+            .lines()
+            .find(|l| l.contains("[ ] [ALL FOLDERS]"))
+            .expect("all row");
+        assert!(all.contains("(3) ┃"), "{width}: {all}");
     }
 }
 
 #[test]
-fn folder_search_row_renders_query_and_empty_result() {
+fn checklist_search_renders_query_and_empty_result() {
     let mut app = app_with_workspace();
-    on_folder_search(&mut app);
-    let text = rendered(&app, 140, 30);
-    assert!(
-        !text.contains("type to filter"),
-        "focused: no placeholder\n{text}"
-    );
-    assert!(text.contains("Type to filter folders"), "{text}");
-    press(&mut app, KeyCode::Up);
-    let text = rendered(&app, 140, 30);
-    assert!(text.contains("Search   type to filter"), "{text}");
-    press(&mut app, KeyCode::Down);
+    on_folder_list(&mut app);
     type_text(&mut app, "zz");
     let text = rendered(&app, 140, 30);
     assert!(text.contains("Search   zz"), "{text}");
+    assert!(text.contains("[✓] [ALL FOLDERS]"), "{text}");
     assert!(text.contains("No matching folders"), "{text}");
-    assert!(text.contains("0 of 3 folders"), "{text}");
     assert!(!text.contains("[ ] leaf"), "{text}");
+}
+
+#[test]
+fn checklist_stops_at_the_terminal_bottom_and_scrolls() {
+    let mut app = app_with_workspace();
+    for i in 0..27 {
+        let mut s = app.sessions[0].clone();
+        s.id = format!("extra-{i}");
+        s.cwd = PathBuf::from(format!("/tmp/extra{i:02}"));
+        app.sessions.push(s);
+    }
+    on_folder_list(&mut app);
+    assert_eq!(dialog(&app).folders.len(), 30);
+    let text = rendered(&app, 140, 24);
+    let lines: Vec<&str> = text.lines().collect();
+    // Ends on the last terminal row: borders, search, divider, and footer
+    // leave nine checklist rows.
+    assert!(lines[23].contains('┗') && lines[23].contains('┛'), "{text}");
+    let list_rows = lines
+        .iter()
+        .filter(|l| l.contains("[ ] ") || l.contains("[✓] "))
+        .count();
+    assert_eq!(list_rows, 9, "{text}");
+    // The dialog's bottom border keeps its `━` on both sides of the popup,
+    // whichever popup row crosses it.
+    let bottom = lines.iter().position(|l| l.contains('┗')).expect("dialog");
+    assert!(bottom < 23, "{text}");
+    let row: Vec<char> = lines[bottom].chars().collect();
+    let left = row.iter().position(|&c| c == '┗').unwrap();
+    let right = row.iter().position(|&c| c == '┛').unwrap();
+    assert_eq!(row[left + 1], '━', "{}", lines[bottom]);
+    assert_eq!(row[right - 1], '━', "{}", lines[bottom]);
+
+    // The cursor scrolls the rows; typing never resizes the popup.
+    for _ in 0..3 {
+        press(&mut app, KeyCode::PageDown);
+    }
+    rendered(&app, 140, 24);
+    assert!(dialog(&app).folder_scroll.get() > 0);
+    type_text(&mut app, "extra0");
+    let text = rendered(&app, 140, 24);
+    assert!(
+        text.lines().nth(23).is_some_and(|l| l.contains('┛')),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1296,47 +1417,6 @@ fn a_refused_save_shows_its_reason_on_the_notice_line() {
         text.contains("A workspace named 'api' already exists"),
         "{text}"
     );
-}
-
-#[test]
-fn folder_search_row_paints_only_the_selected_text() {
-    let mut app = app_with_workspace();
-    on_folder_search(&mut app);
-    type_text(&mut app, "ro");
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Up);
-    let mut terminal = Terminal::new(TestBackend::new(140, 30)).expect("terminal");
-    terminal
-        .draw(|f| crate::ui::render::draw(f, &app))
-        .expect("draw");
-    let buf = terminal.backend().buffer();
-    let y = (0..buf.area.height)
-        .find(|&y| {
-            (0..buf.area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-                .contains("Search   ro")
-        })
-        .expect("search row");
-    let x = (0..buf.area.width)
-        .find(|&x| buf[(x, y)].symbol() == "S" && buf[(x + 9, y)].symbol() == "r")
-        .expect("search label");
-    let selection_bg = app.theme.selection_bg;
-    assert_ne!(buf[(x, y)].bg, selection_bg, "label is not highlighted");
-    assert_eq!(buf[(x + 9, y)].bg, selection_bg, "query text is selected");
-    assert_eq!(buf[(x + 10, y)].bg, selection_bg);
-    assert_ne!(
-        buf[(x + 11, y)].bg,
-        selection_bg,
-        "padding is not highlighted"
-    );
-
-    press(&mut app, KeyCode::Right);
-    terminal
-        .draw(|f| crate::ui::render::draw(f, &app))
-        .expect("draw");
-    let buf = terminal.backend().buffer();
-    assert_ne!(buf[(x + 9, y)].bg, selection_bg, "→ drops the selection");
 }
 
 /// Buffer cell at the first character of `needle` inside columns `cols`,

@@ -103,60 +103,80 @@ Words match through `filter::token_matches`, the same text as `/` search
   fresh `New Workspace` (`New Workspace 2`, … when taken) that is not in the
   store. Nothing is written and the session list does not change until
   **Save**. Cancel or Esc drops the draft; a new workspace then never existed.
-- Rows: the left column holds the `Name`, `Includes`, and `Excludes` boxes and
-  a read-only `Matches  N of M sessions` (sessions the draft matches over every
-  session, recounted on every edit and folder toggle); the right column holds
-  the `Folders` heading, a `Search` row, and the folder rows; the
-  `Save`/`Cancel` buttons sit below both. Name, Includes, Excludes, and Search are text
-  rows: typing edits them directly with no edit mode. A new workspace's
-  suggested name starts selected, so typing replaces it.
-- Keys: `↑`/`↓` move one row in field order across both columns (`↓` on
-  Excludes moves to Search at the top of the folder column), past the last
-  folder onto the buttons; Tab /
-  BackTab move between groups (each field, Search, the first folder when one is
-  shown, the buttons), wrapping. On text rows `←`/`→`/`Home`/`End` move the text
-  cursor and Enter moves to the next row — a text row never submits. On folder
-  rows `space` or Enter toggles, `j`/`k` move, `g`/`G`/`Home`/`End` jump to the
-  first/last folder, and `←`/`h` return to the left column, on the field last
-  edited (Name until one is; moving over a field does not count). On the
-  buttons `←`/`→`/`h`/`l` switch between Save
-  (focused first) and Cancel, and Enter runs the focused one. ctrl/alt
-  combinations do nothing, so the palette, `ctrl+u`, `ctrl+w`, `/`, and
-  delete are unavailable while the dialog is open.
+- Rows, top to bottom: the `Name` box, the `Folders ▾` combo, the
+  `Includes · all words` and `Excludes · any word` boxes (the titles state the
+  word rules of §Matching), and a read-only `Matches  N of M sessions` (sessions
+  the draft matches over every session, recounted on every edit and folder
+  toggle); the `Save`/`Cancel` buttons sit below. Name, Includes, and Excludes
+  are text rows: typing edits them directly with no edit mode. A new
+  workspace's suggested name starts selected, so typing replaces it.
+- Keys: `↑`/`↓` move one row (Name, Folders, Includes, Excludes, the
+  buttons) and stop at either end; Tab / BackTab move the same way but wrap.
+  On text rows `←`/`→`/`Home`/`End` move the text cursor and Enter moves to
+  the next row — a text row never submits. On the closed `Folders ▾` combo
+  Enter or `space` opens its checklist; typing, `←`/`→`, and paste do
+  nothing there. On the buttons `←`/`→`/`h`/`l` switch between Save (focused
+  first) and Cancel, and Enter runs the focused one. Esc cancels the dialog.
+  ctrl/alt combinations do nothing, so the palette, `ctrl+u`, `ctrl+w`, `/`,
+  and delete are unavailable while the dialog is open.
 - Save validates the trimmed name: empty, `All`, and `No Workspace`
   (reserved: palette rows are labelled `Open Workspace <name>`, so a name must
   identify one row), and a name another workspace holds case-insensitively are
   refused. A refusal or a failed write (e.g. another instance saved that name
-  meanwhile) keeps the dialog open, puts the reason on the notice line in the
+  meanwhile) keeps the dialog open, puts the reason on the notice line above
+  the buttons (empty otherwise) in the
   error color, and returns the cursor to Name; the next edit clears it.
 - A saved new workspace is opened (`Upsert` + `Opened`) and the pane cursor
   lands on its row. A saved edit is one `Upsert`. Either way the session list
   restarts at the top under the saved scope.
-- Folder rows list the draft's selected folders first, then every other
-  session cwd; each group is ordered by latest session activity (newest
-  first, ties by path), and a selected folder with no remaining session sorts
-  last in its group. The stored selection order is not used. The order is
-  captured when the dialog opens (and rebuilt by a session rescan,
+- The closed combo shows the selection: `All folders` when none is selected
+  (an empty `folders` list is no restriction), one folder's basename, or for
+  two or more the basenames in checklist order (so the most recently active
+  come first) with a dim `N folders` at the right edge. Names are cut at name
+  boundaries and end with `…` when some do not fit; the count is shown even
+  when every name fits, so it does not appear and vanish as folders are added
+  (`workspace::render::folder_summary`).
+
+### Folder checklist (`Folders ▾` open)
+
+The checklist follows the rust-tui checkbox-list rules (toggles apply at once,
+so closing never changes the selection) and is modelled on the ular-card
+Start Study `Deck ▾` list. While open it takes every key
+(`App::on_key_workspace_folder_list`; cursor `WorkspaceDialog::folder_list`).
+
+- Rows: a search line, then the fixed `[ALL FOLDERS]` row, then the folder
+  rows. `[ALL FOLDERS]` is checked while the selection is empty. Folder rows
+  list the draft's selected folders first, then every other session cwd; each
+  group is ordered by latest session activity (newest first, ties by path),
+  and a selected folder with no remaining session sorts last in its group.
+  The stored selection order is not used. The order is captured each time the
+  checklist opens (and rebuilt by a session rescan,
   `App::refresh_workspace_folders`) and kept while toggling, so `space` never
   moves the cursor. A stored folder with no remaining session still appears so
   it can be unchecked. `[✓]` = selected. Each row ends with a dim ` (N)`: the
-  folder's sessions across every session, not narrowed by the session filters
-  or the workspace's include/exclude words, so a stored folder with no session
-  left reads `(0)`.
-- On the Search row typed characters include letters that are shortcuts
-  elsewhere (`j`, `k`, `g`, `q`, …) and `space`; Backspace/`Delete` delete at
-  the cursor; Esc clears a non-empty query (an empty one cancels the dialog);
-  Enter moves to the first match; paste inserts. Arriving on the row with a
-  non-empty query selects the whole query (`TextInput::select_all`): typing or
-  paste replaces it, Backspace/`Delete` clear it, and `←`/`→` drop the
-  selection to the start/end, keeping the text. Leaving the row drops the
-  selection.
+  folder's sessions across every session (all sessions on `[ALL FOLDERS]`),
+  not narrowed by the session filters or the workspace's include/exclude
+  words, so a stored folder with no session left reads `(0)`.
+- It opens on `[ALL FOLDERS]` with an empty search. `↑`/`↓` move one row,
+  `PgUp`/`PgDn` ten.
+- `space` toggles the cursor folder. On `[ALL FOLDERS]` it clears the
+  selection. Toggling a folder while none is selected selects that folder
+  alone, and unchecking the last selected folder returns to every folder.
+- Enter closes the checklist (it never toggles). Tab / BackTab close it and
+  move to the next / previous row. Esc clears a non-empty query, keeping the
+  cursor on its folder, and otherwise closes. Every close keeps the toggles;
+  only Cancel drops them with the rest of the draft.
+- Typed characters, including letters that are shortcuts elsewhere (`j`, `k`,
+  `g`, `q`, …), go to the search; `space` toggles instead, so a query is a
+  single word in practice. `←`/`→`/`Home`/`End` move the search's text
+  cursor; Backspace/`Delete` delete at it; paste inserts. Each edit puts the
+  cursor on the first match, or on `[ALL FOLDERS]` when nothing matches.
 - Every whitespace-separated query word must occur, case-insensitively, in the
   folder's full path or its displayed label. Non-matching rows are hidden, not
-  reordered; their selection is kept and still counted in `· N selected`. The
-  query is not stored; every dialog opens with it empty.
-- A paste goes to the text row under the cursor; on a folder row or the
-  buttons it is dropped.
+  reordered; their selection is kept. `[ALL FOLDERS]` stays first. The query
+  is not stored; closing drops it.
+- A paste goes to the text row under the cursor, or to the search while the
+  checklist is open; on the closed combo or the buttons it is dropped.
 - `ctrl+d`/`del` in the pane asks for confirmation (Cancel focused) and removes
   only the workspace; the cursor stays on the same row. It is the only place a
   workspace is deleted. "All", `[NO WORKSPACE]`, and `[NEW WORKSPACE]` cannot
@@ -229,9 +249,10 @@ edit dialog.
 
 - `ui::workspace::tests` (pane open/close and Profile moves, scope and the
   `[NEW WORKSPACE]` row, name ordering, dialog open/cancel/save, refused
-  names, the match count, Enter/Tab/arrow movement, folder toggles, folder
-  search, paste routing, delete, keys the dialog ignores, palette open/close,
-  context jump, persistence, dialog render and height),
+  names, the match count, Enter/Tab/arrow movement, the folder combo and its
+  checklist toggles, search, and close keys, paste routing, delete, keys the
+  dialog ignores, palette open/close, context jump, persistence, dialog and
+  checklist render),
   `ui::workspace::render::tests` (dialog size),
   `ui::render::tests::workspace_pane_shrinks_the_body_and_hides_a_narrow_prompt`,
   `workspaces::tests` (matching, ordering, per-change commits, refused names,
@@ -241,12 +262,14 @@ edit dialog.
   workspaces, add one with `+` and from `[NEW WORKSPACE]` (Save and Cancel),
   check the pane lists names in text order, rename one and see it move, toggle
   folders and type includes/excludes and watch `Matches` (the session list
-  changes only after Save), filter folders on the Search row and toggle a
-  match, delete a workspace, open/close via `ctrl+w`, restart with a workspace
-  open and confirm "All" opens. Check the dialog height on a 24-row and a
-  40-row terminal (it grows with the folders up to 90% of the height and does
-  not change while typing a query), and an 80-column terminal (Prompt hidden
-  while the pane is open) and a 120-column one (Prompt kept).
+  changes only after Save), open `Folders ▾`, filter folders and toggle a
+  match, clear the query with Esc and close, confirm the combo summary,
+  delete a workspace, open/close via `ctrl+w`, restart with a workspace open
+  and confirm "All" opens. On a 24-row and a 40-row terminal check the
+  checklist popup (joined under the combo, stops at the terminal bottom, does
+  not change height while typing a query, the dialog bottom border keeps its
+  `━` beside it), and an 80-column terminal (Prompt hidden while the pane is
+  open, status-bar keys not cut) and a 120-column one (Prompt kept).
 - Release PTY check for `[NO WORKSPACE]`: confirm the complement across
   folder and word conditions, the empty-store and unrestricted-workspace cases,
   Enter/delete protection, `+` Cancel/Save, pane reopen, keyword filters,

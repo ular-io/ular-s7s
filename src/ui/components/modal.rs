@@ -1,6 +1,6 @@
 //! Modal framing and backdrop primitives shared by every dialog: the thick
 //! titled block, the clear-and-repaint renderer, navigation-arrow blocks, form
-//! input boxes, joined dividers, button styles, and the behind-dialog backdrop
+//! input boxes, dropdown frames, button styles, and the behind-dialog backdrop
 //! fade.
 
 use crate::theme::Theme;
@@ -188,26 +188,61 @@ pub(crate) fn form_input(
     }
 }
 
-/// Thin divider across a modal's inner row `y`, joined to its thick side borders
-/// as `┠───┨`. `outer` is the area passed to `render_modal`.
-pub(crate) fn joined_divider(f: &mut Frame, outer: Rect, y: u16, th: &Theme) {
-    if outer.width < 4 {
+/// Clears and frames a dropdown popup that overlaps the bottom border of its
+/// combo box: a thick `border` frame whose top edge is redrawn as `┣━┫` to join
+/// the combo. Returns the inner area. `dialog` is the dialog the combo sits in:
+/// one extra column left of the popup is cleared only on rows below it, where a
+/// backdrop double-width glyph could bleed into the border, so the dialog's own
+/// bottom border keeps its `━` beside the popup.
+pub(crate) fn dropdown_frame(
+    f: &mut Frame,
+    popup: Rect,
+    dialog: Rect,
+    border: Style,
+    th: &Theme,
+) -> Rect {
+    f.render_widget(Clear, popup);
+    f.render_widget(Block::default().style(th.base_style()), popup);
+    let below_dialog = dialog.bottom().max(popup.y);
+    if popup.x > 0 && popup.bottom() > below_dialog {
+        let margin = Rect::new(popup.x - 1, below_dialog, 1, popup.bottom() - below_dialog);
+        f.render_widget(Clear, margin);
+        f.render_widget(Block::default().style(th.base_style()), margin);
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(border);
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let width = popup.width as usize;
+    let join = if width > 2 {
+        format!("┣{}┫", "━".repeat(width - 2))
+    } else {
+        "━━".to_string()
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(join, border)),
+        Rect { height: 1, ..popup },
+    );
+    inner
+}
+
+/// Thin divider across a dropdown popup's row `y`, in `line` style, its ends
+/// joined to the thick side borders as `┠`/`┨` in `border` style.
+pub(crate) fn dropdown_divider(f: &mut Frame, popup: Rect, y: u16, border: Style, line: Style) {
+    if popup.width < 2 {
         return;
     }
-    let left = outer.x + 1;
-    let right = outer.x + outer.width - 2;
-    let line = Rect::new(left, y, right - left + 1, 1);
     f.render_widget(
-        Paragraph::new(Span::styled(
-            "─".repeat(line.width as usize),
-            Style::default().fg(th.dim),
-        )),
-        line,
+        Paragraph::new(Span::styled("─".repeat(popup.width as usize), line)),
+        Rect::new(popup.x, y, popup.width, 1),
     );
-    let border = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
     let buf = f.buffer_mut();
-    buf[(left, y)].set_symbol("┠").set_style(border);
-    buf[(right, y)].set_symbol("┨").set_style(border);
+    buf[(popup.x, y)].set_symbol("┠").set_style(border);
+    buf[(popup.right() - 1, y)]
+        .set_symbol("┨")
+        .set_style(border);
 }
 
 /// Dialog button styles: `(focused, unfocused)`.

@@ -2,7 +2,9 @@
 //! profile/model/folder combo boxes, the OK/Cancel button row, and the dropdown
 //! overlay popup.
 
-use crate::ui::components::modal::{button_styles, modal_block, render_modal};
+use crate::ui::components::modal::{
+    button_styles, dropdown_divider, dropdown_frame, modal_block, render_modal,
+};
 use crate::ui::components::text::{
     count_note, fit_before_note, pad_w, sanitize_single_line, truncate_w,
 };
@@ -12,7 +14,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListItem, Padding, Paragraph},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -281,55 +283,12 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
             height: popup_h as u16,
         };
         // The popup extends below the dialog, so the backdrop (e.g. the session
-        // list with CJK titles) stays visible to the left of the frame. Clear one
-        // extra column to the left of the popup so a background double-width
-        // character straddling the left border is erased instead of bleeding half
-        // a glyph into the frame — the same margin technique as `render_modal`.
-        // The border stays at `popup_rect.x` to remain joined with the combo box.
-        // Inside the dialog that column is already base-filled padding, and the
-        // dialog's bottom border row must keep its `━` so both sides look the
-        // same, so the margin only covers rows below the dialog.
-        f.render_widget(Clear, popup_rect);
-        f.render_widget(Block::default().style(th.base_style()), popup_rect);
-        let below_dialog = area.bottom().max(popup_rect.y);
-        if popup_rect.x > 0 && popup_rect.bottom() > below_dialog {
-            let margin_rect = Rect {
-                x: popup_rect.x - 1,
-                y: below_dialog,
-                width: 1,
-                height: popup_rect.bottom() - below_dialog,
-            };
-            f.render_widget(Clear, margin_rect);
-            f.render_widget(Block::default().style(th.base_style()), margin_rect);
-        }
-        // Active dropdown combo boxes are focused (thick borders);
-        // style popup frames in thick borders to join lines seamlessly.
-        let popup_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Thick)
-            .border_style(Style::default().add_modifier(Modifier::BOLD));
-        let popup_inner = popup_block.inner(popup_rect);
-        f.render_widget(popup_block, popup_rect);
-        // Overwrite top border with joint characters (e.g. `┣━┫`) to merge with combo frames (same technique as details view).
-        let join_w = popup_rect.width as usize;
-        let join_line = if join_w > 2 {
-            format!("┣{}┫", "━".repeat(join_w - 2))
-        } else {
-            "━━".to_string()
-        };
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                join_line,
-                Style::default().add_modifier(Modifier::BOLD),
-            ))),
-            Rect {
-                x: popup_rect.x,
-                y: popup_rect.y,
-                width: popup_rect.width,
-                height: 1,
-            },
-        );
-
+        // list with CJK titles) stays visible to the left of the frame; the
+        // shared frame clears a margin column there. Active combo boxes are
+        // focused (thick borders), so the popup frame is thick too and its top
+        // edge joins the combo box as `┣━┫`.
+        let popup_border = Style::default().add_modifier(Modifier::BOLD);
+        let popup_inner = dropdown_frame(f, popup_rect, area, popup_border, th);
         let list_h = (popup_inner.height as usize).saturating_sub(footer_h);
         let inner_w = popup_inner.width as usize;
         let cursor = if profile_open {
@@ -472,25 +431,9 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
 
         if footer_h > 0 {
             // Thin divider joined to the thick side borders with `┠`/`┨`, matching
-            // the folder filter modal; the top border uses the same technique.
+            // the folder filter modal.
             let divider_y = popup_inner.y + list_h as u16;
-            let divider = if join_w > 2 {
-                format!("┠{}┨", "─".repeat(join_w - 2))
-            } else {
-                "──".to_string()
-            };
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    divider,
-                    Style::default().add_modifier(Modifier::BOLD),
-                ))),
-                Rect {
-                    x: popup_rect.x,
-                    y: divider_y,
-                    width: popup_rect.width,
-                    height: 1,
-                },
-            );
+            dropdown_divider(f, popup_rect, divider_y, popup_border, popup_border);
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     // Leading space aligns the footer with the list rows above it.

@@ -93,20 +93,23 @@ const HELP_PROFILE: &[(&str, &str)] = &[
 const HELP_WORKSPACE: &[(&str, &str)] = &[
     ("←/h", "Session list: show workspace list"),
     ("↑/↓", "List: open workspace · Dialog: move row"),
-    ("enter", "List: edit workspace · Dialog: next row / Save"),
+    (
+        "enter",
+        "List: edit workspace · Dialog: next row / open Folders / Save",
+    ),
     ("+", "List: add workspace"),
     ("ctrl+d/del", "List: delete workspace"),
     ("←/→", "List: go to profiles / close list"),
-    ("esc", "List: close · Dialog: cancel"),
     (
-        "tab",
-        "Dialog: next group (fields, search, folders, buttons)",
+        "esc",
+        "List: close · Dialog: cancel · Folders: clear search / close",
     ),
-    ("space", "Dialog: toggle folder"),
+    ("tab", "Dialog: next row (closes Folders)"),
     (
-        "type",
-        "Dialog text rows: edit · Search row filters folders",
+        "space",
+        "Folders: toggle folder (on [ALL FOLDERS]: every folder)",
     ),
+    ("type", "Dialog text rows: edit · Folders: filter folders"),
 ];
 
 // ---- Input ----

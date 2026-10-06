@@ -1,9 +1,9 @@
 //! Workspace state: the Session screen's workspace pane (the `[NEW WORKSPACE]`
 //! row flag, list scroll, and membership cache) and the edit dialog (a draft of one workspace,
-//! its text fields, its stable folder rows and their search, and the button
-//! row). The workspace list cursor is not stored here — it is
-//! `WorkspaceStore::active`, so the list row the user sits on is always the
-//! scope the session lists show.
+//! its text fields, its `Folders ▾` combo with the stable folder rows and search of
+//! its open checklist, and the button row). The workspace list cursor is not
+//! stored here — it is `WorkspaceStore::active`, so the list row the user sits
+//! on is always the scope the session lists show.
 
 use crate::ui::TextInput;
 use crate::workspaces::Workspace;
@@ -11,25 +11,22 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Editable text attributes of a workspace (the dialog's first rows).
+/// Dialog rows above the buttons: three text fields and the folder combo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceField {
     Name,
+    Folders,
     Includes,
     Excludes,
 }
 
-/// Dialog rows before the folder rows, in display order.
-pub(crate) const DIALOG_FIELDS: [WorkspaceField; 3] = [
+/// Dialog rows in display order.
+pub(crate) const DIALOG_FIELDS: [WorkspaceField; 4] = [
     WorkspaceField::Name,
+    WorkspaceField::Folders,
     WorkspaceField::Includes,
     WorkspaceField::Excludes,
 ];
-
-/// Dialog row of the folder search, right above the folder rows.
-pub(crate) const SEARCH_ROW: usize = DIALOG_FIELDS.len();
-/// Dialog row of the first visible folder.
-pub(crate) const FIRST_FOLDER_ROW: usize = SEARCH_ROW + 1;
 
 /// The workspace edit dialog (`UiMode::WorkspaceEdit`). Nothing reaches the
 /// store until Save: Cancel/Esc drop the draft, and a new workspace exists only
@@ -43,25 +40,25 @@ pub struct WorkspaceDialog {
     pub name: TextInput,
     pub includes: TextInput,
     pub excludes: TextInput,
-    /// Row cursor: `0..DIALOG_FIELDS.len()` are fields, `SEARCH_ROW` is the
-    /// folder search, and from `FIRST_FOLDER_ROW` on the rows index `visible`.
-    /// Ignored while `on_buttons`.
+    /// Row cursor, an index into `DIALOG_FIELDS`. Ignored while `on_buttons`.
     pub cursor: usize,
     /// The Save/Cancel row has focus.
     pub on_buttons: bool,
     /// Save (true) or Cancel (false) within the button row.
     pub save_focused: bool,
-    /// Field row last edited (Name until one is): `←` on a folder row returns
-    /// there, to the left column.
-    pub last_field: usize,
-    /// Folder rows in an order captured when the dialog opens (the draft's
-    /// selected folders first, then the rest by latest activity). Toggling does
-    /// not reorder, so the cursor stays on the row it toggled.
+    /// Cursor of the open folder checklist, which takes every key while open:
+    /// row 0 is the fixed `[ALL FOLDERS]` row, row `n` is `visible[n - 1]`.
+    /// `None` while the `Folders ▾` combo is closed.
+    pub folder_list: Option<usize>,
+    /// Folder rows in an order captured each time the checklist opens (the
+    /// draft's selected folders first, then the rest by latest activity).
+    /// Toggling does not reorder, so the cursor stays on the row it toggled.
     pub folders: Vec<PathBuf>,
     /// Sessions per folder over every session, captured with `folders`; a
     /// stored folder with no session left is absent and reads 0.
     pub folder_counts: HashMap<PathBuf, usize>,
-    /// Folder search, typed directly while the cursor is on `SEARCH_ROW`.
+    /// Checklist search: typing goes here while the checklist is open. Empty
+    /// whenever it opens.
     pub folder_query: TextInput,
     /// Indices into `folders` matching `folder_query`, in `folders` order.
     pub visible: Vec<usize>,
@@ -69,7 +66,7 @@ pub struct WorkspaceDialog {
     pub matching: usize,
     /// Why the last Save was refused; shown on the notice line until the next edit.
     pub error: Option<String>,
-    /// Folder viewport offset, adjusted during render to keep the cursor visible.
+    /// Checklist viewport offset, adjusted during render to keep the cursor visible.
     pub folder_scroll: Cell<usize>,
 }
 
@@ -90,7 +87,7 @@ impl WorkspaceDialog {
             cursor: 0,
             on_buttons: false,
             save_focused: true,
-            last_field: 0,
+            folder_list: None,
             folders: Vec::new(),
             folder_counts: HashMap::new(),
             folder_query: TextInput::new(String::new()),
@@ -101,13 +98,9 @@ impl WorkspaceDialog {
         }
     }
 
-    /// Cursor rows: the fields, the search row, and the visible folders.
-    pub(crate) fn rows(&self) -> usize {
-        FIRST_FOLDER_ROW + self.visible.len()
-    }
-
-    pub(crate) fn cursor_on_search(&self) -> bool {
-        !self.on_buttons && self.cursor == SEARCH_ROW
+    /// Checklist rows: the fixed `[ALL FOLDERS]` row and the visible folders.
+    pub(crate) fn list_rows(&self) -> usize {
+        1 + self.visible.len()
     }
 
     /// Recomputes `visible` from `folder_query`. Every whitespace-separated
@@ -138,7 +131,7 @@ impl WorkspaceDialog {
         self.visible.iter().filter_map(|&i| self.folders.get(i))
     }
 
-    /// Field under the cursor, if it is on a field row.
+    /// Row under the cursor, if it is not on the buttons.
     pub(crate) fn cursor_field(&self) -> Option<WorkspaceField> {
         if self.on_buttons {
             return None;
@@ -146,34 +139,53 @@ impl WorkspaceDialog {
         DIALOG_FIELDS.get(self.cursor).copied()
     }
 
-    /// Folder under the cursor, if it is on a folder row.
+    /// Folder under the open checklist's cursor (`None` on `[ALL FOLDERS]`).
     pub(crate) fn cursor_folder(&self) -> Option<&PathBuf> {
-        if self.on_buttons {
-            return None;
-        }
-        self.cursor
-            .checked_sub(FIRST_FOLDER_ROW)
+        self.folder_list
+            .and_then(|row| row.checked_sub(1))
             .and_then(|i| self.visible.get(i))
             .and_then(|&i| self.folders.get(i))
     }
 
-    /// Text input under the cursor: a field or the folder search.
+    /// Text input under the cursor: the open checklist's search, or a text
+    /// field. The closed combo and the buttons own no text.
     pub(crate) fn cursor_input(&mut self) -> Option<&mut TextInput> {
+        if self.folder_list.is_some() {
+            return Some(&mut self.folder_query);
+        }
         match self.cursor_field() {
             Some(WorkspaceField::Name) => Some(&mut self.name),
             Some(WorkspaceField::Includes) => Some(&mut self.includes),
             Some(WorkspaceField::Excludes) => Some(&mut self.excludes),
-            None if self.cursor_on_search() => Some(&mut self.folder_query),
-            None => None,
+            Some(WorkspaceField::Folders) | None => None,
         }
     }
 
-    pub(crate) fn input(&self, field: WorkspaceField) -> &TextInput {
+    /// Text field input; `None` for the folder combo.
+    pub(crate) fn input(&self, field: WorkspaceField) -> Option<&TextInput> {
         match field {
-            WorkspaceField::Name => &self.name,
-            WorkspaceField::Includes => &self.includes,
-            WorkspaceField::Excludes => &self.excludes,
+            WorkspaceField::Name => Some(&self.name),
+            WorkspaceField::Includes => Some(&self.includes),
+            WorkspaceField::Excludes => Some(&self.excludes),
+            WorkspaceField::Folders => None,
         }
+    }
+
+    /// Selected folders in checklist order. A stored folder the rows lack
+    /// (only before the first refresh) follows in stored order.
+    pub(crate) fn selected_folders(&self) -> Vec<&PathBuf> {
+        let mut out: Vec<&PathBuf> = self
+            .folders
+            .iter()
+            .filter(|f| self.draft.has_folder(f))
+            .collect();
+        out.extend(
+            self.draft
+                .folders
+                .iter()
+                .filter(|f| !self.folders.contains(f)),
+        );
+        out
     }
 }
 
