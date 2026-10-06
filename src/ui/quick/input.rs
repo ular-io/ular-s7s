@@ -101,7 +101,11 @@ impl App {
             .iter()
             .map(|w| w.name.as_str())
             .collect();
-        let mut items = build_workspace_items(&query, &names, self.workspaces.active_index());
+        let mut items = build_workspace_items(
+            &query,
+            &names,
+            self.workspaces.active != crate::workspaces::WorkspaceScope::All,
+        );
         items.extend(build_items(&query, &self.quick_history, |id| {
             self.quick_enabled(id)
         }));
@@ -221,6 +225,9 @@ impl App {
                     // Workspace rows are generated per workspace, so they stay out
                     // of the history keyed by registry commands.
                     QuickAction::Workspace(idx) => self.open_workspace_from_palette(idx),
+                    QuickAction::UnassignedWorkspace => {
+                        self.open_unassigned_workspace_from_palette()
+                    }
                     QuickAction::Command(_) => {
                         let spec = item.spec().expect("registry command");
                         self.quick_record_history(spec.key);

@@ -269,15 +269,15 @@ Additional rules:
   is shown, so hiding it moves no focus.
 - The pane is a focused `titled_block_nav` with both arrows (`←` Profile,
   `→` close). The session table and the Prompt fade like any unfocused pane.
-- Rows: the fixed `[ALL]` first, the stored workspaces, then the fixed
-  `[NEW WORKSPACE]` last, all outside the stored list. Three signals set the
-  fixed rows apart, none of them color alone: the bracketed upper-case label
+- Rows: the fixed `[ALL]` first, `[NONE-WORKSPACE]` second, the stored
+  workspaces, then the fixed `[NEW WORKSPACE]` last. All fixed rows stay outside
+  the stored list. Three signals set the fixed rows apart, none of them color alone: the bracketed upper-case label
   (as with `[SCRATCH]`), a `dim` divider between them and the stored workspaces
   (one divider when there is none; the cursor never lands on it), and the
   `key_hint` color on an unselected row. The label is list-only
   (`workspace::render::ALL_WORKSPACE_LABEL`); palette rows and messages keep
-  the name "All". The cursor row is the open workspace (or `[NEW WORKSPACE]`,
-  showing "All"). Stored workspaces are in name order (see
+  the names "All" and "None-Workspace". The cursor row is the open scope
+  (or `[NEW WORKSPACE]`, showing "All"). Stored workspaces are in name order (see
   [workspaces.md](./workspaces.md) §The open workspace).
 - While an overlay (the edit dialog included) or the search prompt owns input
   the pane is drawn unfocused, its cursor row in `selection_inactive_bg` +

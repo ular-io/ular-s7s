@@ -7,7 +7,7 @@
 
 use crate::ui::TextInput;
 use crate::workspaces::Workspace;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -179,6 +179,10 @@ impl WorkspaceDialog {
 
 #[derive(Default)]
 pub struct WorkspaceScreenState {
+    /// Lazy membership over the current session vector and saved workspaces.
+    /// Session replacement/removal and saved workspace changes invalidate it;
+    /// ordinary filters and scope navigation reuse it.
+    pub(crate) membership: RefCell<Option<Vec<bool>>>,
     /// The workspace pane cursor is on `[NEW WORKSPACE]`, below the stored
     /// workspaces. "All" is open meanwhile, and the flag counts only while it is.
     pub new_row: bool,

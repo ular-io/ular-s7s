@@ -28,6 +28,7 @@ pub(crate) const LIST_MAX_W: u16 = 24;
 /// case marks a fixed option (as `[SCRATCH]` does), and a divider separates each
 /// from the stored workspaces. Elsewhere "All" keeps its plain name.
 pub(crate) const ALL_WORKSPACE_LABEL: &str = "[ALL]";
+pub(crate) const UNASSIGNED_WORKSPACE_LABEL: &str = "[NONE-WORKSPACE]";
 pub(crate) const NEW_WORKSPACE_LABEL: &str = "[NEW WORKSPACE]";
 /// Label column of the dialog's unboxed rows (`" Matches "`, `" Search "`).
 const LABEL_W: usize = 10;
@@ -60,7 +61,7 @@ pub(crate) fn dialog_size(full: Rect, folders: usize) -> (u16, u16) {
     (width, want.min(cap) as u16)
 }
 
-/// The Session screen's workspace pane: `[ALL]`, the stored workspaces, then
+/// The Session screen's workspace pane: `[ALL]`, `[NONE-WORKSPACE]`, stored workspaces, then
 /// `[NEW WORKSPACE]`, focused while it takes keys.
 pub(crate) fn draw_workspace_pane(f: &mut Frame, app: &App, area: Rect) {
     let th = &app.theme;
@@ -74,7 +75,11 @@ pub(crate) fn draw_workspace_pane(f: &mut Frame, app: &App, area: Rect) {
     // Display rows: `Some((label, fixed))` is a cursor row, `None` a divider the
     // cursor never lands on. A list with no stored workspace keeps one divider.
     let stored = &app.workspaces.workspaces;
-    let mut rows: Vec<Option<(&str, bool)>> = vec![Some((ALL_WORKSPACE_LABEL, true)), None];
+    let mut rows: Vec<Option<(&str, bool)>> = vec![
+        Some((ALL_WORKSPACE_LABEL, true)),
+        Some((UNASSIGNED_WORKSPACE_LABEL, true)),
+        None,
+    ];
     rows.extend(stored.iter().map(|w| Some((w.name.as_str(), false))));
     if !stored.is_empty() {
         rows.push(None);

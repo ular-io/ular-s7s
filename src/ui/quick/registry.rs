@@ -304,6 +304,7 @@ pub enum QuickAction {
     Command(usize),
     /// `Open Workspace <name>` (`Some(index)`) or `Close Workspace` (`None`).
     Workspace(Option<usize>),
+    UnassignedWorkspace,
 }
 
 /// Presentation items in the palette (action, label, and enablement state on active screen).
@@ -320,7 +321,7 @@ impl QuickItem {
     pub fn spec(&self) -> Option<&'static CommandSpec> {
         match self.action {
             QuickAction::Command(idx) => Some(&COMMANDS[idx]),
-            QuickAction::Workspace(_) => None,
+            QuickAction::Workspace(_) | QuickAction::UnassignedWorkspace => None,
         }
     }
 
@@ -340,6 +341,9 @@ impl QuickItem {
                 "Show only this workspace's sessions in the session list"
             }
             (QuickAction::Workspace(None), true) => "Show all sessions (no workspace)",
+            (QuickAction::UnassignedWorkspace, true) => {
+                "Show sessions matching none of the saved workspaces"
+            }
         }
     }
 }
@@ -366,10 +370,10 @@ fn matches(spec: &CommandSpec, tokens: &[String]) -> bool {
 }
 
 /// Workspace rows for a non-empty query (an empty `:` palette is unchanged):
-/// `Close Workspace` first, then `Open Workspace <name>` in list order, each
+/// `Close Workspace` first, then Unassigned and saved `Open Workspace <name>` rows, each
 /// kept when every query token matches its label (or Close's aliases). A
 /// disabled Close (no workspace open) sorts after the open rows.
-pub fn build_workspace_items(query: &str, names: &[&str], active: Option<usize>) -> Vec<QuickItem> {
+pub fn build_workspace_items(query: &str, names: &[&str], scope_open: bool) -> Vec<QuickItem> {
     let tokens: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     if tokens.is_empty() {
         return Vec::new();
@@ -383,16 +387,27 @@ pub fn build_workspace_items(query: &str, names: &[&str], active: Option<usize>)
     let close = hit(CLOSE_WORKSPACE_LABEL, CLOSE_WORKSPACE_ALIASES).then(|| QuickItem {
         action: QuickAction::Workspace(None),
         label: CLOSE_WORKSPACE_LABEL.to_string(),
-        enabled: active.is_some(),
+        enabled: scope_open,
     });
-    let opens = names.iter().enumerate().filter_map(|(i, name)| {
-        let label = format!("{OPEN_WORKSPACE_PREFIX} {name}");
-        hit(&label, &[]).then_some(QuickItem {
-            action: QuickAction::Workspace(Some(i)),
-            label,
-            enabled: true,
-        })
+    let unassigned_label = format!(
+        "{OPEN_WORKSPACE_PREFIX} {}",
+        crate::workspaces::UNASSIGNED_WORKSPACE_NAME
+    );
+    let unassigned = hit(&unassigned_label, &[]).then_some(QuickItem {
+        action: QuickAction::UnassignedWorkspace,
+        label: unassigned_label,
+        enabled: true,
     });
+    let opens = unassigned
+        .into_iter()
+        .chain(names.iter().enumerate().filter_map(|(i, name)| {
+            let label = format!("{OPEN_WORKSPACE_PREFIX} {name}");
+            hit(&label, &[]).then_some(QuickItem {
+                action: QuickAction::Workspace(Some(i)),
+                label,
+                enabled: true,
+            })
+        }));
     let mut items: Vec<QuickItem> = Vec::new();
     match close {
         Some(close) if close.enabled => {
@@ -459,11 +474,12 @@ mod tests {
     #[test]
     fn workspace_query_lists_close_then_every_open_row() {
         let names = ["AAA", "bbb", "ccc"];
-        let items = build_workspace_items(WORKSPACE_QUERY, &names, Some(1));
+        let items = build_workspace_items(WORKSPACE_QUERY, &names, true);
         assert_eq!(
             labels(&items),
             [
                 "Close Workspace",
+                "Open Workspace None-Workspace",
                 "Open Workspace AAA",
                 "Open Workspace bbb",
                 "Open Workspace ccc"
@@ -471,21 +487,28 @@ mod tests {
         );
         assert!(items.iter().all(|i| i.enabled));
         // Narrowing by a name keeps only that row (Close has no such word).
-        let items = build_workspace_items("open workspace bb", &names, Some(1));
+        let items = build_workspace_items("open workspace bb", &names, true);
         assert_eq!(labels(&items), ["Open Workspace bbb"]);
     }
 
     #[test]
     fn close_workspace_is_disabled_and_last_while_all_is_open() {
-        let items = build_workspace_items(WORKSPACE_QUERY, &["AAA"], None);
-        assert_eq!(labels(&items), ["Open Workspace AAA", "Close Workspace"]);
-        assert!(!items[1].enabled);
-        assert_eq!(items[1].description(), "No workspace is open");
+        let items = build_workspace_items(WORKSPACE_QUERY, &["AAA"], false);
+        assert_eq!(
+            labels(&items),
+            [
+                "Open Workspace None-Workspace",
+                "Open Workspace AAA",
+                "Close Workspace"
+            ]
+        );
+        assert!(!items[2].enabled);
+        assert_eq!(items[2].description(), "No workspace is open");
     }
 
     #[test]
     fn empty_query_adds_no_workspace_rows() {
-        assert!(build_workspace_items("  ", &["AAA"], Some(0)).is_empty());
+        assert!(build_workspace_items("  ", &["AAA"], true).is_empty());
     }
 
     #[test]

@@ -31,8 +31,8 @@ pub(crate) struct JumpOrigin {
     agent: Agent,
     id: String,
     filter: Filter,
-    /// Open workspace id at the origin; a jump may have to close it.
-    workspace: Option<String>,
+    /// Workspace scope at the origin, including the synthetic Unassigned scope.
+    workspace: crate::workspaces::WorkspaceScope,
 }
 
 impl App {
@@ -114,7 +114,7 @@ impl App {
             else {
                 continue;
             };
-            self.restore_active_workspace(origin.workspace.as_deref());
+            self.set_workspace_scope(origin.workspace);
             self.filter = origin.filter;
             self.keyword_cursor = self.filter.keyword.len();
             self.recompute();

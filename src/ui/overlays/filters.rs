@@ -141,14 +141,11 @@ impl App {
     fn folder_counts_without_folder_filter(&self) -> HashMap<String, usize> {
         let mut others = self.filter.clone();
         others.folders.clear();
-        let kept = crate::filter::apply_with_bookmarks(&self.sessions, &others, |s| {
+        let mut kept = crate::filter::apply_with_bookmarks(&self.sessions, &others, |s| {
             self.bookmarks.contains(s)
         });
-        let ws = self.workspaces.active_workspace();
-        let sessions = kept
-            .into_iter()
-            .map(|i| &self.sessions[i])
-            .filter(|s| ws.is_none_or(|w| w.matches(s)));
+        self.retain_workspace_scope(&mut kept);
+        let sessions = kept.into_iter().map(|i| &self.sessions[i]);
         crate::ui::count_by(sessions, crate::ui::folder_name_key)
     }
 
