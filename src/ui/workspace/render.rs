@@ -1,13 +1,13 @@
 //! Workspace rendering: the Session screen's workspace pane, the edit dialog
-//! (stacked field boxes with the `Folders ▾` combo, the match count, a notice
+//! (stacked field boxes with the `Folders` combo, the match count, a notice
 //! line for a refused Save, the Save/Cancel buttons, and the combo's folder
 //! checklist popup), and the deletion confirmation.
 
 use super::state::{folder_display_label, WorkspaceDialog, WorkspaceField, DIALOG_FIELDS};
 use crate::theme::Theme;
 use crate::ui::components::modal::{
-    button_styles, dropdown_divider, dropdown_frame, form_input, modal_block, render_modal,
-    titled_block_nav,
+    button_styles, draw_combo, dropdown_divider, dropdown_frame, form_input, modal_block,
+    render_modal, titled_block_nav,
 };
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{count_note, fit_before_note, pad_w, truncate_w};
@@ -17,7 +17,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, Wrap},
+    widgets::{Padding, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -184,7 +184,7 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Name
-            Constraint::Length(3), // Folders ▾
+            Constraint::Length(3), // Folders combo
             Constraint::Length(3), // Includes
             Constraint::Length(3), // Excludes
             Constraint::Length(1), // Matches
@@ -199,7 +199,8 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
         let focused = !dialog.on_buttons && dialog.cursor == row;
         let (label, placeholder) = match field {
             WorkspaceField::Name => (" Name ", ""),
-            WorkspaceField::Folders => (" Folders ▾ ", ""),
+            // A combo: `draw_combo` adds the padding and the `▾`.
+            WorkspaceField::Folders => ("Folders", ""),
             // The titles carry the word rule: every include word must
             // occur, while any one exclude word hides a session.
             WorkspaceField::Includes => (" Includes · all words ", "(none)"),
@@ -253,9 +254,10 @@ pub(crate) fn draw_workspace_dialog(f: &mut Frame, app: &App) {
     }
 }
 
-/// The closed `Folders ▾` combo, framed like a `form_input` box (`Thick`
-/// accent while focused or open, `Plain` `dim` otherwise) and showing the
-/// selection from `folder_summary`, its folder count dim at the right edge.
+/// The closed `Folders` combo (`draw_combo`: `Thick` accent while focused or
+/// open, `Plain` `dim` otherwise, `▾` at the inner right end), showing the
+/// selection from `folder_summary` with its folder count dim at the right edge
+/// of the value area, just left of the `▾`.
 fn folder_combo(
     f: &mut Frame,
     area: Rect,
@@ -264,23 +266,8 @@ fn folder_combo(
     focused: bool,
     th: &Theme,
 ) {
-    let (border_type, style) = if focused {
-        (
-            BorderType::Thick,
-            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (BorderType::Plain, Style::default().fg(th.dim))
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(border_type)
-        .border_style(style)
-        .title(Span::styled(label.to_string(), style))
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    let width = inner.width as usize;
+    let value = draw_combo(f, area, label, focused, th);
+    let width = value.width as usize;
     let (names, count) = folder_summary(dialog, width);
     let line = match count {
         Some(count) => Line::from(vec![
@@ -289,7 +276,7 @@ fn folder_combo(
         ]),
         None => Line::from(names),
     };
-    f.render_widget(Paragraph::new(line), inner);
+    f.render_widget(Paragraph::new(line), value);
 }
 
 /// The combo's value as `(names, count)` for a `width`-cell row: `All
@@ -342,7 +329,7 @@ pub(crate) fn folder_summary(dialog: &WorkspaceDialog, width: usize) -> (String,
     }
 }
 
-/// The open folder checklist, a popup joined under the `Folders ▾` combo
+/// The open folder checklist, a popup joined under the `Folders` combo
 /// (`anchor`): the search line, the fixed `[ALL FOLDERS]` row and the folder
 /// rows (`[✓]`/`[ ]`, the bare basename, and a right-aligned ` (N)` session
 /// count), and a footer with the cursor row's full path. It is sized by every

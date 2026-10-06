@@ -1,6 +1,6 @@
 //! Workspace key handling and mutations: the Session screen's workspace pane
 //! (opening a scope, `[NEW WORKSPACE]`, deletion) and the edit dialog it opens
-//! (a draft name, include/exclude words, and a `Folders ▾` checklist with its
+//! (a draft name, include/exclude words, and a `Folders` checklist with its
 //! search, saved only by its Save button).
 
 use super::state::{WorkspaceDialog, WorkspaceField, DIALOG_FIELDS};
@@ -268,7 +268,7 @@ impl App {
 
     /// Handles keys in the workspace edit dialog. Text rows take typing
     /// directly; ↑/↓ move one row and Tab/BackTab do the same, wrapping; Enter
-    /// on a text row moves on, Enter or space on `Folders ▾` opens its
+    /// on a text row moves on, Enter or space on `Folders` opens its
     /// checklist, and only the Save button saves. Esc cancels.
     pub fn on_key_workspace_dialog(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -352,7 +352,7 @@ impl App {
         }
     }
 
-    /// Opens the `Folders ▾` checklist on `[ALL FOLDERS]` with an empty
+    /// Opens the `Folders` checklist on `[ALL FOLDERS]` with an empty
     /// search, the rows re-sorted so the current selection comes first.
     fn open_workspace_folder_list(&mut self) {
         let Some(dialog) = self.workspace.dialog.as_mut() else {

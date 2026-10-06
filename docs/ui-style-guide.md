@@ -150,6 +150,17 @@ Use the shared primitives in `ui/components/modal.rs`:
 - `button_styles` for theme-aware focused and unfocused buttons;
 - `form_input` for a single-line text input: a three-row box titled with its
   label, `Thick` accent while focused and `Plain` `dim` otherwise;
+- `draw_combo` for a closed combo box (the New Session `Profile`, `Model`,
+  `Folder` and the workspace `Folders`): framed like `form_input`, titled with
+  the name alone, and a `▾` at the inner right end (just inside the right
+  padding) in the border's style — accent + bold while focused or open, `dim`
+  otherwise, never the error color of an invalid value. It returns the value
+  area, the inner width minus the `▾` and one gap cell; draw the value, any
+  right-aligned note (the `N folders` count), a placeholder, and a text-input
+  combo's `input_view` width and cursor only there, so nothing covers the
+  `▾`. Below three inner cells the `▾` is dropped. The `▾` stays while the
+  popup is open (the popup overlaps only the combo's bottom border), and a
+  read-only control (the Context Source) has none;
 - `dropdown_frame` / `dropdown_divider` for a dropdown popup's frame and its
   thin `┠─┨` rows;
 - `dim_backdrop` only for modes selected by `backdrop_dimmed`.
@@ -165,7 +176,7 @@ Additional rules:
   Folders search line.
 - A form that also edits a long list keeps one column of stacked boxes and
   moves the list into a combo's dropdown popup (the workspace dialog's
-  `Folders ▾`), so the dialog keeps the standard 80% width cap and a fixed
+  `Folders`), so the dialog keeps the standard 80% width cap and a fixed
   height. Put such a combo high in the form: the popup opens downward over
   the rows below it, and the rows above it cost list rows.
 - Keep action order `[Confirm/Execute] [Cancel]`.
@@ -195,7 +206,8 @@ Additional rules:
   dialog's own border, or one side of the dialog's bottom edge loses its `━`
   next to the popup. `components::modal::dropdown_frame` applies this rule and
   joins the popup to its combo as `┣━┫`; `dropdown_divider` draws the popup's
-  `┠─┨` rows.
+  `┠─┨` rows. Both take the focused combo's accent + bold border style, so the
+  join reads as one line; a divider's middle `─` is `dim`.
 - Theme selection does not dim its backdrop because the background is the live
   preview.
 
@@ -230,7 +242,7 @@ Additional rules:
   survives a focus move (the folder dialog opens with a prefill already selected
   while focus sits on another control), so an ungated paint leaves an inactive
   control permanently reversed instead of showing a pending edit.
-- A multi-select dropdown (the workspace `Folders ▾` checklist) follows the
+- A multi-select dropdown (the workspace `Folders` checklist) follows the
   checkbox-list keys rather than the single-select dropdown ones: Enter or
   `space` opens the closed combo, `space` toggles the cursor row at once, and
   Enter, Esc, and Tab only close (Tab also moves on), so closing never
@@ -239,7 +251,8 @@ Additional rules:
   non-empty query before it closes. The closed combo shows the selection as a
   summary: the "everything" value for an empty selection, else the selected
   names in the default color, cut at name boundaries with `…`, and for two or
-  more a count right-aligned in `soft_dim()`. Spell the count out
+  more a count right-aligned in `soft_dim()` at the right end of the value
+  area, one gap cell left of the `▾`. Spell the count out
   (`12 folders`): a bare `(N)` already means a session count in folder rows.
   Never dim the names themselves — in a form, dim marks an empty value
   (`(none)`) or a note, not a selection.
@@ -319,7 +332,7 @@ Additional rules:
   ` Edit Workspace ` or ` New Workspace ` with the standard dialog padding (one
   blank row under the title), over the dimmed Session screen. Width 86
   including the outer margin, capped at 80% of the terminal width.
-- One column, top to bottom: the `Name` box, the `Folders ▾` combo, the
+- One column, top to bottom: the `Name` box, the `Folders` combo, the
   `Includes · all words` and `Excludes · any word` boxes, then
   `Matches  N of M sessions` (N in the default color, the rest `soft_dim()`).
   Below it: the notice line, a blank row, and the buttons. Like every form
@@ -333,11 +346,12 @@ Additional rules:
   new workspace's suggested name) paints only the text with
   `selection_fg`/`selection_bg`, as with the combo-box selection rule. An
   empty unfocused Includes/Excludes box reads `(none)` in `soft_dim()`.
-- `Folders ▾` is framed like a `form_input` box (`Thick` accent while focused
-  or open, `Plain` `dim` otherwise) and shows `folder_summary`: `All folders`,
-  one basename, or the basenames joined by `, ` (whole names only, `…` when
-  some are left out) with `N folders` right-aligned in `soft_dim()` and at
-  least one blank cell before it. A row narrower than the count keeps only
+- `Folders` is a `draw_combo` box (`Thick` accent while focused or open,
+  `Plain` `dim` otherwise, `▾` at the inner right end) and shows
+  `folder_summary` sized to the value area: `All folders`, one basename, or
+  the basenames joined by `, ` (whole names only, `…` when some are left out)
+  with `N folders` right-aligned in `soft_dim()` just left of the `▾` gap and
+  at least one blank cell before it. A row narrower than the count keeps only
   the count.
 - The open checklist (`draw_folder_list`) is a popup joined under the combo
   by `dropdown_frame` with an accent border, drawn after the buttons. It

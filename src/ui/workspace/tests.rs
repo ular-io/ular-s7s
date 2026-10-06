@@ -1189,7 +1189,7 @@ fn edit_dialog_stacks_the_fields_with_the_folder_combo_second() {
     // One column of titled boxes: the focused Name box is thick, the rest plain.
     let at = |needle: &str| rows.iter().position(|l| l.contains(needle));
     let name = at("┏ Name ━").expect("name box");
-    assert_eq!(at("┌ Folders ▾ ─"), Some(name + 3), "{text}");
+    assert_eq!(at("┌ Folders ─"), Some(name + 3), "{text}");
     assert_eq!(at("┌ Includes · all words ─"), Some(name + 6), "{text}");
     assert_eq!(at("┌ Excludes · any word ─"), Some(name + 9), "{text}");
     assert!(rows[name + 4].contains("│ root "), "{text}");
@@ -1260,7 +1260,9 @@ fn folder_combo_lists_whole_names_beside_a_dim_folder_count() {
         .lines()
         .find(|l| l.contains("│ middle, root, leaf "))
         .expect("combo value");
-    assert!(row.contains("3 folders │"), "{row}");
+    // The count ends one gap cell left of the `▾`, which sits just inside
+    // the right padding.
+    assert!(row.contains("3 folders ▾ │"), "{row}");
     assert_eq!(
         cell_at(&buf, "3 folders", 0..140).fg,
         app.theme.soft_dim().fg.unwrap()
@@ -1283,6 +1285,51 @@ fn folder_combo_lists_whole_names_beside_a_dim_folder_count() {
     );
 }
 
+/// The `▾` sits at the inner right end of the `Folders` combo in the border's
+/// style, and on an 80-column terminal the name summary and count stay left of
+/// it, leaving the one gap cell.
+#[test]
+fn folder_combo_arrow_follows_focus_and_the_summary_stays_left_of_it() {
+    use ratatui::style::Modifier;
+    let mut app = app_with_workspace();
+    app.workspaces.workspaces[0].folders = vec![
+        PathBuf::from("/tmp/leaf"),
+        PathBuf::from("/tmp/middle"),
+        PathBuf::from("/tmp/root"),
+    ];
+    on_api_dialog(&mut app);
+    let arrow = |app: &App| {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|f| crate::ui::render::draw(f, app))
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let y = (0..buf.area.height)
+            .find(|&y| (0..buf.area.width).any(|x| buf[(x, y)].symbol() == "▾"))
+            .expect("arrow row");
+        let row: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+        let x = row.iter().position(|s| *s == "▾").unwrap();
+        // `▾`, the right padding, then the combo's right border.
+        assert_eq!(row[x + 1], " ", "{}", row.concat());
+        assert!(matches!(row[x + 2], "│" | "┃"), "{}", row.concat());
+        // The count ends at the gap cell before the `▾`.
+        assert!(row.concat().contains("3 folders ▾"), "{}", row.concat());
+        let title_y = y - 1;
+        assert!(
+            (0..buf.area.width).all(|x| buf[(x, title_y)].symbol() != "▾"),
+            "no arrow in the title"
+        );
+        buf[(x as u16, y)].clone()
+    };
+    let unfocused = arrow(&app);
+    assert_eq!(unfocused.fg, app.theme.dim);
+    assert!(!unfocused.modifier.contains(Modifier::BOLD));
+    press(&mut app, KeyCode::Down); // Name -> Folders
+    let focused = arrow(&app);
+    assert_eq!(focused.fg, app.theme.accent);
+    assert!(focused.modifier.contains(Modifier::BOLD));
+}
+
 #[test]
 fn folder_checklist_joins_the_combo_and_resolves_the_cursor_path() {
     let mut app = app_with_workspace();
@@ -1295,7 +1342,7 @@ fn folder_checklist_joins_the_combo_and_resolves_the_cursor_path() {
         .iter()
         .position(|l| l.contains("┣━") && l.contains("━┫"))
         .expect("joined popup edge");
-    assert!(lines[top - 2].contains("┏ Folders ▾ ━"), "{text}");
+    assert!(lines[top - 2].contains("┏ Folders ━"), "{text}");
     assert!(lines[top + 1].contains(" Search "), "{text}");
     assert!(lines[top + 2].contains("┠─"), "{text}");
     assert!(lines[top + 3].contains("[ ] [ALL FOLDERS]"), "{text}");
