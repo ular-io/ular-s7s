@@ -269,12 +269,12 @@ Additional rules:
   is shown, so hiding it moves no focus.
 - The pane is a focused `titled_block_nav` with both arrows (`←` Profile,
   `→` close). The session table and the Prompt fade like any unfocused pane.
-- Rows: the fixed `[ALL]` first, `[NO WORKSPACE]` second, the stored
-  workspaces, then the fixed `[NEW WORKSPACE]` last. All fixed rows stay outside
-  the stored list. Three signals set the fixed rows apart, none of them color
-  alone: the bracketed upper-case label (as with `[SCRATCH]`), a `dim` divider
-  between them and the stored workspaces (one divider when there is none; the
-  cursor never lands on it), and the `key_hint` color on an unselected row.
+- Rows: the fixed `[ALL]` first, the stored workspaces, `[NO WORKSPACE]`, then
+  the fixed `[NEW WORKSPACE]` last. All fixed rows stay outside the stored
+  list and use bracketed upper-case labels (as with `[SCRATCH]`) and the
+  `key_hint` color on an unselected row. A `dim` divider follows `[ALL]` only
+  when stored workspaces exist; another divider separates `[NO WORKSPACE]`
+  from `[NEW WORKSPACE]`. The cursor never lands on a divider.
   The labels are list-only
   (`workspace::render::{ALL_WORKSPACE_LABEL, UNASSIGNED_WORKSPACE_LABEL}`);
   palette rows and messages keep the names "All" and "No Workspace".

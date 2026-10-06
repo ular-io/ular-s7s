@@ -63,7 +63,6 @@ fn dialog(app: &App) -> &WorkspaceDialog {
 fn on_api_dialog(app: &mut App) {
     on_pane(app);
     press(app, KeyCode::Down);
-    press(app, KeyCode::Down);
     press(app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
     assert_eq!(dialog(app).cursor_field(), Some(WorkspaceField::Name));
@@ -89,9 +88,12 @@ fn visible_ids(app: &App) -> Vec<String> {
 
 fn on_unassigned(app: &mut App) {
     app.open_workspace_pane();
-    press(app, KeyCode::Home);
-    press(app, KeyCode::Down);
-    assert_eq!(app.workspace_pane_cursor(), 1);
+    press(app, KeyCode::End);
+    press(app, KeyCode::Up);
+    assert_eq!(
+        app.workspace_pane_cursor(),
+        app.workspaces.workspaces.len() + 1
+    );
     assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
 }
 
@@ -148,7 +150,54 @@ fn unassigned_handles_empty_stores_and_unrestricted_workspaces() {
     let mut empty = empty_app();
     on_unassigned(&mut empty);
     assert!(empty.filtered.is_empty());
-    assert!(rendered(&empty, 80, 24).contains("[NO WORKSPACE]"));
+    let text = rendered(&empty, 80, 24);
+    let pane: Vec<String> = text
+        .lines()
+        .skip(6)
+        .take(4)
+        .map(|l| l.chars().skip(1).take(22).collect::<String>())
+        .collect();
+    assert_eq!(
+        pane.iter().map(|l| l.trim_end()).collect::<Vec<_>>(),
+        [
+            " [ALL]",
+            " [NO WORKSPACE]",
+            "─".repeat(22).as_str(),
+            " [NEW WORKSPACE]"
+        ],
+        "{text}"
+    );
+}
+
+#[test]
+fn unassigned_follows_the_last_saved_workspace_and_scrolls_into_view() {
+    let mut app = app_with_context_chain();
+    for i in 0..30 {
+        app.workspaces.upsert(Workspace::new(
+            format!("ws-{i}"),
+            format!("Workspace {i:02}"),
+        ));
+    }
+    on_unassigned(&mut app);
+    let text = rendered(&app, 80, 12);
+    assert!(text.contains("[NO WORKSPACE]"), "{text}");
+    assert!(!text.contains("[ALL]"), "{text}");
+    assert!(app.workspace.list_scroll.get() > 0);
+
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.active_workspace_name(), Some("Workspace 29"));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+    press(&mut app, KeyCode::Down);
+    assert!(app.workspace.new_row);
+    assert!(rendered(&app, 80, 12).contains("[NEW WORKSPACE]"));
+
+    press(&mut app, KeyCode::Home);
+    let text = rendered(&app, 80, 12);
+    assert!(text.contains("[ALL]"), "{text}");
+    assert_eq!(app.workspace.list_scroll.get(), 0);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.workspace_pane_cursor(), 0);
 }
 
 #[test]
@@ -167,10 +216,10 @@ fn unassigned_cannot_be_edited_or_deleted_and_new_draft_cancel_keeps_it() {
     type_text(&mut app, "New Scope");
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
-    assert_eq!(app.workspace_pane_cursor(), 1);
+    assert_eq!(app.workspace_pane_cursor(), 2);
     press(&mut app, KeyCode::Right);
     on_pane(&mut app);
-    assert_eq!(app.workspace_pane_cursor(), 1);
+    assert_eq!(app.workspace_pane_cursor(), 2);
 }
 
 #[test]
@@ -179,7 +228,7 @@ fn workspace_save_and_delete_invalidate_unassigned_membership() {
     app.workspaces.workspaces[0].includes = "leaf".into();
     on_unassigned(&mut app);
     assert_eq!(visible_ids(&app), ["middle", "root"]);
-    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Down);
     let includes = &mut app.workspace.dialog.as_mut().unwrap().includes;
@@ -188,7 +237,7 @@ fn workspace_save_and_delete_invalidate_unassigned_membership() {
     save(&mut app);
     on_unassigned(&mut app);
     assert_eq!(visible_ids(&app), ["leaf", "root"]);
-    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Up);
     ctrl(&mut app, 'd');
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Enter);
@@ -313,13 +362,12 @@ fn left_opens_the_pane_right_and_esc_close_it_and_profile_returns_to_it() {
 
     on_pane(&mut app);
     press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Left);
     assert_eq!(app.screen, Screen::Profile);
     press(&mut app, KeyCode::Right);
     assert_eq!(app.screen, Screen::Session);
     assert_eq!(app.focus, Focus::Workspaces, "→ retraces ← from the pane");
-    assert_eq!(app.workspace_pane_cursor(), 2, "on the open workspace");
+    assert_eq!(app.workspace_pane_cursor(), 1, "on the open workspace");
 }
 
 #[test]
@@ -330,11 +378,13 @@ fn pane_cursor_is_the_scope_and_the_new_row_shows_all() {
     assert_eq!(app.filtered.len(), 3, "All lists every session");
 
     press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
     assert_eq!(app.active_workspace_name(), Some("Api"));
     assert_eq!(visible_ids(&app), ["leaf"]);
     assert_eq!(app.mode, UiMode::Table, "moving opens no dialog");
 
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
+    assert_eq!(visible_ids(&app), ["middle", "root"]);
     press(&mut app, KeyCode::Down);
     assert!(app.workspace.new_row);
     assert_eq!(app.workspace_pane_cursor(), 3);
@@ -348,6 +398,8 @@ fn pane_cursor_is_the_scope_and_the_new_row_shows_all() {
     assert_eq!(app.workspace_pane_cursor(), 0);
     press(&mut app, KeyCode::End);
     assert_eq!(app.workspace_pane_cursor(), 3, "End goes to the new row");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.workspaces.active, WorkspaceScope::Unassigned);
     press(&mut app, KeyCode::Up);
     assert_eq!(app.active_workspace_name(), Some("Api"));
 
@@ -363,7 +415,6 @@ fn enter_opens_the_edit_dialog_over_the_session_screen_and_esc_cancels() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::Table, "Enter on All does nothing");
 
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
@@ -400,7 +451,7 @@ fn new_row_enter_opens_a_new_workspace_that_exists_only_once_saved() {
     assert!(!app.workspace.new_row);
     assert_eq!(
         app.workspace_pane_cursor(),
-        3,
+        2,
         "the pane cursor lands on it"
     );
     assert_eq!(app.status_msg.as_deref(), Some("Workspace added: Web"));
@@ -410,7 +461,6 @@ fn new_row_enter_opens_a_new_workspace_that_exists_only_once_saved() {
 fn plus_opens_a_new_workspace_from_any_row_and_cancel_keeps_the_pane() {
     let mut app = app_with_workspace();
     on_pane(&mut app);
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down); // On "Api": `+` does not need the new row.
     press(&mut app, KeyCode::Char('+'));
     assert_eq!(app.mode, UiMode::WorkspaceEdit);
@@ -446,7 +496,7 @@ fn the_pane_lists_workspaces_by_name_as_text() {
         ["10x", "Alpha", "Api", "beta", "\u{D55C}\u{AE00}"]
     );
     assert_eq!(app.active_workspace_name(), Some("10x"));
-    assert_eq!(app.workspace_pane_cursor(), 2);
+    assert_eq!(app.workspace_pane_cursor(), 1);
 
     // A rename moves the workspace to its new place; the cursor follows it.
     press(&mut app, KeyCode::Enter);
@@ -460,7 +510,7 @@ fn the_pane_lists_workspaces_by_name_as_text() {
         ["Alpha", "Api", "beta", "zeta", "\u{D55C}\u{AE00}"]
     );
     assert_eq!(app.active_workspace_name(), Some("zeta"));
-    assert_eq!(app.workspace_pane_cursor(), 5);
+    assert_eq!(app.workspace_pane_cursor(), 4);
 }
 
 #[test]
@@ -874,7 +924,6 @@ fn ctrl_d_in_the_pane_deletes_after_confirmation_and_keeps_the_row() {
         .push(Workspace::new("ws-web".into(), "Web".into()));
     on_pane(&mut app);
     press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
     ctrl(&mut app, 'd');
     assert_eq!(app.mode, UiMode::WorkspaceDeleteConfirm);
     press(&mut app, KeyCode::Enter); // Cancel is focused first.
@@ -1059,7 +1108,7 @@ fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() 
     assert!(text.contains(" Workspaces "), "{text}");
     assert!(text.contains("[NEW WORKSPACE]"), "{text}");
     assert!(text.contains(" Prompt "), "{text}");
-    // Dividers set the fixed rows apart from the stored workspaces.
+    // No Workspace follows the stored rows, above the new-workspace divider.
     let pane: Vec<String> = text
         .lines()
         .skip(6)
@@ -1071,9 +1120,9 @@ fn session_screen_draws_the_pane_only_while_focused_and_drops_a_narrow_prompt() 
         pane.iter().map(|l| l.trim_end()).collect::<Vec<_>>(),
         [
             " [ALL]",
-            " [NO WORKSPACE]",
             rule.as_str(),
             " Api",
+            " [NO WORKSPACE]",
             rule.as_str(),
             " [NEW WORKSPACE]"
         ],
@@ -1325,7 +1374,6 @@ fn panes_without_focus_fade_like_the_session_screen() {
 
     // Session screen, workspace pane focused: the session table fades.
     on_pane(&mut app);
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     let buf = draw_buffer(&app);
     let (pane, table) = (0..24, 24..140);

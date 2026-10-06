@@ -64,9 +64,11 @@ workspace (`scratch.rs`).
 
 ### Sessions outside every workspace
 
-- The fixed `[NO WORKSPACE]` row follows `[ALL]`, before the divider and
-  stored workspaces. It opens `WorkspaceScope::Unassigned` as soon as the
-  cursor moves onto it. The table title and palette use `No Workspace`.
+- The fixed `[NO WORKSPACE]` row follows the stored workspaces, directly above
+  the divider before `[NEW WORKSPACE]`. With no stored workspaces it follows
+  `[ALL]`, with only the divider before `[NEW WORKSPACE]`. `End` then `Up`
+  reaches it in either case. It opens `WorkspaceScope::Unassigned` as soon as
+  the cursor moves onto it. The table title and palette use `No Workspace`.
 - A session is shown only if **none of the saved workspaces matches it**,
   including each workspace's full-path folder condition and include/exclude
   words. This is a complement of all saved scopes, not a test for an unselected
@@ -249,6 +251,9 @@ edit dialog.
   folder and word conditions, the empty-store and unrestricted-workspace cases,
   Enter/delete protection, `+` Cancel/Save, pane reopen, keyword filters,
   `ctrl+w` open/close, and recomputation after workspace edits and `ctrl+u`.
+  Check its position after the saved rows and directly above the new-workspace
+  divider, the single divider with an empty store, and `End` then `Up` on a
+  long list: the selected scope and scroll position must follow the row.
   Automated scenarios live in `ui::workspace::tests::unassigned_*`,
   `workspace_save_and_delete_invalidate_unassigned_membership`,
   `session_scan_replaces_membership_even_when_the_session_count_is_unchanged`,
