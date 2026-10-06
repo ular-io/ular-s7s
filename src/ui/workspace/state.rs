@@ -1,6 +1,6 @@
 //! Workspace state: the Session screen's workspace pane (the `[NEW WORKSPACE]`
 //! row flag, list scroll, and membership cache) and the edit dialog (a draft of one workspace,
-//! its text fields, its `Folders ▾` combo with the stable folder rows and search of
+//! its text fields, its `Folders` combo with the stable folder rows and search of
 //! its open checklist, and the button row). The workspace list cursor is not
 //! stored here — it is `WorkspaceStore::active`, so the list row the user sits
 //! on is always the scope the session lists show.
@@ -48,7 +48,7 @@ pub struct WorkspaceDialog {
     pub save_focused: bool,
     /// Cursor of the open folder checklist, which takes every key while open:
     /// row 0 is the fixed `[ALL FOLDERS]` row, row `n` is `visible[n - 1]`.
-    /// `None` while the `Folders ▾` combo is closed.
+    /// `None` while the `Folders` combo is closed.
     pub folder_list: Option<usize>,
     /// Folder rows in an order captured each time the checklist opens (the
     /// draft's selected folders first, then the rest by latest activity).

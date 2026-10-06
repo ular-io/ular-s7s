@@ -103,7 +103,7 @@ Words match through `filter::token_matches`, the same text as `/` search
   fresh `New Workspace` (`New Workspace 2`, … when taken) that is not in the
   store. Nothing is written and the session list does not change until
   **Save**. Cancel or Esc drops the draft; a new workspace then never existed.
-- Rows, top to bottom: the `Name` box, the `Folders ▾` combo, the
+- Rows, top to bottom: the `Name` box, the `Folders` combo, the
   `Includes · all words` and `Excludes · any word` boxes (the titles state the
   word rules of §Matching), and a read-only `Matches  N of M sessions` (sessions
   the draft matches over every session, recounted on every edit and folder
@@ -113,7 +113,7 @@ Words match through `filter::token_matches`, the same text as `/` search
 - Keys: `↑`/`↓` move one row (Name, Folders, Includes, Excludes, the
   buttons) and stop at either end; Tab / BackTab move the same way but wrap.
   On text rows `←`/`→`/`Home`/`End` move the text cursor and Enter moves to
-  the next row — a text row never submits. On the closed `Folders ▾` combo
+  the next row — a text row never submits. On the closed `Folders` combo
   Enter or `space` opens its checklist; typing, `←`/`→`, and paste do
   nothing there. On the buttons `←`/`→`/`h`/`l` switch between Save (focused
   first) and Cancel, and Enter runs the focused one. Esc cancels the dialog.
@@ -132,12 +132,13 @@ Words match through `filter::token_matches`, the same text as `/` search
 - The closed combo shows the selection: `All folders` when none is selected
   (an empty `folders` list is no restriction), one folder's basename, or for
   two or more the basenames in checklist order (so the most recently active
-  come first) with a dim `N folders` at the right edge. Names are cut at name
+  come first) with a dim `N folders` at the right edge of the value area,
+  left of the combo's `▾`. Names are cut at name
   boundaries and end with `…` when some do not fit; the count is shown even
   when every name fits, so it does not appear and vanish as folders are added
   (`workspace::render::folder_summary`).
 
-### Folder checklist (`Folders ▾` open)
+### Folder checklist (`Folders` open)
 
 The checklist follows the rust-tui checkbox-list rules (toggles apply at once,
 so closing never changes the selection) and is modelled on the ular-card
@@ -262,7 +263,7 @@ edit dialog.
   workspaces, add one with `+` and from `[NEW WORKSPACE]` (Save and Cancel),
   check the pane lists names in text order, rename one and see it move, toggle
   folders and type includes/excludes and watch `Matches` (the session list
-  changes only after Save), open `Folders ▾`, filter folders and toggle a
+  changes only after Save), open `Folders`, filter folders and toggle a
   match, clear the query with Esc and close, confirm the combo summary,
   delete a workspace, open/close via `ctrl+w`, restart with a workspace open
   and confirm "All" opens. On a 24-row and a 40-row terminal check the

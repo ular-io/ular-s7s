@@ -3,7 +3,7 @@
 //! overlay popup.
 
 use crate::ui::components::modal::{
-    button_styles, dropdown_divider, dropdown_frame, modal_block, render_modal,
+    button_styles, draw_combo, dropdown_divider, dropdown_frame, modal_block, render_modal,
 };
 use crate::ui::components::text::{
     count_note, fit_before_note, pad_w, sanitize_single_line, truncate_w,
@@ -21,7 +21,7 @@ use unicode_width::UnicodeWidthStr;
 
 /// New session creation dialog (read-only source plus profile, model, and folder dropdown controls).
 ///
-/// Renders focused controls with highlighted thick borders. Expanded dropdown overlays
+/// Renders focused controls with thick accent borders. Expanded dropdown overlays
 /// directly below the respective control (only one dropdown may open at a time).
 /// Folder list draws query-matching entries in normal text at the top, and unmatched entries
 /// in soft dim (matching "left" label color) at the bottom.
@@ -103,43 +103,25 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         }
     }
 
-    // Combo box border styles depending on focus.
-    let combo_block = |title: &str, focused: bool| {
-        let (style, border_type) = if focused {
-            (
-                Style::default().add_modifier(Modifier::BOLD),
-                BorderType::Thick,
-            )
-        } else {
-            (Style::default().fg(th.dim), BorderType::Plain)
-        };
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(border_type)
-            .border_style(style)
-            .title(Span::styled(title.to_string(), style))
-            .padding(Padding::horizontal(1))
-    };
+    // ---- Combo boxes ----
+    // `draw_combo` returns the value area left of the `▾`; every value, note,
+    // placeholder and the Folder cursor stays inside it.
 
     // ---- Profile Combo Box (text inputs not supported) ----
     let profile_focused = state.focus == NewSessionFocus::Profile;
-    let profile_block = combo_block(" Profile ▾ ", profile_focused);
-    let profile_inner = profile_block.inner(rows[1]);
-    f.render_widget(profile_block, rows[1]);
+    let profile_value = draw_combo(f, rows[1], "Profile", profile_focused, th);
     if let Some(p) = app.profiles.profiles.get(state.profile_idx) {
         let mut spans = vec![Span::styled(
             format!("{} / {}  ", p.agent.label(), p.name),
             Style::default().add_modifier(Modifier::BOLD),
         )];
         spans.extend(usage_spans(app.usage.entry(&p.id), th));
-        f.render_widget(Paragraph::new(Line::from(spans)), profile_inner);
+        f.render_widget(Paragraph::new(Line::from(spans)), profile_value);
     }
 
     // ---- Model Combo Box (text inputs not supported) ----
     let model_focused = state.focus == NewSessionFocus::Model;
-    let model_block = combo_block(" Model ▾ ", model_focused);
-    let model_inner = model_block.inner(rows[2]);
-    f.render_widget(model_block, rows[2]);
+    let model_value = draw_combo(f, rows[2], "Model", model_focused, th);
     if let Some(opt) = state.model_options.get(state.model_idx) {
         let display_label = sanitize_single_line(&opt.label);
         let display_note = sanitize_single_line(&opt.note);
@@ -149,37 +131,35 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         } else {
             Style::default().add_modifier(Modifier::BOLD)
         };
-        let inner_w = model_inner.width as usize;
-        let label_txt = truncate_w(&display_label, inner_w);
+        let value_w = model_value.width as usize;
+        let label_txt = truncate_w(&display_label, value_w);
         let used = label_txt.width() + 2;
         let mut spans = vec![Span::styled(format!("{label_txt}  "), label_style)];
-        if !display_note.is_empty() && inner_w > used {
+        if !display_note.is_empty() && value_w > used {
             spans.push(Span::styled(
-                truncate_w(&display_note, inner_w - used),
+                truncate_w(&display_note, value_w - used),
                 th.soft_dim(),
             ));
         }
-        f.render_widget(Paragraph::new(Line::from(spans)), model_inner);
+        f.render_widget(Paragraph::new(Line::from(spans)), model_value);
     }
 
     // ---- Folder Combo Box (supports text inputs) ----
     let folder_focused = state.focus == NewSessionFocus::Folder;
-    let folder_block = combo_block(" Folder ▾ ", folder_focused);
-    let input_inner = folder_block.inner(rows[3]);
-    f.render_widget(folder_block, rows[3]);
+    let folder_value = draw_combo(f, rows[3], "Folder", folder_focused, th);
     if state.input.value.is_empty() {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "enter path directly, e.g. ~/DevSpace/project",
                 th.soft_dim(),
             ))),
-            input_inner,
+            folder_value,
         );
         if folder_focused {
-            f.set_cursor_position((input_inner.x, input_inner.y));
+            f.set_cursor_position((folder_value.x, folder_value.y));
         }
     } else {
-        let (visible, cursor_x) = input_view(&state.input, input_inner.width as usize);
+        let (visible, cursor_x) = input_view(&state.input, folder_value.width as usize);
         // A whole-value selection is painted like a selected list row, so "typing
         // replaces this" is visible before the first key. Only the focused field
         // paints it: the selection survives a focus move, but a highlight on an
@@ -191,10 +171,10 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(visible, value_style))),
-            input_inner,
+            folder_value,
         );
         if folder_focused {
-            f.set_cursor_position((input_inner.x.saturating_add(cursor_x), input_inner.y));
+            f.set_cursor_position((folder_value.x.saturating_add(cursor_x), folder_value.y));
         }
     }
 
@@ -285,9 +265,9 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
         // The popup extends below the dialog, so the backdrop (e.g. the session
         // list with CJK titles) stays visible to the left of the frame; the
         // shared frame clears a margin column there. Active combo boxes are
-        // focused (thick borders), so the popup frame is thick too and its top
-        // edge joins the combo box as `┣━┫`.
-        let popup_border = Style::default().add_modifier(Modifier::BOLD);
+        // focused (thick accent borders), so the popup frame matches them and
+        // its top edge joins the combo box as one `┣━┫` line.
+        let popup_border = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
         let popup_inner = dropdown_frame(f, popup_rect, area, popup_border, th);
         let list_h = (popup_inner.height as usize).saturating_sub(footer_h);
         let inner_w = popup_inner.width as usize;
@@ -435,7 +415,8 @@ pub(crate) fn draw_new_session_modal(f: &mut Frame, app: &App) {
             // Thin divider joined to the thick side borders with `┠`/`┨`, matching
             // the folder filter modal.
             let divider_y = popup_inner.y + list_h as u16;
-            dropdown_divider(f, popup_rect, divider_y, popup_border, popup_border);
+            let divider_line = Style::default().fg(th.dim);
+            dropdown_divider(f, popup_rect, divider_y, popup_border, divider_line);
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     // Leading space aligns the footer with the list rows above it.

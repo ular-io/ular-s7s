@@ -6,6 +6,8 @@
 //! types are re-exported from `ui` so existing `crate::ui::NewSession*` paths
 //! stay stable.
 
+#[cfg(test)]
+mod combo_tests;
 pub(crate) mod input;
 pub(crate) mod render;
 pub(crate) mod state;

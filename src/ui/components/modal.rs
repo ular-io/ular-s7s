@@ -1,7 +1,7 @@
 //! Modal framing and backdrop primitives shared by every dialog: the thick
 //! titled block, the clear-and-repaint renderer, navigation-arrow blocks, form
-//! input boxes, dropdown frames, button styles, and the behind-dialog backdrop
-//! fade.
+//! input boxes, closed combo boxes, dropdown frames, button styles, and the
+//! behind-dialog backdrop fade.
 
 use crate::theme::Theme;
 use crate::ui::components::text::truncate_w;
@@ -188,6 +188,52 @@ pub(crate) fn form_input(
     }
 }
 
+/// Closed combo box (three rows with borders): the box framed like `form_input`
+/// (`Thick` accent + bold while focused or open, `Plain` `dim` otherwise),
+/// titled with the name alone, and a `▾` at the inner right end in the border's
+/// style. Returns the value area — the inner width minus the `▾` and the one
+/// gap cell before it — so values, right-aligned notes and an input cursor
+/// never cover the arrow. Below three inner cells the arrow is dropped and the
+/// whole inner area is returned.
+pub(crate) fn draw_combo(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    focused: bool,
+    th: &Theme,
+) -> Rect {
+    let (border_type, style) = if focused {
+        (
+            BorderType::Thick,
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (BorderType::Plain, Style::default().fg(th.dim))
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(style)
+        .title(Span::styled(format!(" {title} "), style))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width < 3 || inner.height == 0 {
+        return inner;
+    }
+    let arrow = Rect {
+        x: inner.right() - 1,
+        width: 1,
+        height: 1,
+        ..inner
+    };
+    f.render_widget(Paragraph::new(Span::styled("▾", style)), arrow);
+    Rect {
+        width: inner.width - 2,
+        ..inner
+    }
+}
+
 /// Clears and frames a dropdown popup that overlaps the bottom border of its
 /// combo box: a thick `border` frame whose top edge is redrawn as `┣━┫` to join
 /// the combo. Returns the inner area. `dialog` is the dialog the combo sits in:
@@ -290,6 +336,59 @@ mod tests {
         ] {
             assert!(backdrop_dimmed(mode), "{mode:?} must dim");
         }
+    }
+
+    /// Draws one combo into a `width`×3 buffer; returns the buffer and value area.
+    fn combo(width: u16, focused: bool) -> (ratatui::buffer::Buffer, ratatui::layout::Rect) {
+        let th = crate::theme::default_theme();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 3)).unwrap();
+        let mut value = ratatui::layout::Rect::default();
+        terminal
+            .draw(|f| value = super::draw_combo(f, f.area(), "Profile", focused, &th))
+            .unwrap();
+        (terminal.backend().buffer().clone(), value)
+    }
+
+    fn row(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn combo_titles_the_name_and_puts_the_arrow_at_the_inner_right_end() {
+        let (buf, value) = combo(20, false);
+        assert_eq!(row(&buf, 0), "┌ Profile ─────────┐");
+        assert_eq!(row(&buf, 1), "│                ▾ │");
+        // Border, padding, value area, gap, arrow, padding, border.
+        assert_eq!((value.x, value.y, value.width, value.height), (2, 1, 14, 1));
+        assert_eq!(buf[(17, 1)].symbol(), "▾");
+    }
+
+    #[test]
+    fn combo_arrow_follows_the_border_style() {
+        use ratatui::style::Modifier;
+        let th = crate::theme::default_theme();
+        let (buf, _) = combo(20, true);
+        assert_eq!(row(&buf, 1), "┃                ▾ ┃");
+        for cell in [&buf[(17, 1)], &buf[(0, 1)]] {
+            assert_eq!(cell.fg, th.accent);
+            assert!(cell.modifier.contains(Modifier::BOLD));
+        }
+        let (buf, _) = combo(20, false);
+        for cell in [&buf[(17, 1)], &buf[(0, 1)]] {
+            assert_eq!(cell.fg, th.dim);
+            assert!(!cell.modifier.contains(Modifier::BOLD));
+        }
+    }
+
+    #[test]
+    fn combo_drops_the_arrow_below_three_inner_cells() {
+        let (buf, value) = combo(6, false);
+        assert!(!row(&buf, 1).contains('▾'));
+        assert_eq!(value.width, 2);
+        let (buf, value) = combo(7, false);
+        assert_eq!(row(&buf, 1), "│   ▾ │");
+        assert_eq!(value.width, 1);
     }
 
     #[test]
