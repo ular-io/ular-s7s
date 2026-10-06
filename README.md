@@ -162,10 +162,11 @@ All filters (Keyword · Agent · Folder · Profile · Bookmark) operate with an 
 
 `←` on the session list opens the workspace list on its left; the session list and
 Prompt stay, narrower (the Prompt is hidden when it would be under 40 columns). The
-fixed rows `[ALL]` and `[NO WORKSPACE]` come first; `[NEW WORKSPACE]` adds one
-and stays last. Dividers separate those rows from your workspaces, which are listed
-by name. The list cursor is the open scope, so the session list follows it as you
-move.
+fixed row `[ALL]` comes first, followed by a divider and your workspaces in name
+order. `[NO WORKSPACE]` follows your workspaces, directly above the divider
+before `[NEW WORKSPACE]`, which adds one and stays last. With no workspaces,
+only the divider before `[NEW WORKSPACE]` is shown. The list cursor is the open
+scope, so the session list follows it as you move.
 
 | Key | Action |
 | :-- | :-- |
@@ -177,7 +178,7 @@ move.
 | `←` / `h` | Go to Profile |
 | `/` | Keyword search (`esc` returns to the list, `enter` to the session list) |
 
-`[NO WORKSPACE]`, directly below `[ALL]`, shows sessions that match none of
+`[NO WORKSPACE]` (`end` then `↑`) shows sessions that match none of
 the saved workspaces, including their folder and include/exclude conditions.
 Ordinary filters still apply. With no workspaces it shows all sessions; a
 workspace without restrictions leaves it empty. It cannot be edited or deleted.

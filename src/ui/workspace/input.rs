@@ -25,11 +25,11 @@ impl App {
         self.workspace.new_row = false;
     }
 
-    /// Cursor rows: All, Unassigned, stored workspaces, New Workspace.
+    /// Cursor rows: All, stored workspaces, Unassigned, New Workspace.
     pub(crate) fn workspace_pane_cursor(&self) -> usize {
         match &self.workspaces.active {
-            WorkspaceScope::Unassigned => 1,
-            WorkspaceScope::Workspace(_) => self.workspaces.active_index().map_or(0, |i| i + 2),
+            WorkspaceScope::Unassigned => self.workspaces.workspaces.len() + 1,
+            WorkspaceScope::Workspace(_) => self.workspaces.active_index().map_or(0, |i| i + 1),
             WorkspaceScope::All if self.workspace.new_row => self.workspaces.workspaces.len() + 2,
             WorkspaceScope::All => 0,
         }
@@ -224,13 +224,13 @@ impl App {
             .saturating_add(delta)
             .clamp(0, new_row as isize) as usize;
         self.workspace.new_row = next == new_row;
-        if next == 1 {
+        if next == new_row - 1 {
             self.set_workspace_scope(WorkspaceScope::Unassigned);
         } else {
             let idx = if self.workspace.new_row {
                 None
             } else {
-                next.checked_sub(2)
+                next.checked_sub(1)
             };
             self.set_active_workspace(idx);
         }

@@ -75,15 +75,13 @@ pub(crate) fn draw_workspace_pane(f: &mut Frame, app: &App, area: Rect) {
     // Display rows: `Some((label, fixed))` is a cursor row, `None` a divider the
     // cursor never lands on. A list with no stored workspace keeps one divider.
     let stored = &app.workspaces.workspaces;
-    let mut rows: Vec<Option<(&str, bool)>> = vec![
-        Some((ALL_WORKSPACE_LABEL, true)),
-        Some((UNASSIGNED_WORKSPACE_LABEL, true)),
-        None,
-    ];
-    rows.extend(stored.iter().map(|w| Some((w.name.as_str(), false))));
+    let mut rows: Vec<Option<(&str, bool)>> = vec![Some((ALL_WORKSPACE_LABEL, true))];
     if !stored.is_empty() {
         rows.push(None);
+        rows.extend(stored.iter().map(|w| Some((w.name.as_str(), false))));
     }
+    rows.push(Some((UNASSIGNED_WORKSPACE_LABEL, true)));
+    rows.push(None);
     rows.push(Some((NEW_WORKSPACE_LABEL, true)));
     // Cursor rows in display order, so the pane cursor maps onto its display row.
     let cursor_row = rows
