@@ -150,8 +150,8 @@ Use the shared primitives in `ui/components/modal.rs`:
 - `button_styles` for theme-aware focused and unfocused buttons;
 - `form_input` for a single-line text input: a three-row box titled with its
   label, `Thick` accent while focused and `Plain` `dim` otherwise;
-- `joined_divider` for a thin inner divider joined to the thick side borders
-  (`┠───┨`);
+- `dropdown_frame` / `dropdown_divider` for a dropdown popup's frame and its
+  thin `┠─┨` rows;
 - `dim_backdrop` only for modes selected by `backdrop_dimmed`.
 
 Additional rules:
@@ -160,17 +160,14 @@ Additional rules:
   title. Only the search-backed lists without buttons (Quick Command, Select
   Folders) drop the top padding so their input line sits under the title.
 - Wrap a form's text inputs in `form_input` boxes. The one unboxed text input
-  in a form is a search line that filters a list right below it (the workspace
-  dialog's Search row), drawn like the Select Folders search line.
-- A form that also edits a long list (the workspace edit dialog) splits its body
-  into two columns: the fields stacked on the left, the list on the right, with
-  an unbordered `dim` `│` separator joined to the divider below as `┴`. The
-  footer, divider, and buttons span both columns. Such a dialog may take up to
-  90% of the terminal width instead of 80%. Keys keep one linear row order
-  across both columns. On a text row `←`/`→` stay with the text cursor; on a
-  list row of the right column `←` returns to the left column (the field last
-  edited). There is no `→` into the list: a text row owns `→`, and Tab already
-  reaches it.
+  in a form is a search line that filters a list right below it (the search
+  line of the workspace dialog's folder checklist), drawn like the Select
+  Folders search line.
+- A form that also edits a long list keeps one column of stacked boxes and
+  moves the list into a combo's dropdown popup (the workspace dialog's
+  `Folders ▾`), so the dialog keeps the standard 80% width cap and a fixed
+  height. Put such a combo high in the form: the popup opens downward over
+  the rows below it, and the rows above it cost list rows.
 - Keep action order `[Confirm/Execute] [Cancel]`.
 - A text-input Enter must not submit a form. Submission occurs only when the
   confirm button owns focus; Enter on Cancel closes the dialog.
@@ -180,7 +177,13 @@ Additional rules:
   information row would collapse that spacing.
 - Prefer a notice line that every state fills over one that appears conditionally:
   the profile form always fills it, so the dialog keeps a single height and the
-  buttons do not shift between its add and edit variants.
+  buttons do not shift between its add and edit variants. When a dialog has
+  nothing standing to say there, reserve the line and leave it empty (the
+  workspace edit dialog shows only a refused Save's reason) rather than adding
+  the row only on an error or filling it with hints that repeat the labels or
+  the status bar.
+- Put a field's rule in its title when the label alone would not tell it
+  (`Includes · all words` / `Excludes · any word`) instead of in a hint line.
 - A locked control stays visible and dim rather than disappearing, and the notice
   line says why it is locked. Keep the selected entry of a locked radio row readable
   with `Modifier::BOLD` over `soft_dim()`; the marker alone is not enough signal.
@@ -188,8 +191,11 @@ Additional rules:
 - A popup drawn over background text must clear enough adjacent cells to remove
   both halves of a clipped double-width glyph before painting its border.
   Limit those extra cells to rows over the backdrop: a popup that starts inside
-  its dialog (the New Session dropdown) must not clear the dialog's own border,
-  or one side of the dialog's bottom edge loses its `━` next to the popup.
+  its dialog (the New Session and workspace dropdowns) must not clear the
+  dialog's own border, or one side of the dialog's bottom edge loses its `━`
+  next to the popup. `components::modal::dropdown_frame` applies this rule and
+  joins the popup to its combo as `┣━┫`; `dropdown_divider` draws the popup's
+  `┠─┨` rows.
 - Theme selection does not dim its backdrop because the background is the live
   preview.
 
@@ -197,7 +203,7 @@ Additional rules:
 
 - The profile and model lists carry a `soft_dim()` note beside each label.
 - Every folder list (folder dropdown, Change Folder pick list, folder filter,
-  workspace edit dialog) ends each row with its session count as ` (N)`, right
+  workspace folder checklist) ends each row with its session count as ` (N)`, right
   aligned and in `soft_dim()` (`text::count_note` + `text::fit_before_note`).
   Both the brackets and the dim color are required: several folder rows are
   already dim (unmatched rows, an unfocused pane), and a folder name can end in
@@ -219,7 +225,21 @@ Additional rules:
   survives a focus move (the folder dialog opens with a prefill already selected
   while focus sits on another control), so an ungated paint leaves an inactive
   control permanently reversed instead of showing a pending edit.
-- A fixed option (the folder dropdown's `[SCRATCH]` row) renders outside the
+- A multi-select dropdown (the workspace `Folders ▾` checklist) follows the
+  checkbox-list keys rather than the single-select dropdown ones: Enter or
+  `space` opens the closed combo, `space` toggles the cursor row at once, and
+  Enter, Esc, and Tab only close (Tab also moves on), so closing never
+  changes the selection. Its rows carry `[✓]`/`[ ]`. A search-backed one takes
+  typed characters into a search line at the top of the popup; Esc clears a
+  non-empty query before it closes. The closed combo shows the selection as a
+  summary: the "everything" value for an empty selection, else the selected
+  names in the default color, cut at name boundaries with `…`, and for two or
+  more a count right-aligned in `soft_dim()`. Spell the count out
+  (`12 folders`): a bare `(N)` already means a session count in folder rows.
+  Never dim the names themselves — in a form, dim marks an empty value
+  (`(none)`) or a note, not a selection.
+- A fixed option (the folder dropdown's `[SCRATCH]` row, the checklist's
+  `[ALL FOLDERS]` row) renders outside the
   query-ordered list and always first. With no note column, its label carries the
   distinction: bracketed and upper case against bare basenames.
 - Do not encode a fixed option as an entry of the data list: query reordering
@@ -293,45 +313,53 @@ Additional rules:
 - `workspace::render::draw_workspace_dialog`: a `modal_block` titled
   ` Edit Workspace ` or ` New Workspace ` with the standard dialog padding (one
   blank row under the title), over the dimmed Session screen. Width 86
-  including the outer margin, capped at 90% of the terminal width (the
-  two-column exception above).
-- Body in two columns of equal width (`Constraint::Fill`), separated by a
-  `dim` `│` joined to the divider below as `┴`:
-  - left (`draw_dialog_fields`): the `Name`, `Includes`, and `Excludes` boxes
-    stacked, then `Matches  N of M sessions` (N in the default color, the rest
-    `soft_dim()`) — ten rows;
-  - right: `Folders · all folders` / `· N selected`, `Search`, then the folder
-    rows filling the rest of the column.
-- Below the body, across the dialog: a joined divider, the footer, a blank
-  row, and the buttons.
-- Height (`workspace::render::dialog_size`): 7 rows of chrome plus the taller
-  column — the ten-row field column, or the Folders heading, Search, and one
-  row per folder (at least three) — capped at 90% of the terminal height (a
-  24-row terminal keeps twelve folder rows). It is sized by every folder, not
-  by the search matches, so typing a query never moves the buttons. Rows past
-  the cap scroll, with the scrollbar on the dialog's right border beside the
-  folder rows.
-- The three fields are `form_input` boxes. A whole-value selection (a new
-  workspace's suggested name) paints only the text with
-  `selection_fg`/`selection_bg`, as with the combo-box selection rule. An empty
-  unfocused Includes/Excludes box reads `(none)` in `soft_dim()`.
-- Search is the form's unboxed search line (a box would cost two folder rows):
-  `Search` in a `soft_dim()` label column, bold accent while focused, with the
-  hardware cursor. The cursor row style is never applied to it; an arrived-on
-  query is painted as a whole-value selection. An empty unfocused Search reads
-  `type to filter` in `soft_dim()`; a focused empty field shows no
-  placeholder because the hardware cursor sits where it would start.
-- Folder rows: `[✓]`/`[ ]`, the bare basename, and a right-aligned ` (N)`
-  session count. A selected mark is accent + bold, so selection does not rely
-  on the mark alone. The cursor folder row uses `selection_bg` + bold. A query
-  with no match draws `No matching folders` in `soft_dim()`.
-- The footer is one line that every state fills: a refused Save's reason in
-  the error color, else what the cursor row means — what a field does, the
-  full path of a folder row, the Search hint / `M of N folders · esc clear` /
-  `M/N · type replaces · → edit`, or what the focused button does.
+  including the outer margin, capped at 80% of the terminal width.
+- One column, top to bottom: the `Name` box, the `Folders ▾` combo, the
+  `Includes · all words` and `Excludes · any word` boxes, then
+  `Matches  N of M sessions` (N in the default color, the rest `soft_dim()`).
+  Below it: the notice line, a blank row, and the buttons. Like every form
+  (the profile form included) it has no divider above the buttons; thin
+  dividers belong to list dialogs, between a search line, the list, and a
+  footer.
+- Height (`workspace::render::dialog_size`): a fixed 19 rows (clipped by a
+  shorter terminal). The folder list is a popup, so neither the folder count
+  nor a query changes the dialog.
+- The three text fields are `form_input` boxes. A whole-value selection (a
+  new workspace's suggested name) paints only the text with
+  `selection_fg`/`selection_bg`, as with the combo-box selection rule. An
+  empty unfocused Includes/Excludes box reads `(none)` in `soft_dim()`.
+- `Folders ▾` is framed like a `form_input` box (`Thick` accent while focused
+  or open, `Plain` `dim` otherwise) and shows `folder_summary`: `All folders`,
+  one basename, or the basenames joined by `, ` (whole names only, `…` when
+  some are left out) with `N folders` right-aligned in `soft_dim()` and at
+  least one blank cell before it. A row narrower than the count keeps only
+  the count.
+- The open checklist (`draw_folder_list`) is a popup joined under the combo
+  by `dropdown_frame` with an accent border, drawn after the buttons. It
+  covers the rows below the combo and extends past the dialog down to the
+  terminal bottom when it needs to; its height comes from every folder, not
+  the search matches, so typing a query never resizes it. Inside: the search
+  line, a `┠─┨` divider, the rows, and a footer (a divider and the cursor
+  row's full path in `soft_dim()`; `[ALL FOLDERS]` reads `Every folder: no
+  folder restriction`). The footer is dropped when fewer than two rows would
+  remain. Rows past the height scroll, with the scrollbar on the popup's right
+  border.
+- The search line: `Search` in a bold accent label column with the hardware
+  cursor (it always has focus while the checklist is open) and no
+  placeholder. The cursor row style is never applied to it.
+- Checklist rows: `[✓]`/`[ ]`, the bare basename (or the fixed
+  `[ALL FOLDERS]`), and a right-aligned ` (N)` session count. A checked mark
+  is accent + bold, so selection does not rely on the mark alone. The cursor
+  row uses `selection_bg` + bold. An empty result adds `No matching folders`
+  (or `No session folders`) in `soft_dim()` under `[ALL FOLDERS]`.
+- The notice line shows only a refused Save's reason, in the error color, and
+  is empty otherwise; it stays reserved so a refusal never moves the buttons.
+  Fields carry no hint text: the titles state the word rules, the combo shows
+  its selection, and the status bar shows the keys.
 - Buttons `[Save] [Cancel]` are centered with one blank row above them and are
   highlighted only while the button row has focus (Save first).
-- The status bar shows the dialog's keys while it is open.
+- The status bar shows the dialog's keys while it is open, switching to the
+  checklist keys while the checklist is open; both fit an 80-column terminal.
 
 ## Width and root layout
 

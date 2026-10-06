@@ -909,10 +909,17 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     } else if app.mode == UiMode::Rename {
         Line::from(Span::styled("enter save  ·  esc cancel", dim_style))
     } else if app.mode == UiMode::WorkspaceEdit {
-        Line::from(Span::styled(
-            "↑↓ move  ·  tab next group  ·  space toggle folder  ·  ← fields  ·  enter on Save saves  ·  esc cancel",
-            dim_style,
-        ))
+        let folder_list_open = app
+            .workspace
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.folder_list.is_some());
+        let keys = if folder_list_open {
+            "↑↓ move  ·  space toggle  ·  type filter  ·  enter close  ·  esc clear/close"
+        } else {
+            "↑↓/tab move  ·  enter open Folders  ·  enter on Save saves  ·  esc cancel"
+        };
+        Line::from(Span::styled(keys, dim_style))
     } else if app.screen == Screen::Session
         && app.focus == Focus::Workspaces
         && app.mode == UiMode::Table
