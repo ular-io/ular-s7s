@@ -8,6 +8,7 @@
 //! public form types are re-exported from `ui` so existing `crate::ui::FormFocus`
 //! / `crate::ui::ProfileFormState` paths stay stable.
 
+pub(crate) mod dialogs;
 pub(crate) mod input;
 pub(crate) mod render;
 pub(crate) mod state;
