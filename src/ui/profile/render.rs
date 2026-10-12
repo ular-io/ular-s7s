@@ -39,31 +39,23 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
         numbers.insert(p.id.as_str(), i + 1);
     }
 
-    let tick = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.as_millis() / 200) as usize)
-        .unwrap_or(0);
-
     let header_style = Style::default().fg(th.accent).add_modifier(Modifier::BOLD);
-    // USAGE is a single merged column: formatted internally as `5H(4) RESET(8) 1W(4) RESET(8)` separated by 2 spaces
-    // to mimic discrete columns, while allowing status messages like logout to occupy a single line.
+    // USAGE stays one table cell so long status messages fit, while its two
+    // fixed-width windows read as separate columns.
     let header = Row::new(vec![
         aligned_cell("#", Alignment::Center),
         aligned_cell("A", Alignment::Center),
         Cell::from("NAME"),
         Cell::from("STATUS"),
-        Cell::from(format!(
-            "{:>4}  {:^8}  {:>4}  {:^8}",
-            "5H", "RESET", "1W", "RESET"
-        )),
+        Cell::from(format!("{:^12}  {:^12}", "5H(LEFT)", "1W(LEFT)")),
         aligned_cell("SESSION", Alignment::Right),
         Cell::from("CONFIG DIR"),
     ])
     .style(header_style);
 
     // Truncates CONFIG DIR column to fill the remaining width.
-    // Fixed columns (4 + 4 + 20 + 13 + 30 + 7 = 78) + gaps (6 * 2) + borders (2) + highlight (1) + margin (1).
-    let config_dir_w = (area.width as usize).saturating_sub(78 + 12 + 2 + 1 + 1);
+    // Fixed columns (4 + 4 + 20 + 13 + 26 + 7 = 74) + gaps (6 * 2) + borders (2) + highlight (1) + margin (1).
+    let config_dir_w = (area.width as usize).saturating_sub(74 + 12 + 2 + 1 + 1);
 
     let rows: Vec<Row> = app
         .profiles
@@ -115,7 +107,7 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(th.key_hint)
             };
-            // If config directory is missing, render error label inside USAGE cell (width 30)
+            // If config directory is missing, render error label inside USAGE cell (width 26)
             // instead of usage stats (reads side-by-side with STATUS "Error" to clearly expose cause).
             let usage_cell = if entry.phase == crate::usage::UsagePhase::MissingDir {
                 let style = if subdued {
@@ -125,7 +117,7 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
                 };
                 Cell::from(Span::styled(MISSING_DIR_LABEL, style))
             } else {
-                profile_usage_cell(entry, tick, subdued, th)
+                profile_usage_cell(entry, subdued, th)
             };
             let mut row = Row::new(vec![
                 aligned_cell(Line::from(Span::styled(num, key_style)), Alignment::Center),
@@ -157,7 +149,7 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(4),
         Constraint::Length(20),
         Constraint::Length(13), // STATUS column (max "Not logged in")
-        Constraint::Length(30), // USAGE column (merged 5H+RESET+1W+RESET)
+        Constraint::Length(26), // USAGE column (5H left + 1W left)
         Constraint::Length(7),
         Constraint::Min(10),
     ];
@@ -244,10 +236,9 @@ fn profile_usage_unavailable(entry: crate::usage::UsageEntry) -> bool {
 
 fn profile_usage_parts(
     entry: crate::usage::UsageEntry,
-    _tick: usize,
     subdued: bool,
     th: &Theme,
-) -> [(String, Style); 4] {
+) -> [(String, Style); 2] {
     use crate::usage::{UsagePhase, UsageSnapshot, UsageWindow};
 
     let pct_style = |window: UsageWindow| -> Style {
@@ -258,10 +249,10 @@ fn profile_usage_parts(
         }
     };
 
-    let window_parts = |window: Option<UsageWindow>,
-                        weekly: bool,
-                        style_override: Option<Style>|
-     -> [(String, Style); 2] {
+    let window_part = |window: Option<UsageWindow>,
+                       weekly: bool,
+                       style_override: Option<Style>|
+     -> (String, Style) {
         let fallback_style = style_override.unwrap_or_else(|| Style::default().fg(th.dim));
         match window {
             Some(window) => {
@@ -269,94 +260,58 @@ fn profile_usage_parts(
                     reset_label_weekly(window.reset)
                 } else {
                     reset_label_current(window.reset)
-                }
-                .trim_start_matches('(')
-                .trim_end_matches(')')
-                .to_string();
-                let reset = if reset.is_empty() {
-                    "-".to_string()
-                } else {
-                    reset
                 };
-                [
-                    (
-                        format!("{:>3}%", window.pct_left),
-                        style_override.unwrap_or_else(|| pct_style(window)),
-                    ),
-                    (reset, style_override.unwrap_or_else(|| th.soft_dim())),
-                ]
+                (
+                    format!("{:>3}%{reset:<8}", window.pct_left),
+                    style_override.unwrap_or_else(|| pct_style(window)),
+                )
             }
-            None => [
-                ("-".to_string(), fallback_style),
-                ("-".to_string(), fallback_style),
-            ],
+            None => (format!("{:>3}%        ", "--"), fallback_style),
         }
     };
 
     let snapshot_parts =
-        |snapshot: UsageSnapshot, style_override: Option<Style>| -> [(String, Style); 4] {
-            let current = window_parts(snapshot.current, false, style_override);
-            let weekly = window_parts(snapshot.weekly, true, style_override);
+        |snapshot: UsageSnapshot, style_override: Option<Style>| -> [(String, Style); 2] {
             [
-                current[0].clone(),
-                current[1].clone(),
-                weekly[0].clone(),
-                weekly[1].clone(),
+                window_part(snapshot.current, false, style_override),
+                window_part(snapshot.weekly, true, style_override),
             ]
         };
+    let empty_parts = |style: Style| {
+        [
+            (format!("{:>3}%        ", "--"), style),
+            (format!("{:>3}%        ", "--"), style),
+        ]
+    };
 
     let subdued_style = subdued.then(|| th.soft_dim());
     if let Some(style) = subdued_style {
         if let Some(snapshot) = entry.last {
             return snapshot_parts(snapshot, Some(style));
         }
-        return [
-            ("-".to_string(), style),
-            ("-".to_string(), style),
-            ("-".to_string(), style),
-            ("-".to_string(), style),
-        ];
+        return empty_parts(style);
     }
 
     match (entry.phase, entry.last) {
         (UsagePhase::Loading, Some(snapshot)) | (UsagePhase::Failed, Some(snapshot)) => {
             snapshot_parts(snapshot, Some(th.soft_dim()))
         }
-        (UsagePhase::Loading, None) => [
-            ("-".to_string(), th.soft_dim()),
-            ("-".to_string(), th.soft_dim()),
-            ("-".to_string(), th.soft_dim()),
-            ("-".to_string(), th.soft_dim()),
-        ],
+        (UsagePhase::Loading, None) => empty_parts(th.soft_dim()),
         (UsagePhase::Ready, Some(snapshot)) => snapshot_parts(snapshot, None),
-        _ => [
-            ("-".to_string(), Style::default().fg(th.dim)),
-            ("-".to_string(), Style::default().fg(th.dim)),
-            ("-".to_string(), Style::default().fg(th.dim)),
-            ("-".to_string(), Style::default().fg(th.dim)),
-        ],
+        _ => empty_parts(Style::default().fg(th.dim)),
     }
 }
 
-/// Merged USAGE cell (width 30) for profile tables. Value rendering aligns segments internally
-/// (`5H(4) - RESET(8) - 1W(4) - RESET(8)` separated by 2 spaces), padded with `-` if usage or resets
-/// cannot be resolved. Status messages (e.g. Logged Out, Not Installed) are delegated to the STATUS column.
-fn profile_usage_cell(
-    entry: crate::usage::UsageEntry,
-    tick: usize,
-    subdued: bool,
-    th: &Theme,
-) -> Cell<'static> {
-    let parts = profile_usage_parts(entry, tick, subdued, th);
+/// Merged USAGE cell (width 26) for profile tables. Its two 12-cell windows use
+/// the header's `72%(4h 30m)` format and are separated by two spaces.
+fn profile_usage_cell(entry: crate::usage::UsageEntry, subdued: bool, th: &Theme) -> Cell<'static> {
+    let [(current, current_style), (weekly, weekly_style)] =
+        profile_usage_parts(entry, subdued, th);
     aligned_cell(
         Line::from(vec![
-            Span::styled(format!("{:>4}", parts[0].0), parts[0].1),
+            Span::styled(current, current_style),
             Span::raw("  "),
-            Span::styled(format!("{:^8}", parts[1].0), parts[1].1),
-            Span::raw("  "),
-            Span::styled(format!("{:>4}", parts[2].0), parts[2].1),
-            Span::raw("  "),
-            Span::styled(format!("{:^8}", parts[3].0), parts[3].1),
+            Span::styled(weekly, weekly_style),
         ]),
         Alignment::Left,
     )
@@ -364,8 +319,10 @@ fn profile_usage_cell(
 
 #[cfg(test)]
 mod tests {
-    use super::{profile_usage_parts, profile_usage_unavailable};
+    use super::{draw_profile_table, profile_usage_parts, profile_usage_unavailable};
+    use crate::ui::test_support::app_with_profiles;
     use crate::usage::{ResetCountdown, UsageEntry, UsagePhase, UsageSnapshot, UsageWindow};
+    use ratatui::{backend::TestBackend, Terminal};
 
     fn ready_usage(current: UsageWindow, weekly: UsageWindow) -> UsageEntry {
         UsageEntry {
@@ -389,16 +346,35 @@ mod tests {
     }
 
     #[test]
-    fn profile_usage_columns_split_percent_and_reset() {
+    fn profile_usage_columns_combine_percent_and_reset() {
         let parts = profile_usage_parts(
             ready_usage(usage_window(72, 0, 4, 30), usage_window(52, 2, 16, 0)),
-            0,
             false,
             &crate::theme::default_theme(),
         );
         let texts: Vec<String> = parts.into_iter().map(|(text, _)| text).collect();
 
-        assert_eq!(texts, vec![" 72%", "4h 30m", " 52%", "2d 16h"]);
+        assert_eq!(texts, vec![" 72%(4h 30m)", " 52%(2d 16h)"]);
+    }
+
+    #[test]
+    fn profile_usage_headers_name_the_remaining_windows() {
+        let app = app_with_profiles();
+        let mut terminal = Terminal::new(TestBackend::new(160, 8)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_profile_table(frame, &app, area);
+            })
+            .expect("draw profile table");
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, 1)].symbol())
+            .collect();
+
+        assert!(header.contains("5H(LEFT)"), "{header}");
+        assert!(header.contains("1W(LEFT)"), "{header}");
+        assert!(!header.contains("RESET"), "{header}");
     }
 
     #[test]
