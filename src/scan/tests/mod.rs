@@ -3,6 +3,7 @@ use crate::model::{Agent, Session};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+mod compressed;
 mod index;
 mod titles;
 mod workspace;

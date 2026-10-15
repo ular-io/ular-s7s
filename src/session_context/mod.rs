@@ -162,7 +162,10 @@ fn parse_detailed(session: &Session) -> DetailedParse {
     };
     match session.agent {
         Agent::Claude | Agent::Codex => {
-            if !source.is_file() {
+            if !source.is_file()
+                && (session.agent != Agent::Codex
+                    || !crate::parser::codex::rollout::resolve_path(source).is_file())
+            {
                 return DetailedParse::SourceMissing;
             }
             let parsed = match session.agent {

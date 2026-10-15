@@ -125,6 +125,12 @@ authoritative matrix; the essentials:
   rewind writes the same form, and how `end_ordinal_exclusive` behaves across a
   second rewind (no chained segment seen on disk yet). The legacy marker is
   still decoded for older rollouts.
+- **Codex 0.162.1 compresses inactive rollouts to `.jsonl.zst`.** Scan both
+  representations, prefer the plain file when both coexist, and read through
+  `parser/codex/rollout.rs` without expanding files on disk. A stale source path
+  can switch representations while the TUI is open. Rewind predecessors may
+  also be compressed; deletion must reach every physical variant, not just the
+  one selected for listing. See [session-context.md](./docs/session-context.md).
 - **Codex 0.153's migration into `thread_history_*.sqlite` has now run on a real
   store** (0.155.0: 506 of 532 threads at `history_mode = paginated`). It is a
   projection, not a replacement: each row keeps the rollout byte offset it was

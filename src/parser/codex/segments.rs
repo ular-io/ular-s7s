@@ -15,6 +15,7 @@
 //! context parsers see one thread as one session, and [`Segments`] tells the
 //! scanner which files only hold history for a newer segment.
 
+use super::rollout;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -28,7 +29,9 @@ const MAX_DEPTH: usize = 64;
 /// `_<segment id>` suffix. `rollout-<YYYY-MM-DDTHH-MM-SS>-<uuid>[_<uuid>].jsonl`;
 /// None for any other shape.
 pub(crate) fn thread_id_from_name(name: &str) -> Option<(&str, bool)> {
-    let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let stem = rollout::logical_name(name)?
+        .strip_prefix("rollout-")?
+        .strip_suffix(".jsonl")?;
     let (head, segment) = match stem.split_once('_') {
         Some((head, _)) => (head, true),
         None => (stem, false),
@@ -43,7 +46,7 @@ pub(crate) fn thread_id_from_name(name: &str) -> Option<(&str, bool)> {
 /// or unreadable earlier file leaves just the file's own records, which is what
 /// s7s showed before segments were understood.
 pub(crate) fn read_rollout(path: &Path) -> std::io::Result<String> {
-    let own = std::fs::read_to_string(path)?;
+    let own = rollout::read(path)?;
     Ok(with_history(path, own, 0))
 }
 
@@ -65,7 +68,7 @@ fn with_history(path: &Path, own: String, depth: usize) -> String {
     let Some(earlier) = predecessor(path, &base.thread_id) else {
         return own;
     };
-    let Ok(earlier_own) = std::fs::read_to_string(&earlier) else {
+    let Ok(earlier_own) = rollout::read(&earlier) else {
         return own;
     };
     let earlier_full = with_history(&earlier, earlier_own, depth + 1);
@@ -96,10 +99,32 @@ fn history_base(content: &str) -> Option<HistoryBase> {
 /// The newest rollout of `thread_id` created before `path`. File names start
 /// with the creation time, so name order is creation order.
 fn predecessor(path: &Path, thread_id: &str) -> Option<PathBuf> {
-    let name = path.file_name()?;
-    thread_files(path, thread_id)
+    let name = rollout::logical_name(path.file_name()?.to_str()?)?;
+    let earlier = thread_files(path, thread_id).into_iter().rfind(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(rollout::logical_name)
+            .is_some_and(|n| n < name)
+    });
+    if earlier.is_some() {
+        return earlier;
+    }
+    // Codex 0.162 forks can reference a segment's storage id rather than the
+    // owning thread id. Resolve that exact suffix only for reading history;
+    // thread_files must keep deletion scoped to the owning thread.
+    let suffix = format!("_{thread_id}.jsonl");
+    WalkDir::new(store_root(path)?)
         .into_iter()
-        .rfind(|p| p.file_name().is_some_and(|n| n < name))
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(rollout::logical_name)
+                .is_some_and(|n| n != name && n.ends_with(&suffix))
+        })
+        .map(|e| rollout::resolve_path(e.path()))
+        .next()
 }
 
 /// The records of `content` below `end`, without `session_meta`: the newer
@@ -177,6 +202,7 @@ pub(crate) struct Segments {
 impl Segments {
     pub(crate) fn scan(root: &Path) -> Self {
         let mut threads: HashMap<String, (Vec<PathBuf>, bool)> = HashMap::new();
+        let mut seen = HashSet::new();
         for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
             if !entry.file_type().is_file() {
                 continue;
@@ -185,8 +211,11 @@ impl Segments {
             else {
                 continue;
             };
+            if !seen.insert(rollout::plain_path(entry.path())) {
+                continue;
+            }
             let slot = threads.entry(id.to_string()).or_default();
-            slot.0.push(entry.path().to_path_buf());
+            slot.0.push(rollout::resolve_path(entry.path()));
             slot.1 |= segment;
         }
         let mut out = Self::default();
@@ -196,19 +225,23 @@ impl Segments {
             }
             files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
             let newest = files.pop().expect("at least two files");
-            out.superseded.extend(files.iter().cloned());
-            out.earlier.insert(newest, files);
+            out.superseded
+                .extend(files.iter().map(|p| rollout::plain_path(p)));
+            out.earlier.insert(rollout::plain_path(&newest), files);
         }
         out
     }
 
     pub(crate) fn is_superseded(&self, path: &Path) -> bool {
-        self.superseded.contains(path)
+        self.superseded.contains(&rollout::plain_path(path))
     }
 
     /// The thread's earlier files when `path` is its newest segment.
     pub(crate) fn earlier(&self, path: &Path) -> &[PathBuf] {
-        self.earlier.get(path).map(Vec::as_slice).unwrap_or(&[])
+        self.earlier
+            .get(&rollout::plain_path(path))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 

@@ -21,6 +21,7 @@
 //! rollout is read through [`segments::read_rollout`], so a segment parses as its whole thread.
 
 pub(crate) mod events;
+pub(crate) mod rollout;
 pub(crate) mod segments;
 
 use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, session_updated_at_ms};

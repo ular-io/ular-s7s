@@ -78,6 +78,12 @@ share `parser::{clean_turn, is_noise_turn}`.
 
 ### Codex
 
+- Rollouts may be plain `.jsonl` or Zstandard-compressed `.jsonl.zst` files
+  (observed with Codex 0.162.1). `parser/codex/rollout.rs` resolves either
+  representation and decompresses in memory; reading never materializes or
+  rewrites the agent's files. The plain file wins when both variants coexist,
+  and the scanner lists that logical rollout once. Reads from a stale index
+  follow a compression or materialization transition in either direction.
 - List and context consumers share `parser/codex/events.rs`.
 - The decoder accepts current `item_completed` user messages and compatible
   older `event_msg`/`response_item` forms without double-counting mirrored data.
@@ -91,9 +97,17 @@ share `parser::{clean_turn, is_noise_turn}`.
   own meta sets id and cwd), then the segment. The earlier file is resolved by
   name within the store root (newest file of that thread created before the
   segment, recursively). A missing earlier file degrades to the segment alone.
+- Codex 0.162.1 forks may instead put a predecessor's **segment storage id** in
+  `history_base.thread_id`. The history reader falls back to that exact
+  `_<segment id>` filename suffix, including compressed predecessors. This is
+  a read dependency, not ownership: deleting a fork never enumerates its
+  source thread's files as the fork's artifacts.
 - The scanner (`Segments::scan`) lists only the newest file of a thread that
   has a segment; earlier files are skipped. The listed session's cache
-  freshness, creation time and size cover the earlier files too.
+  freshness, creation time and size cover the earlier files too. Predecessors
+  may be compressed independently of the newest segment; duplicate physical
+  variants do not add a second predecessor or inflate size. Size is the sum of
+  the selected files' on-disk bytes, including compression when present.
 - Verified on two real 0.159.2/0.160.0 threads: the folded Q list matches the
   app server's `thread/turns/list` for the rewound thread (10 == 10). Codex
   groups a message sent while a turn is running into that turn; s7s counts it
@@ -304,9 +318,11 @@ s7s session delete <SESSION_ID> [--agent <AGENT>] [--profile <ID>] [--yes]
   `session_index.jsonl`. The second pass is not conditional on the first: every
   statement is a no-op on rows the app server already removed, and no failure
   there may turn a completed delete into an error.
-- **Codex rewind segments** are all removed: `session_delete::transcript_files`
+- **Codex rewind segments and compressed variants** are all removed: `session_delete::transcript_files`
   returns every rollout of the thread under the store root, the listed newest
-  segment plus the earlier files that still hold the thread's turns.
+  segment plus the earlier files that still hold the thread's turns. Unlike
+  listing, deletion includes both `.jsonl` and `.jsonl.zst` when they coexist,
+  and finds the current files if compression changed the listed source path.
 - **Antigravity** additionally drops `annotations/<id>.pbtxt`, the file s7s
   itself writes on rename, plus the `cache/conversation_metadata.json` entry and
   the sqlite sidecars.

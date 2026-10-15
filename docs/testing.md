@@ -216,6 +216,21 @@ agent. Delete each one afterwards.
 
 ### Codex
 
+- **Compressed rollouts (0.162.1+):** create a disposable session, compress its
+  rollout to `<original>.jsonl.zst`, and remove only that disposable plain copy.
+  `session list`, keyword search, Detail/`session show`, and bootstrap context
+  must still expose the same turns, assistant text, and work entries. Check
+  against the real CLI's `thread/turns/list` as well; list/detail parity alone
+  cannot detect a session omitted from both views. Confirm the compressed bytes
+  are unchanged by s7s reads and rename, and that s7s writes no expanded file.
+  Verify duplicate variants list once with the plain file preferred; repeat
+  with a compressed rewind predecessor and with a compressed latest segment.
+  A fork referencing that segment's storage id must retain the inherited turns;
+  deleting the fork must leave the source thread and its files readable.
+  Rename through both the app server and the forced fallback, then delete the
+  disposable thread and verify both physical variants plus all stores below
+  are empty. Unit coverage: `scan::tests::compressed`,
+  `parser::codex::rollout::tests`, and existing segment tests.
 - Check `threads.name` in `~/.codex/state_*.sqlite` — this is the column the codex CLI displays, so it is the one that decides success
 - Check `thread_name` in `~/.codex/session_index.jsonl` (append-only: read the **last** record for the id)
 - Confirm the CLI agrees, without opening the TUI: `codex app-server` over stdio, `initialize` then `thread/list`, and compare the thread's `name`

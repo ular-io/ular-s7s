@@ -116,6 +116,8 @@ in `title::resolve`.
 ### Read paths
 
 - session body: `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<sessionId>.jsonl`;
+  Codex 0.162.1 can compress it to the same name with `.zst` appended. Both
+  forms are scanned and read without changing the stored transcript;
   after a rewind (0.159+) the thread continues in
   `rollout-<timestamp>-<sessionId>_<segmentId>.jsonl`, the file `threads.rollout_path`
   points to (see [session-context.md](./session-context.md) §Codex)
@@ -123,6 +125,10 @@ in `title::resolve`.
   does not scan — archived threads drop out of the list without needing a filter)
 - title column: `threads.name` in `~/.codex/state_*.sqlite`
 - title log: `~/.codex/session_index.jsonl`
+
+Compressed sessions use the same metadata-only rename path as plain sessions:
+the app server first, then the index/database fallback. s7s never appends title
+events to a compressed rollout or decompresses it onto disk during rename.
 
 > **Read path settled on codex 0.153.4 (verified 2026-09-08).** `threads.name` is
 > the store the codex CLI displays. A rename issued through codex's own app server

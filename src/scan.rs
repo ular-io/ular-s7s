@@ -146,7 +146,7 @@ pub(crate) fn collect_at(
     )
 }
 
-/// Recursively scans for *.jsonl files and parses them into one session per file (with cache applied).
+/// Scans JSONL (also JSONL.zst for Codex), applying cache and segment folding.
 ///
 /// `segments` (codex only) folds a rewound thread's rollout files into one session: superseded
 /// files are skipped, and the newest segment's cache freshness, creation time and size cover the
@@ -170,6 +170,7 @@ fn scan_jsonl_tree<P, F>(
     if !root.exists() {
         return;
     }
+    let mut seen = std::collections::HashSet::new();
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
             continue;
@@ -179,9 +180,24 @@ fn scan_jsonl_tree<P, F>(
             Some(n) => n,
             None => continue,
         };
-        if !name.ends_with(".jsonl") || !name_filter(name) {
+        let supported = if segments.is_some() {
+            parser::codex::rollout::logical_name(name).is_some()
+        } else {
+            name.ends_with(".jsonl")
+        };
+        if !supported || !name_filter(name) {
             continue;
         }
+        let resolved;
+        let path = if segments.is_some() {
+            resolved = parser::codex::rollout::resolve_path(path);
+            if !seen.insert(parser::codex::rollout::plain_path(&resolved)) {
+                continue;
+            }
+            resolved.as_path()
+        } else {
+            path
+        };
         if segments.is_some_and(|s| s.is_superseded(path)) {
             continue;
         }

@@ -41,6 +41,11 @@ ProfileStore
   active response completion.
 - `cache.rs` owns the versioned bincode index. Do not repeat the current cache
   version in documentation; change its constant when serialized meaning changes.
+- `parser/codex/rollout.rs` owns plain/compressed rollout resolution and
+  in-memory Zstandard decoding. Scanning, rewind predecessor selection, and
+  detailed parsing share this boundary; a logical rollout is listed once even
+  when `.jsonl` and `.jsonl.zst` coexist. Deletion enumerates both physical
+  variants through `parser/codex/segments.rs::thread_files`.
 - `filter.rs` applies keyword, agent, folder, and profile filters. The keyword
   index includes user text, title, folder, last assistant text, and sufficiently
   long session-ID tokens.
