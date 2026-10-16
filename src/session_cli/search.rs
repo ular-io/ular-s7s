@@ -2,20 +2,29 @@
 
 use super::known_profile_ids;
 use crate::filter::Filter;
+use crate::full_search::{self, Query, SessionMatch};
 use crate::model::{Agent, Session};
 use crate::profile::ProfileStore;
 use crate::session_context::resolve;
 use clap::Args;
 use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 #[derive(Args, Debug)]
 #[command(after_help = "\
 MATCHING:
   Space-separated query tokens are AND-matched, each against the user body,
   title, folder name, then the last assistant answer of every turn, then the
-  session ID (tokens of 5+ chars). --folder/--agent/--profile are AND'd with the
-  query; repeating an option OR's its values. Folder matches the cwd basename
-  exactly. Results are most-recent first, capped by --limit (0 = no cap).
+  session ID (tokens of 5+ chars).
+
+  With --full, every assistant message, tool call argument, and tool result is
+  searched in addition to user turns, using the shared detailed parser. Each
+  match displays the best snippet and hit count.
+
+  --folder/--agent/--profile are AND'd with the query; repeating an option
+  OR's its values. Folder matches the cwd basename exactly. Results are
+  most-recent first, capped by --limit (0 = no cap).
 
 NOT SUPPORTED:
   Keyword OR (all tokens are AND); phrase/adjacency matching (quoting a query
@@ -24,12 +33,16 @@ NOT SUPPORTED:
 
 EXAMPLES:
   s7s session search \"final message\"
+  s7s session search \"astro-azcopy-probe-\" --full
   s7s session search test --folder vqs-gw --folder vqs-api --agent codex --agent claude
-  s7s session search rename --profile builtin-claude --limit 50")]
+  s7s session search \"cargo build\" --full --limit 10")]
 pub struct SearchArgs {
     /// Keyword query; space-separated tokens are AND-matched
     #[arg(required = true, num_args = 1.., value_name = "QUERY")]
     pub query: Vec<String>,
+    /// Search across all session content (user turns, assistant messages, tool calls, and tool results)
+    #[arg(long)]
+    pub full: bool,
     /// Restrict to folder name(s) (cwd basename, exact match; repeatable → OR)
     #[arg(long, value_name = "NAME")]
     pub folder: Vec<String>,
@@ -94,6 +107,10 @@ pub(crate) fn run_search(args: &SearchArgs) -> i32 {
         .filter_map(|a| resolve::parse_agent(a))
         .collect();
 
+    if args.full {
+        return run_full_search(args, &profiles, agents);
+    }
+
     let filter = Filter {
         keyword: args.query.join(" "),
         agents,
@@ -113,6 +130,79 @@ pub(crate) fn run_search(args: &SearchArgs) -> i32 {
     }
 
     print_session_rows(&result.sessions, &indices, args.limit, "match(es)");
+    0
+}
+
+/// Searches all session content across candidate sessions matching metadata filters.
+fn run_full_search(args: &SearchArgs, profiles: &ProfileStore, agents: HashSet<Agent>) -> i32 {
+    let query_text = args.query.join(" ");
+    let Some(query) = Query::parse(&query_text) else {
+        eprintln!("error: query holds no valid search token.");
+        return 2;
+    };
+
+    // Candidate sessions narrowed by metadata filters first (parity with TUI).
+    let filter = Filter {
+        keyword: String::new(),
+        agents,
+        folders: args.folder.iter().cloned().collect(),
+        profile_ids: args.profile.iter().cloned().collect(),
+        bookmarked_only: false,
+    };
+
+    let result = crate::scan::scan(&profiles.profiles, false);
+    let candidate_indices = crate::filter::apply(&result.sessions, &filter);
+
+    if candidate_indices.is_empty() {
+        println!("No sessions matched.");
+        return 0;
+    }
+
+    let jobs: Vec<(usize, Session)> = candidate_indices
+        .iter()
+        .map(|&idx| (idx, result.sessions[idx].clone()))
+        .collect();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let matches: Vec<(usize, SessionMatch)> = full_search::spawn(jobs, query, cancel)
+        .into_iter()
+        .filter_map(|(idx, m)| m.map(|mat| (idx, mat)))
+        .collect();
+
+    if matches.is_empty() {
+        println!("No sessions matched.");
+        return 0;
+    }
+
+    let total = matches.len();
+    let shown = if args.limit == 0 {
+        total
+    } else {
+        total.min(args.limit)
+    };
+
+    if total == shown {
+        println!("{total} full-content match(es), most recent first:\n");
+    } else {
+        println!("{total} full-content match(es), most recent first (showing {shown}):\n");
+    }
+
+    for (idx, m) in matches.iter().take(shown) {
+        let session = &result.sessions[*idx];
+        print_session_row(session);
+        println!(
+            "    [Match · Turn {} · {} · {} hit(s)]",
+            m.turn + 1,
+            m.field.label(),
+            m.hits
+        );
+        for line in &m.lines {
+            println!("      {}", line.text);
+        }
+        println!();
+    }
+
+    println!("Read one:  s7s session show <ID> --agent <AGENT> --profile <PROFILE> [--turn N]");
     0
 }
 

@@ -35,9 +35,11 @@ src/session_context/
 └── resolve.rs      cross-profile source resolution
 ```
 
-- `src/session_cli.rs` owns the `show` and `search` commands.
-- `src/full_search/` searches detailed context for the TUI full search; it
-  consumes `session_context::load` and adds no parser (§Full-content search).
+- `src/session_cli/` owns the `show`, `search`, `list`, `rename`, `delete`, and
+  `handoff` commands.
+- `src/full_search/` searches detailed context for the TUI full search and
+  `s7s session search --full`; it consumes `session_context::load` and adds no
+  parser (§Full-content search).
 - `src/session_cli/change_folder.rs` adapts the shared folder-change service;
   its contract is [session-folder.md](./session-folder.md#cli).
 - `src/handoff.rs` adapts the shared model for Markdown export; it must not grow
@@ -402,11 +404,11 @@ which is what marks it as not started.
 
 ## Full-content search
 
-`ctrl+/` (or the palette's **Full Search Sessions**) searches what the keyword
-filter cannot reach: every assistant message, tool call, and tool result, plus
-the user text. The engine is `src/full_search/`; the TUI mode is
-`src/ui/full_search/` (layout rules in
-[ui-style-guide.md](./ui-style-guide.md#full-search-prompt-and-match-box)).
+`ctrl+/` (or the palette's **Full Search Sessions**, or
+`s7s session search --full <QUERY>`) searches what the keyword filter cannot
+reach: every assistant message, tool call, and tool result, plus the user text.
+The engine is `src/full_search/`; the TUI mode is `src/ui/full_search/` (layout
+rules in [ui-style-guide.md](./ui-style-guide.md#full-search-prompt-and-match-box)).
 
 - **Content is the detailed context.** Each session is read through
   `session_context::load`, so the active-branch rules above (Claude rewind and

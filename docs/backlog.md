@@ -26,7 +26,6 @@ them, and move enduring behavior into the owning domain document.
 | JSON/NDJSON output for `session show/search` | `session_cli.rs`, `session_context/render.rs` | Stable schema/versioning and interaction with `--bootstrap` |
 | Partial session-ID resolution | `session_context/resolve.rs` | Minimum prefix and ambiguity behavior |
 | Turn ranges for very large sessions | `session_cli.rs`, `session_context/render.rs` | CLI shape and output limits |
-| Full-content search from the CLI (`s7s session search --full`) | `session_cli.rs`, `full_search/` | Output shape for snippets, and whether a long scan needs a progress line on stderr |
 | Per-result keyword snippets in session search | `session_cli.rs`, list index | Index size and snippet source |
 | Configurable bootstrap response language | bootstrap rendering/config | Trust boundary and default behavior |
 | Cross-session reference graph/deduplication | parser/context model | Requires nested-reference recognition first |

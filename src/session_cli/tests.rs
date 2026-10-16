@@ -145,6 +145,13 @@ fn search_parses_query_and_repeatable_filters() {
     assert_eq!(s.agent, vec!["codex", "claude"]);
     assert_eq!(s.profile, vec!["builtin-codex"]);
     assert_eq!(s.limit, 50);
+    assert!(!s.full);
+}
+
+#[test]
+fn search_parses_full_flag() {
+    let s = search(&["s7s", "session", "search", "test", "--full"]).expect("parse");
+    assert!(s.full);
 }
 
 #[test]
