@@ -20,10 +20,15 @@ impl App {
             self.status_msg = Some("No turns to show for this session".to_string());
             return;
         }
+        // A full-search match opens on the turn it was found in.
+        let selected = self
+            .full_search_turn(idx)
+            .filter(|&turn| turn < turns.len())
+            .unwrap_or(0);
         self.detail = Some(SessionDetailState {
             session_idx: idx,
             turns,
-            selected: 0,
+            selected,
             expanded_prompt: None,
             focus: DetailFocus::Questions,
             left_scroll: std::cell::Cell::new(0),

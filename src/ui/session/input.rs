@@ -14,7 +14,7 @@ use crate::ui::{
 };
 
 impl App {
-    fn move_selection(&mut self, delta: isize) {
+    pub(crate) fn move_selection(&mut self, delta: isize) {
         if self.filtered.is_empty() {
             return;
         }
@@ -48,6 +48,10 @@ impl App {
         self.quit_armed = false;
         self.status_msg = None;
         match key.code {
+            // Legacy terminals report ctrl+/ as ctrl+7 (0x1f).
+            KeyCode::Char('/' | '7' | '_') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_full_search()
+            }
             KeyCode::Char('/') => {
                 self.mode = UiMode::Keyword;
                 self.keyword_cursor = self.filter.keyword.len();
@@ -176,6 +180,7 @@ impl App {
             KeyCode::Esc if self.focus == Focus::Preview => {
                 self.focus = Focus::Table;
             }
+            KeyCode::Esc if self.full_search_active() => self.on_full_search_escape(),
             KeyCode::Esc => {
                 if self.filter.is_active() {
                     self.clear_all_filters();
@@ -199,6 +204,9 @@ impl App {
     /// Handles key inputs in Keyword search mode.
     pub fn on_key_keyword(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::KeyCode;
+        if self.full_search_editing() {
+            return self.on_key_full_search_prompt(key);
+        }
         let origin = self.focus;
         self.on_key_keyword_input(key);
         // Esc returns to the workspace pane the search was opened from; a
@@ -275,6 +283,9 @@ impl App {
     /// `TextInput`, so the shared insertion helper is applied to them directly —
     /// keeping both input implementations on one sanitization contract.
     pub(crate) fn paste_into_keyword(&mut self, text: &str) {
+        if self.full_search_editing() {
+            return self.paste_into_full_search(text);
+        }
         let mut cursor = self.keyword_cursor.min(self.filter.keyword.len());
         let outcome = insert_paste_at(&mut self.filter.keyword, &mut cursor, text);
         self.keyword_cursor = cursor;

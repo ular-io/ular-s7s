@@ -23,6 +23,7 @@ pub enum CommandId {
     DeleteProfile,
     ToggleProfileShortcut,
     SearchSessions,
+    FullSearchSessions,
     FilterByAgent,
     FilterByFolder,
     FilterBookmarkedSessions,
@@ -203,6 +204,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         shortcut: Some("/"),
         aliases: &["find", "keyword", "filter"],
         description: None,
+    },
+    CommandSpec {
+        id: CommandId::FullSearchSessions,
+        key: "full-search-sessions",
+        label: "Full Search Sessions",
+        shortcut: Some("ctrl+/"),
+        aliases: &["find", "content", "grep", "tool", "output", "answer"],
+        description: Some("Search every message, tool call, and tool result"),
     },
     CommandSpec {
         id: CommandId::FilterByAgent,

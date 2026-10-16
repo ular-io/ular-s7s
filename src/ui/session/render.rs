@@ -127,6 +127,7 @@ pub(crate) fn draw_table(f: &mut Frame, app: &App, area: Rect) {
         .active_workspace_name()
         .map(str::to_string)
         .into_iter()
+        .chain(app.full_search_query().map(|q| format!("full: {q}")))
         .chain(
             app.filter
                 .is_active()
@@ -215,6 +216,11 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(s) = app.current() {
+        if let Some(m) = app.full_search_match(s) {
+            lines.extend(crate::ui::full_search::render::match_box_lines(
+                m, inner_w, th, dimmed,
+            ));
+        }
         lines.extend(session_meta_lines(
             s,
             app.title_marks(s),
@@ -275,7 +281,8 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No sessions to show.",
+            app.full_search_empty_note()
+                .unwrap_or("No sessions to show."),
             Style::default().fg(th.dim),
         )));
     }

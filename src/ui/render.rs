@@ -47,8 +47,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         super::profile::render::draw_profile_table(f, app, root[1]);
     } else if app.screen == Screen::Detail {
         super::detail::render::draw_detail(f, app, root[1]);
-    } else if app.mode == UiMode::Keyword {
-        // Keyword mode: overlays search prompt box on top of the main body (k9s-style).
+    } else if app.mode == UiMode::Keyword || app.full_search_active() {
+        // Keyword or full-search prompt above the main body (k9s-style). The
+        // full-search prompt stays while its results are browsed.
         let body = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(3)])

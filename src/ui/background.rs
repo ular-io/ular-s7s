@@ -1,4 +1,5 @@
-//! Receiver and in-flight coordination for usage, model, and session-refresh jobs.
+//! Receiver and in-flight coordination for usage, model, session-refresh, and
+//! full-content search jobs.
 //!
 //! Application caches remain on `App`. This module owns channels and duplicate
 //! query guards, returning owned results before the application mutates its
@@ -7,11 +8,17 @@
 //! stores.
 
 use crate::agent_status;
+use crate::full_search::{self, Query, SearchResult};
+use crate::model::Session;
 use crate::models::{self, ModelsResult};
 use crate::profile::Profile;
 use crate::usage::{self, UsageResult};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
+
+type FullSearchResult = SearchResult<super::refresh::SessionKey>;
 
 /// Coordination state for background probes and session-refresh jobs.
 #[derive(Default)]
@@ -28,6 +35,9 @@ pub(crate) struct BackgroundState {
     /// One active live-session sweep over every Claude and agy profile (one
     /// worker per profile, all sending into this receiver).
     agent_status_rx: Option<Receiver<(String, Option<agent_status::StatusMap>)>>,
+    /// One active full-content search: its result receiver and the flag its
+    /// workers check between sessions.
+    full_search: Option<(Receiver<FullSearchResult>, Arc<AtomicBool>)>,
 }
 
 impl BackgroundState {
@@ -193,6 +203,50 @@ impl BackgroundState {
         self.agent_status_rx = Some(rx);
     }
 
+    /// Starts a full-content search over `jobs`, replacing (and cancelling) any
+    /// search still running.
+    pub(crate) fn spawn_full_search(
+        &mut self,
+        jobs: Vec<(super::refresh::SessionKey, Session)>,
+        query: Query,
+    ) {
+        self.cancel_full_search();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let rx = full_search::spawn(jobs, query, cancel.clone());
+        self.full_search = Some((rx, cancel));
+    }
+
+    /// Drains the results received so far and whether the search has finished
+    /// (every worker exited). `None` when no search is running.
+    pub(crate) fn drain_full_search(&mut self) -> Option<(Vec<FullSearchResult>, bool)> {
+        let (rx, _) = self.full_search.as_ref()?;
+        let mut results = Vec::new();
+        let finished = loop {
+            match rx.try_recv() {
+                Ok(item) => results.push(item),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
+        if finished {
+            self.full_search = None;
+        }
+        Some((results, finished))
+    }
+
+    /// Stops the running search: workers finish the session in hand and exit,
+    /// and its remaining results are discarded with the receiver.
+    pub(crate) fn cancel_full_search(&mut self) {
+        if let Some((_, cancel)) = self.full_search.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_full_search_receiver(&mut self, rx: Receiver<FullSearchResult>) {
+        self.full_search = Some((rx, Arc::default()));
+    }
+
     /// Returns whether any background job is in progress
     /// (used to determine polling frequency in the main loop).
     pub(crate) fn in_flight(&self) -> bool {
@@ -200,6 +254,7 @@ impl BackgroundState {
             || !self.models_rxs.is_empty()
             || self.refresh_rx.is_some()
             || self.agent_status_rx.is_some()
+            || self.full_search.is_some()
     }
 }
 

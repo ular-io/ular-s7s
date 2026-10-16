@@ -36,6 +36,8 @@ src/session_context/
 ```
 
 - `src/session_cli.rs` owns the `show` and `search` commands.
+- `src/full_search/` searches detailed context for the TUI full search; it
+  consumes `session_context::load` and adds no parser (§Full-content search).
 - `src/session_cli/change_folder.rs` adapts the shared folder-change service;
   its contract is [session-folder.md](./session-folder.md#cli).
 - `src/handoff.rs` adapts the shared model for Markdown export; it must not grow
@@ -397,6 +399,59 @@ handoff counts only once the session is on disk, and the scan supplies the recor
 the rename and the resume command need. `--title` gains a `HAND-OVER: ` prefix
 when absent. Nothing else is tracked — a parked session sits at one turn (`Q1`),
 which is what marks it as not started.
+
+## Full-content search
+
+`ctrl+/` (or the palette's **Full Search Sessions**) searches what the keyword
+filter cannot reach: every assistant message, tool call, and tool result, plus
+the user text. The engine is `src/full_search/`; the TUI mode is
+`src/ui/full_search/` (layout rules in
+[ui-style-guide.md](./ui-style-guide.md#full-search-prompt-and-match-box)).
+
+- **Content is the detailed context.** Each session is read through
+  `session_context::load`, so the active-branch rules above (Claude rewind and
+  compaction, Codex segments and `.jsonl.zst`, the Antigravity step bound and
+  replay reduction), redaction, and the user-turn fallback apply unchanged.
+  The match's turn index is the Detail and `session show --turn` index;
+  Detail opens on that turn. Do not add a second parser for search.
+- **Query.** Whitespace-separated tokens, NFC-normalized and lowercased per
+  character (`full_search::query::fold`), all of which must occur somewhere in
+  the session (AND, as in the keyword filter); one text need not hold them
+  all. The snippet comes from the first text holding the most distinct
+  tokens. Titles, folder names, and ids are left to the keyword filter.
+- **Candidates** are the sessions the list shows when the query is submitted:
+  agent/folder/profile/keyword/bookmark filters and the open workspace apply,
+  in list order. While the mode is open the list is that set narrowed to the
+  matches, so later filter changes narrow it further.
+- **Raw prefilter** (`full_search/raw.rs`). Before decoding, the bytes the
+  detailed parser would read (Claude JSONL, the Codex logical rollout through
+  `segments::read_rollout`, the Antigravity transcript) are searched as plain
+  text, ASCII-lowercased. It may only produce false positives:
+  - Tokens holding `"`, `\`, `<`, `>`, `&`, an ASCII control, or a cased
+    non-ASCII letter skip it. Caseless non-ASCII (Hangul, CJK) is tried in NFC
+    and NFD form.
+  - It relies on every agent writing non-ASCII as raw UTF-8. Observed on
+    2026-10-16 across 4,260 Claude, Codex, and Antigravity JSONL files: no
+    outer-level `\uXXXX` escape. A raw `\\u` or `\\/` (an escape inside a
+    JSON document embedded as a string, which the detailed parsers decode)
+    turns the prefilter off for non-ASCII or `/` tokens in that file.
+  - A token present in the in-memory `search_blob` passes, because the
+    detailed load falls back to the indexed user turns when the transcript
+    cannot be parsed in full. An unreadable source never rules a session out.
+- **Workers** (`full_search/worker.rs`): at most four threads claim sessions in
+  list order and send one result per session; each holds one session's text
+  and parsed context at a time, never the store. Cancellation is checked
+  between sessions, so a stop takes effect in the UI immediately and on disk
+  reads within one session. Nothing is cached between searches.
+- **Measured** on 1,332 real sessions (2.2 GB, release build): a rare token
+  (`linker`) finishes in 0.8 s; tokens present in most sessions (`cargo`,
+  `빌드`) take about 6 s, dominated by detailed parsing, while matches stream in
+  from the start.
+- **Re-verify on a CLI upgrade** with
+  `cargo test --release real_data_full_search -- --ignored --nocapture`, which
+  times the search and asserts that the prefilter drops no session the
+  unfiltered detailed match accepts. A new raw encoding (escaped non-ASCII, a
+  compressed or binary store) breaks that assertion before it breaks users.
 
 ## Excerpts and redaction
 

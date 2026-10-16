@@ -13,6 +13,7 @@ mod codex_app_server;
 pub mod config;
 pub mod demo;
 pub mod filter;
+pub mod full_search;
 pub mod handoff;
 pub mod model;
 pub mod models;

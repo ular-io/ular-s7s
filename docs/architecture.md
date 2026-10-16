@@ -87,7 +87,7 @@ Session
   -> session_context::load
   -> agent detailed parser
   -> redaction and excerpt limits
-  -> Detail UI / session CLI / handoff exporter
+  -> Detail UI / session CLI / handoff exporter / full-content search
 ```
 
 - `session_context/model.rs` owns `SessionContext`, turns, entries, and
@@ -113,6 +113,7 @@ discrete request fields drained by `runtime`.
 | Shared frame, body layout, status bar | `ui/render.rs` |
 | Header, usage spans, metadata grid and preview helpers | `ui/render/{header,usage,meta}.rs` |
 | Session list/search/preview | `ui/session/` |
+| Full-content search mode (prompt, streamed list, match box) | `ui/full_search/` (engine: `full_search/`) |
 | Session screen workspace pane and the workspace edit dialog it opens | `ui/workspace/` |
 | Detail screen | `ui/detail/` |
 | New Session dialog | `ui/new_session/` |
@@ -131,7 +132,11 @@ discrete request fields drained by `runtime`.
 | Global refresh snapshots and result application | `ui/refresh.rs` |
 
 Pure state recomputation is not an effect. Usage/model results stay on `App`;
-`BackgroundState` owns only receivers and in-flight coordination.
+`BackgroundState` owns only receivers and in-flight coordination. The full
+search follows the same split: `BackgroundState` holds its receiver and
+cancellation flag, `App.full_search` its query and matches. Matches are keyed
+by agent/profile/id (`refresh::SessionKey`), so a rescan or rebinding of
+session indices never misattributes them.
 
 `Ctrl+U` and palette Refresh All draw loading feedback before starting a session
 scan worker. The worker scans all profiles, loads the Detail identity captured at
@@ -240,6 +245,7 @@ Folder overrides are re-read on each session scan, including `Ctrl+U`.
 | Session folder | `session_folder.rs`, `session_workspace.rs`, `session_cli/change_folder.rs`, `ui/overlays/change_folder.rs` | `session-folder.md` |
 | Work handoff | `session_handoff.rs`, `config.rs` (`handoff_instruction`) | `session-context.md` §Handoff |
 | Detailed context/CLI | `session_context/*`, `session_cli.rs` | `session-context.md` |
+| Full-content search | `full_search/*`, `ui/full_search/*`, `ui/background.rs` | `session-context.md` §Full-content search, `ui-style-guide.md` |
 | Usage/model probes | `usage.rs`, `models.rs`, `probe/*` | `usage-display.md`, `models.md` |
 | Profiles/env injection | `profile.rs`, `resume.rs`, `ui/profile/*` | `profiles.md` |
 | TUI/input/terminal | `ui/*`, `runtime.rs` | `ui-style-guide.md`, `terminal-input-hardening.md` |

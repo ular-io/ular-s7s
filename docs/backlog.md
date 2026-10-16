@@ -15,6 +15,7 @@ them, and move enduring behavior into the owning domain document.
 | Count a Codex message sent while a turn is running as part of that turn | `parser/codex/events.rs`, both consumers | Codex `thread/turns/list` groups such a message into the running turn (same `turn_id`); s7s opens a new question for it, so its Q count exceeds the CLI's (seen: 4 vs 3). Decide whether s7s should follow the CLI before changing turn selection. |
 | Recognize nested `s7s session` calls as `ContextEntryKind::SessionReference` | `session_context/*` | The enum variant is reserved but not produced. Needed before recursive context embedding or deduplication. |
 | Open dropdowns upward when the rows below are too few | `ui/new_session/render.rs`, `ui/workspace/render.rs` (`draw_folder_list`) | The shared rust-tui rule (controls §4) flips a popup above its combo when it does not fit below; s7s always opens downward and clamps at the terminal bottom. Decide how the upward popup joins the combo's top border before sharing it through `components::modal::dropdown_frame`. |
+| Show the matched entry when Detail opens from a full search | `ui/detail/`, `ui/full_search/` | Detail opens on the matched turn, but a match in a tool call or result stays behind the default-hidden tool logs (`.`), and the Work pane is not scrolled to the entry. Decide whether the match may override the global tool-log toggle. |
 | New Session errors on a notice line | `ui/new_session/render.rs` | The rust-tui standard puts a form's error on a reserved notice line. New Session truncates its error left of the buttons (about 16 cells on an 80-column terminal); moving it to a notice line adds one reserved row to the dialog. |
 | Bold names in the `Folders` summary | `ui/workspace/render.rs` (`folder_combo`) | rust-tui controls §7.4 draws the selected names in the combo value style (bold) with only the count dim; s7s draws them in the default weight. |
 
@@ -25,6 +26,7 @@ them, and move enduring behavior into the owning domain document.
 | JSON/NDJSON output for `session show/search` | `session_cli.rs`, `session_context/render.rs` | Stable schema/versioning and interaction with `--bootstrap` |
 | Partial session-ID resolution | `session_context/resolve.rs` | Minimum prefix and ambiguity behavior |
 | Turn ranges for very large sessions | `session_cli.rs`, `session_context/render.rs` | CLI shape and output limits |
+| Full-content search from the CLI (`s7s session search --full`) | `session_cli.rs`, `full_search/` | Output shape for snippets, and whether a long scan needs a progress line on stderr |
 | Per-result keyword snippets in session search | `session_cli.rs`, list index | Index size and snippet source |
 | Configurable bootstrap response language | bootstrap rendering/config | Trust boundary and default behavior |
 | Cross-session reference graph/deduplication | parser/context model | Requires nested-reference recognition first |

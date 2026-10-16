@@ -1,7 +1,7 @@
 //! The `/` keyword search prompt drawn above the Session screen body.
 
 use crate::ui::components::text::wrap_w;
-use crate::ui::App;
+use crate::ui::{App, UiMode};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -11,8 +11,13 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-/// Overlay text box for search query (k9s-style). Only rendered during Keyword filter mode.
+/// Overlay text box for search query (k9s-style). Draws the keyword prompt
+/// while it owns input, otherwise the open full-search prompt.
 pub(crate) fn draw_search_prompt(f: &mut Frame, app: &App, area: Rect) {
+    let keyword_owns_input = app.mode == UiMode::Keyword && !app.full_search_editing();
+    if app.full_search_active() && !keyword_owns_input {
+        return crate::ui::full_search::render::draw_prompt(f, app, area);
+    }
     let th = &app.theme;
     let block = Block::default()
         .borders(Borders::ALL)

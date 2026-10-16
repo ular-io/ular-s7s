@@ -22,6 +22,7 @@ planning; backlog entries are not implementation authorization.
 | Session folder (`Change Folder`, `session change-folder`, `src/session_folder.rs`, `src/session_workspace.rs`, `scan::apply_workspace_cwd`) | [session-folder.md](./docs/session-folder.md) + [testing.md](./docs/testing.md) |
 | Scratch workspace (`src/scratch.rs`, folder dropdown `[SCRATCH]` row) | [architecture.md](./docs/architecture.md) §Scratch workspace + [testing.md](./docs/testing.md) |
 | Session context (`src/session_context/`, `s7s session` CLI, New Session with Context, context-source navigation in `src/ui/context_jump.rs`) | [session-context.md](./docs/session-context.md) |
+| Full-content search (`src/full_search/`, `src/ui/full_search/`, `ctrl+/`) | [session-context.md](./docs/session-context.md) §Full-content search + [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Session deletion (`src/session_delete.rs`, shared by the TUI action and `s7s session delete`) | [session-context.md](./docs/session-context.md) §Delete + [testing.md](./docs/testing.md) |
 | Work handoff (`src/session_handoff.rs`, `s7s session handoff`) | [session-context.md](./docs/session-context.md) §Handoff + [testing.md](./docs/testing.md) |
 | TUI layout / panel focus / visual style | [ui-style-guide.md](./docs/ui-style-guide.md) |
@@ -95,6 +96,7 @@ authoritative matrix; the essentials:
   the abandoned transcript suffix, which must be reduced before detail and
   assistant-search parsing.
 - **Context / list turn selection**: `cargo test real_data_turn_parity -- --ignored --nocapture` (List Q count == Detail == CLI turn count); re-verify initial-prompt injection on CLI upgrade.
+- **Full-content search / raw prefilter**: `cargo test --release real_data_full_search -- --ignored --nocapture` (0 sessions dropped by the prefilter), plus a PTY check of streaming, stop, and exit.
 - **New Session dialog layout**: `cargo build --release` is mandatory, plus a PTY/TUI visual check.
 - **Terminal lifecycle / paste / text editing**: real-terminal paste, exit, and handover checks, plus the `S7S_PANIC_PROBE=1` panic-restore check — [testing.md](./docs/testing.md#terminal-lifecycle-and-paste-checks).
 

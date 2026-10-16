@@ -5,7 +5,7 @@ use crate::{handoff::HandoffTurn, model::Session, scan::ScanResult};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionKey {
     agent: crate::model::Agent,
     profile_id: String,

@@ -9,6 +9,7 @@ pub mod copy;
 pub mod detail;
 pub mod effect;
 mod folders;
+pub(crate) mod full_search;
 mod modes;
 pub mod new_session;
 pub mod overlays;
@@ -212,6 +213,8 @@ pub struct App {
     /// the model-loading dedup guard). The result caches above stay on `App`;
     /// this owns only the job plumbing (`ui/background.rs`).
     pub(crate) background: BackgroundState,
+    /// Full-content search mode (`ui/full_search/`); `None` while closed.
+    pub(crate) full_search: Option<full_search::state::FullSearchState>,
 }
 
 impl App {
@@ -331,6 +334,7 @@ impl App {
                 ModelCatalog::load()
             },
             background: BackgroundState::default(),
+            full_search: None,
         };
         app.recompute();
         app
@@ -343,6 +347,7 @@ impl App {
             self.bookmarks.contains(session)
         });
         self.retain_workspace_scope(&mut filtered);
+        self.retain_full_search_matches(&mut filtered);
         self.filtered = filtered;
         self.filtered
             .sort_by_cached_key(|&idx| !self.bookmarks.contains(&self.sessions[idx]));
@@ -386,8 +391,9 @@ impl App {
         let models_updated = self.poll_models();
         let sessions_updated = self.poll_refresh_scan();
         let status_updated = self.poll_agent_status();
+        let search_updated = self.poll_full_search();
         self.tick_agent_status();
-        usage_updated || models_updated || sessions_updated || status_updated
+        usage_updated || models_updated || sessions_updated || status_updated || search_updated
     }
 
     fn rebuild_all_folders(&mut self) {

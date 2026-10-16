@@ -30,7 +30,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 ## Key Features
 
 - **Rust-Powered & Blazingly Fast**: Built with Rust combined with database-backed caching for instantaneous loading. The initial scan builds the database cache, enabling subsequent lookups to query the cache directly for near-instantaneous load times.
-- **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen. Keyword search spans user prompts, titles, folder names, and each turn's last assistant answer, so you can find a session by something the agent said.
+- **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen. Keyword search spans user prompts, titles, folder names, and each turn's last assistant answer, so you can find a session by something the agent said. Full search (`ctrl+/`) goes further — every assistant message, tool call, and tool result (command output, build logs, file contents) — streaming matches into the list with a highlighted snippet while it runs.
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left`).
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
 - **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
@@ -119,6 +119,7 @@ leaves the ordinary session list behind the dialog.
 | `:` | Quick Command palette. Typing filters every command by label, alias, or shortcut (`↑`/`↓` to pick, `enter` to run), so `profile` reaches **Open Profile Window** and `theme` reaches **Change Theme**. Palette-only commands include **Change Folder**, **Edit Config**, **Change Theme**, **Back to Previous Session**, and **Filter Bookmarked Sessions** |
 | `!` | Terminal command in session folder (run shell command in the selected session's folder) |
 | `/` | Keyword search mode (real-time matching over body/title/folder + last assistant answers + session id, space=AND) |
+| `ctrl+/` | Full search over every message, tool call, and tool result (space=AND). `enter` starts it and focuses the list while matches stream in; the Prompt pane shows the matched snippet; `esc` stops, `esc` again restores the list. Also the palette's **Full Search Sessions** |
 | `a` | Agents modal (`space` toggle, `enter` apply) |
 | `1` ~ `5` | Active profile exclusive filter (header number order) |
 | `0` | Reset all filters |

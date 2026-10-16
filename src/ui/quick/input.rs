@@ -163,6 +163,7 @@ impl App {
             SearchSessions | FilterByAgent | FilterByFolder | FilterBookmarkedSessions => {
                 self.screen == Screen::Session
             }
+            FullSearchSessions => true,
             ClearFilters => self.screen == Screen::Session && self.filter.is_active(),
             ToggleToolLogs => self.screen == Screen::Detail,
             RefreshAll | EditConfig | ChangeTheme | OpenHelp | ExitApp => true,
@@ -461,6 +462,7 @@ impl App {
                 self.mode = UiMode::Keyword;
                 self.keyword_cursor = self.filter.keyword.len();
             }
+            FullSearchSessions => self.open_full_search(),
             FilterByAgent => self.open_agent_modal(),
             FilterByFolder => self.open_folder_modal(),
             FilterBookmarkedSessions => self.toggle_bookmark_filter(),

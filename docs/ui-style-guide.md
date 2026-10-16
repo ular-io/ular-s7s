@@ -299,6 +299,40 @@ Additional rules:
   thresholds and FOLDER bounds; `session_table_hides_optional_columns_on_narrow_terminals`
   checks the frame.
 
+## Full-search prompt and match box
+
+- The full-search prompt (`ui/full_search/render.rs::draw_prompt`) takes the
+  keyword prompt's three rows above the Session body. While it owns input it
+  is drawn like the keyword prompt: `Thick` accent frame titled
+  ` Full Search `, a `/ ` prefix in `dim`, the hardware cursor, and horizontal
+  scrolling through `input_view`. Reopening it selects the last query
+  (whole-value selection, painted in the selection colors) so typing replaces
+  it and `→` edits it.
+- After Enter the session table has focus. The prompt stays, `Plain` and
+  `soft_dim()` like an unfocused pane, with the run status right-aligned on
+  its top border in the default color + bold, the one value there that drives
+  the next key: `[Searching n/N · M matches found · Esc: Stop]`,
+  `[Stopped · M matches found · Esc: Back]`, `[Done · M matches found · Esc: Back]`
+  (`Done · n/N searched` when some sessions were never searched). While the
+  prompt is edited the key hint is dropped, since `Esc` then closes the mode.
+- `/` still opens the keyword prompt in that row; the full-search prompt
+  returns when it closes. The table title adds `full: <query>` after the
+  workspace name: `Session[full: linker: 17]`.
+- The match box (`match_box_lines`) heads the Prompt pane, above the Session
+  block: `┌ Match · Q<n> · <field> ── <N> hits ┐`, then up to three snippet
+  lines (the best line and its non-blank neighbours) wrapped by grapheme to the
+  box, at most four rows per line with a trailing `…`. A long source line is cut
+  to 160 characters around its first highlight, `…` marking each cut end.
+- The frame, heading, and text fade with the pane (accent and default while it
+  is focused, `soft_dim()` otherwise). The highlights keep `on_accent` on
+  `accent` + bold even in a faded pane — a deliberate exception to fading,
+  because the highlighted token is what the list is being scanned for while
+  the table has focus. Bold carries the highlight without color.
+- Snippet text is sanitized before layout: ANSI CSI/OSC sequences are removed
+  and other control characters become spaces.
+- An empty list reads `No matches yet.` while running, `No matching sessions.`
+  after.
+
 ## Workspace pane
 
 - The Session screen's workspace pane is drawn left of the session table only

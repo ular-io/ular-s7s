@@ -45,6 +45,7 @@ const HELP_SESSION: &[(&str, &str)] = &[
     ("Ⓑ", "Claude background session (state in Prompt pane)"),
     ("Ⓞ", "Session open in another terminal (Claude, agy)"),
     ("/", "Keyword search"),
+    ("ctrl+/", "Full-content search (fallback: `:` palette)"),
     (".", "Expand/collapse preview (when focused)"),
     ("c", "Copy session info / all user turns (by focus)"),
     ("a", "Select agent filter"),
