@@ -108,7 +108,10 @@ discrete request fields drained by `runtime`.
 
 | Area | Owner |
 | --- | --- |
-| Shared frame, header, status, shared render helpers | `ui/render.rs` |
+| Screen/mode enums, screen switching, quit arming | `ui/modes.rs`, `ui/screen.rs` |
+| Usage/model probe spawning and result application | `ui/probes.rs` |
+| Shared frame, body layout, status bar | `ui/render.rs` |
+| Header, usage spans, metadata grid and preview helpers | `ui/render/{header,usage,meta}.rs` |
 | Session list/search/preview | `ui/session/` |
 | Session screen workspace pane and the workspace edit dialog it opens | `ui/workspace/` |
 | Detail screen | `ui/detail/` |

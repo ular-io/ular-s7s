@@ -5,7 +5,7 @@
 > Entry points: `src/profile.rs`, `src/ui/profile/`, `src/resume.rs`
 
 Profile = a bundle of **Agent type + Name + config folder (path) + OAuth token (storage only)**.
-Even for the same agent, if the config folder is different, it is a separate profile (e.g., Claude personal subscription + team subscription). Implementation is in `src/profile.rs` (model/storage) and `src/ui/profile/` (profile screen/form: `state`, `input`, `render`). Usage/model fetch coordination and cross-feature helpers (`set_single_profile`, `profile_name`, `session_profile_root`) remain in `src/ui/mod.rs`.
+Even for the same agent, if the config folder is different, it is a separate profile (e.g., Claude personal subscription + team subscription). Implementation is in `src/profile.rs` (model/storage) and `src/ui/profile/` (profile screen/form: `state`, `input`, `render`). Usage/model fetch coordination lives in `src/ui/probes.rs`, the cross-feature helpers `set_single_profile` and `profile_name` in `src/ui/screen.rs`, and `session_profile_root` in `src/session_delete.rs`.
 
 ## Storage Location
 

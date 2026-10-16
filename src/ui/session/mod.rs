@@ -13,12 +13,14 @@
 //! `App` fields (`selected`, `filtered`, `filter`, `preview_scroll`, `focus`,
 //! ...). The §8.1 `App` split is out of scope for R8b, so `state` owns only the
 //! `Focus` enum; the `impl App` handlers keep operating on those `App` fields.
-//! Cross-feature filter coordination (`clear_all_filters`, `set_single_profile`,
-//! `recompute`, screen switching) and the filter/rename/delete overlays remain in
-//! `ui::mod` and `ui::render`.
+//! Cross-feature filter coordination (`recompute` in `ui::mod`;
+//! `clear_all_filters`, `set_single_profile`, and screen switching in
+//! `ui::screen`) and the filter/rename/delete overlays stay outside this module.
 
 pub(crate) mod input;
+pub(crate) mod prompt;
 pub(crate) mod render;
 pub(crate) mod state;
+mod table_layout;
 #[cfg(test)]
 mod tests;

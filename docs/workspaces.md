@@ -255,7 +255,7 @@ edit dialog.
   dialog ignores, palette open/close, context jump, persistence, dialog and
   checklist render),
   `ui::workspace::render::tests` (dialog size),
-  `ui::render::tests::workspace_pane_shrinks_the_body_and_hides_a_narrow_prompt`,
+  `ui::render::session_tests::workspace_pane_shrinks_the_body_and_hides_a_narrow_prompt`,
   `workspaces::tests` (matching, ordering, per-change commits, refused names,
   unreadable store),
   `ui::reload::tests` (`ctrl+u` reload), and `store_lock::tests`.

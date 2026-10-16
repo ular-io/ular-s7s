@@ -3,7 +3,7 @@
 > Status: Current
 > Read when: Changing TUI layout, themes, focus, selected rows, dialogs, text
 > omission, or expansion behavior.
-> Entry points: `src/theme.rs`, `src/ui/render.rs`,
+> Entry points: `src/theme.rs`, `src/ui/render.rs`, `src/ui/render/`,
 > `src/ui/components/modal.rs`, feature `render.rs` files
 
 Use semantic theme roles and shared render primitives. Do not recreate a visual

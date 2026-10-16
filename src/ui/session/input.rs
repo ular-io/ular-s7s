@@ -7,8 +7,7 @@
 //! `preview_scroll`, `focus`); the §8.1 `App` split is deferred. Cross-feature
 //! coordination they call (`clear_all_filters`, `set_single_profile`,
 //! `switch_screen`, `recompute`, the filter/rename/delete overlays) stays in
-//! `ui::mod`; `App`, being declared in the ancestor `ui` module, keeps those
-//! private methods reachable from this descendant module without widening.
+//! `ui::mod` and `ui::screen`.
 
 use crate::ui::{
     insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, App, Focus, UiMode,

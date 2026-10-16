@@ -8,14 +8,18 @@ pub mod context_jump;
 pub mod copy;
 pub mod detail;
 pub mod effect;
+mod folders;
+mod modes;
 pub mod new_session;
 pub mod overlays;
 pub mod paste;
+mod probes;
 pub mod profile;
 pub mod quick;
 pub(crate) mod refresh;
 pub(crate) mod reload;
 pub mod render;
+mod screen;
 pub mod session;
 pub mod workspace;
 
@@ -23,6 +27,7 @@ pub(crate) use components::input::{
     insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, PasteOutcome, TextInput,
 };
 pub use detail::state::{DetailFocus, SessionDetailState};
+pub use modes::{Screen, TerminalKind, TerminalRequest, UiMode};
 pub use new_session::state::{
     ModelOption, NewSessionFocus, NewSessionRequest, NewSessionState, SessionContextRef,
 };
@@ -35,95 +40,18 @@ pub use overlays::theme::ThemeSelectState;
 pub use profile::state::{FormFocus, ProfileFormState};
 pub use session::state::Focus;
 
+use folders::folder_names_by_latest;
+pub(crate) use folders::{count_by, cwd_counts, cwds_by_latest, folder_name_key};
+
 use crate::config::Config;
 use crate::filter::{self, Filter};
 use crate::model::Session;
-use crate::models::{self, ModelCatalog};
+use crate::models::ModelCatalog;
 use crate::profile::ProfileStore;
-use crate::usage::{self, UsagePhase, UsageState};
+use crate::usage::UsageState;
 use background::BackgroundState;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
-/// Main screen variants. Cycled/switched via Quick Command (`:`) window commands or ←/→ arrows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    /// Session list view (default), "Session Search screen".
-    Session,
-    /// Profile list view.
-    Profile,
-    /// Session details view (per-question workspace tasks/answers). Drill-down screen entered via → arrow key from search preview.
-    Detail,
-}
-
-/// UI modes determining input event dispatching branches (TUI state machine).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiMode {
-    /// Main table navigation (Session/Profile lists depending on active Screen).
-    Table,
-    /// Keyword search text input.
-    Keyword,
-    /// Agent filter multi-select modal.
-    AgentModal,
-    /// Folder filter multi-select modal.
-    FolderModal,
-    /// Session deletion confirmation modal.
-    DeleteConfirm,
-    /// Attach/Cancel question for a Claude session held by Claude Code's daemon.
-    AttachConfirm,
-    /// Session renaming modal.
-    Rename,
-    /// Session folder change dialog (palette-only `Change Folder`). Re-points
-    /// where the session opens next without moving files.
-    ChangeFolder,
-    /// Profile creation/edit form.
-    ProfileForm,
-    /// Profile deletion confirmation modal.
-    ProfileDeleteConfirm,
-    /// Directory creation confirmation modal prompt for missing config folders on profile save (login task triggered on confirm).
-    ProfileDirConfirm,
-    /// New session creation dialog (profile selection + folder lookup/input). Accessible globally via Ctrl+N.
-    NewSession,
-    /// Project folder creation confirmation modal shown when the New Session folder input is a
-    /// bare name (no path separator) with no matching folder under `config::projects_dir()`.
-    /// Create makes the folder and starts the session; Cancel returns to the New Session dialog.
-    ProjectDirConfirm,
-    /// `:`/`!` Quick Command window (palette: incremental search and command trigger;
-    /// terminal: shell command input with history in the selected session's folder).
-    QuickCommand,
-    /// Theme selection dialog (live preview on cursor move; Enter commits, Esc reverts).
-    ThemeSelect,
-    /// Global keybindings help screen.
-    Help,
-    /// Generic alert dialog (info / warning / error). Reverts to the prior UI mode upon dismissal.
-    Message,
-    /// Workspace edit dialog (name, include/exclude words, folders; Save/Cancel),
-    /// opened from the Session screen's workspace pane.
-    WorkspaceEdit,
-    /// Workspace deletion confirmation modal.
-    WorkspaceDeleteConfirm,
-}
-
-/// Request to run a shell command in a session folder (`!` terminal mode).
-/// Processed by the main loop after releasing TUI.
-#[derive(Debug, Clone)]
-pub struct TerminalRequest {
-    pub cwd: PathBuf,
-    pub command: String,
-    pub kind: TerminalKind,
-}
-
-/// Origin of a terminal request; drives the post-exit behavior in the handover.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalKind {
-    /// User `!` command: wait for a keypress after exit so short-lived output is
-    /// not wiped by the TUI redraw. Failures show a warning and also wait.
-    Command,
-    /// Edit Config editor session: return without waiting (no output to read).
-    /// On failure, offer to reopen the config with vim (a broken `editor` value
-    /// would otherwise lock the user out of fixing it from within s7s).
-    EditConfig,
-}
 
 /// Global application state.
 pub struct App {
@@ -447,249 +375,6 @@ impl App {
         }
     }
 
-    /// Rescans sessions on disk to refresh the session list (utilizes mtime-based incremental cache).
-    ///
-    /// Only modified or new files are parsed. Tracks selection by (agent, profile, id)
-    /// to preserve cursor position post-refresh (even if content modifications re-order lists to the top).
-    /// Used after handovers and mutations. Ctrl+U scans on a worker and shares
-    /// only result application with this synchronous path.
-    pub fn refresh_sessions(&mut self) {
-        self.cancel_refresh_scan();
-        let result = crate::scan::scan(&self.profiles.profiles, false);
-        let detail = self.detail_key().and_then(|key| {
-            result
-                .sessions
-                .iter()
-                .find(|s| key.matches(s))
-                .map(|s| (key, crate::handoff::load_turns(s)))
-        });
-        self.apply_session_scan(result, detail);
-        // A handover is where `←` most often moves a session to the background.
-        self.request_agent_status();
-    }
-
-    /// Applies a completed index against the selection and detail target that
-    /// exist now, including navigation performed while the worker was running.
-    pub(crate) fn apply_session_scan(
-        &mut self,
-        result: crate::scan::ScanResult,
-        detail: Option<refresh::DetailRefresh>,
-    ) {
-        let prev = self.current().map(refresh::SessionKey::of);
-        let detail_key = self.detail_key();
-        let preview = (
-            self.preview_scroll,
-            self.preview_expanded,
-            self.table_state.borrow().offset(),
-        );
-        self.scan_info = format!(
-            "{} sessions · reparsed {}/{}",
-            result.sessions.len(),
-            result.reparsed_files,
-            result.scanned_files
-        );
-        self.sessions = result.sessions;
-        self.rebuild_all_folders();
-        self.recompute();
-
-        // Restore selection: if the same session still passes the filters, move cursor to its new index.
-        if let Some(key) = prev {
-            if let Some(pos) = self
-                .filtered
-                .iter()
-                .position(|&i| key.matches(&self.sessions[i]))
-            {
-                self.selected = pos;
-                self.preview_scroll = preview.0;
-                self.preview_expanded = preview.1;
-                *self.table_state.borrow_mut().offset_mut() = preview.2;
-            }
-        }
-
-        // Rebind the current Detail target. Only replace its turns when the
-        // result was loaded for that identity; navigation may have changed it.
-        if self.detail.is_some() {
-            let found = detail_key
-                .as_ref()
-                .and_then(|key| self.sessions.iter().position(|s| key.matches(s)));
-            match found {
-                Some(idx) => {
-                    let turns = detail
-                        .filter(|(key, _)| Some(key) == detail_key.as_ref())
-                        .map(|(_, turns)| turns);
-                    if turns.as_ref().is_some_and(Vec::is_empty) {
-                        self.close_session_detail();
-                    } else if let Some(d) = self.detail.as_mut() {
-                        d.session_idx = idx;
-                        if let Some(turns) = turns {
-                            d.selected = d.selected.min(turns.len() - 1);
-                            d.expanded_prompt = d.expanded_prompt.filter(|&i| i < turns.len());
-                            d.turns = turns;
-                        }
-                    }
-                }
-                None => self.close_session_detail(),
-            }
-        }
-    }
-
-    /// Spawns parallel queries to fetch usage (remaining %) for all fetchable profiles. Ignored if queries are already in flight.
-    pub fn start_usage_fetch(&mut self) {
-        if self.usage_in_flight() {
-            return;
-        }
-        let ids: Vec<String> = self
-            .profiles
-            .profiles
-            .iter()
-            .map(|p| p.id.clone())
-            .collect();
-        self.start_usage_fetch_for(&ids);
-    }
-
-    /// Spawns parallel queries to fetch usage for specified profiles (used for incremental refreshes on profile add/edit).
-    /// Only skips profiles currently in `Loading` state. Since non-fetchable states (missing directories, unsupportive agents)
-    /// are modeled as results (`UsageResult::MissingDir` / `Unavailable`), all profiles are targetable,
-    /// and profiles not included in an ongoing global query can start query tasks immediately.
-    pub fn start_usage_fetch_for(&mut self, profile_ids: &[String]) {
-        // Prevent launching interactive CLI processes (PTY) during unit tests.
-        if cfg!(test) {
-            return;
-        }
-        let targets: Vec<crate::profile::Profile> = self
-            .profiles
-            .profiles
-            .iter()
-            .filter(|p| profile_ids.contains(&p.id))
-            .filter(|p| self.usage.entry(&p.id).phase != UsagePhase::Loading)
-            .cloned()
-            .collect();
-        if targets.is_empty() {
-            return;
-        }
-        for p in &targets {
-            // Retain the prior successful value (`last`) while turning on the progress indicator.
-            self.usage.entry_mut(&p.id).phase = UsagePhase::Loading;
-        }
-        self.background.spawn_usage(targets);
-    }
-
-    /// Applies background usage query results to app state. Returns true if updates occurred (triggering a redraw).
-    pub fn poll_usage(&mut self) -> bool {
-        if !self.background.usage_in_flight() {
-            return false;
-        }
-        let results = self.background.drain_usage();
-        let updated = !results.is_empty();
-        for (profile_id, res) in results {
-            let entry = self.usage.entry_mut(&profile_id);
-            match res {
-                usage::UsageResult::Ready(snapshot) => {
-                    entry.last = Some(snapshot);
-                    entry.phase = UsagePhase::Ready;
-                }
-                // Logged out, missing CLI, missing dir, or unavailable: clear `last` to prevent misleading displays.
-                usage::UsageResult::NotLoggedIn => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::NotLoggedIn;
-                }
-                usage::UsageResult::NotInstalled => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::NotInstalled;
-                }
-                usage::UsageResult::MissingDir => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::MissingDir;
-                }
-                usage::UsageResult::Unavailable => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::Unavailable;
-                }
-                // Keep the prior value (`last`) even if the current query failed.
-                usage::UsageResult::Failed(_) => entry.phase = UsagePhase::Failed,
-            }
-        }
-        if updated
-            && !self.background.usage_in_flight()
-            && !matches!(
-                self.refresh_all,
-                effect::RefreshAllPhase::Prepared | effect::RefreshAllPhase::Scanning
-            )
-        {
-            self.status_msg = Some("usage update complete".to_string());
-        }
-        updated
-    }
-
-    /// Returns whether a usage query task is in progress (used to determine polling frequency in the main loop).
-    pub fn usage_in_flight(&self) -> bool {
-        self.background.usage_in_flight()
-    }
-
-    /// Spawns parallel queries to fetch model catalogs for all profiles.
-    ///
-    /// If `force` is false (app startup), bypasses queries for profiles where the cached CLI version
-    /// matches the current version (version gate to avoid expensive claude PTY spin-up costs).
-    /// If `force` is true (Ctrl+U), forcefully queries all profiles. Skips profiles with active tasks.
-    pub fn start_models_fetch(&mut self, force: bool) {
-        let ids: Vec<String> = self
-            .profiles
-            .profiles
-            .iter()
-            .map(|p| p.id.clone())
-            .collect();
-        self.start_models_fetch_for(&ids, force);
-    }
-
-    /// Spawns queries to fetch model catalogs for specified profiles (used for incremental updates on profile add/edit).
-    pub fn start_models_fetch_for(&mut self, profile_ids: &[String], force: bool) {
-        // Prevent launching interactive CLI processes (PTY) during unit tests.
-        if cfg!(test) {
-            return;
-        }
-        let targets: Vec<crate::profile::Profile> = self
-            .profiles
-            .profiles
-            .iter()
-            .filter(|p| profile_ids.contains(&p.id))
-            .filter(|p| !self.background.is_models_loading(&p.id))
-            .cloned()
-            .collect();
-        if targets.is_empty() {
-            return;
-        }
-        let cached_versions = targets
-            .iter()
-            .filter_map(|p| self.models.cached_version(&p.id).map(|v| (p.id.clone(), v)))
-            .collect();
-        self.background
-            .spawn_models(targets, cached_versions, force);
-    }
-
-    /// Applies background model catalog query results. Returns true if updates occurred.
-    ///
-    /// Preserves existing caches on query failure or unavailability. Since CLIs do not filter out
-    /// invalid model names, we must not clear cached catalogs on unsuccessful updates.
-    pub fn poll_models(&mut self) -> bool {
-        if !self.background.models_in_flight() {
-            return false;
-        }
-        // Draining clears the per-profile loading guard; applying the results to
-        // the model cache and persisting them stays here (the cache is App-owned).
-        let results = self.background.drain_models();
-        let mut dirty = false;
-        for (profile_id, res) in results {
-            if let models::ModelsResult::Ready(pm) = res {
-                self.models.insert(profile_id, pm);
-                dirty = true;
-            }
-        }
-        if dirty {
-            self.models.save().ok();
-        }
-        dirty
-    }
-
     /// Returns whether any background job (usage, models, sessions) is in progress (used to determine polling frequency).
     pub fn background_in_flight(&self) -> bool {
         self.background.in_flight()
@@ -710,166 +395,6 @@ impl App {
         self.all_folders = folder_names_by_latest(&self.sessions);
         self.refresh_workspace_folders();
     }
-
-    // ---- Filter Operations ----
-
-    /// Header number keys (`1..5`): Activates a single profile filter at the specified numbered index.
-    fn set_single_profile(&mut self, idx: usize) {
-        let Some((id, name)) = self
-            .profiles
-            .numbered_profiles()
-            .get(idx)
-            .map(|p| (p.id.clone(), p.name.clone()))
-        else {
-            return;
-        };
-        self.filter.profile_ids.clear();
-        self.filter.profile_ids.insert(id);
-        self.recompute();
-        self.status_msg = Some(format!("Profile filter: {}", name));
-    }
-
-    /// Resolves profile ID to display name (used in filter descriptions).
-    pub fn profile_name(&self, id: &str) -> Option<String> {
-        self.profiles.find(id).map(|p| p.name.clone())
-    }
-
-    // ---- Screen Switching / Profile Screen ----
-
-    /// Switched screen to target and reverts to table navigation mode.
-    fn switch_screen(&mut self, screen: Screen) {
-        self.screen = screen;
-        self.mode = UiMode::Table;
-        self.status_msg = None;
-        if screen != Screen::Detail {
-            self.detail = None;
-        }
-        // The workspace pane closes when its screen is left, so returning to
-        // the Session screen lands on the session list unless told otherwise.
-        if screen != Screen::Session && self.focus == Focus::Workspaces {
-            self.focus = Focus::Table;
-        }
-        if screen == Screen::Profile {
-            self.profile_selected = self
-                .profile_selected
-                .min(self.profiles.profiles.len().saturating_sub(1));
-        }
-    }
-
-    fn clear_all_filters(&mut self) {
-        self.filter = Filter::default();
-        self.recompute();
-        self.status_msg = Some("Filters cleared".to_string());
-    }
-
-    /// Requests resuming the targeted session. Triggers an alert instead of handover
-    /// if the project directory no longer exists (pre-flight check).
-    fn request_resume(&mut self, idx: usize) {
-        let cwd = self.sessions[idx].cwd.clone();
-        // Omit check if cwd is empty, as it runs without directory changes.
-        if !cwd.as_os_str().is_empty() && !cwd.is_dir() {
-            self.show_message(
-                " Cannot Resume ",
-                vec![
-                    "The project folder no longer exists:".to_string(),
-                    cwd.to_string_lossy().into_owned(),
-                    String::new(),
-                    "This session cannot be resumed.".to_string(),
-                ],
-                MessageKind::Error,
-            );
-            return;
-        }
-        if self.divert_live_session(idx, agent_status::LiveAction::Resume) {
-            return;
-        }
-        self.resume_request = Some(idx);
-    }
-
-    fn arm_quit(&mut self) {
-        if let Some(until) = self.quit_grace_until {
-            let now = std::time::Instant::now();
-            if now < until {
-                // Ignore exits during grace period to defend against trailing spam; extends the grace window
-                // slightly to ensure keystrokes only register after user halts spamming.
-                const QUIT_GRACE_REPEAT: std::time::Duration =
-                    std::time::Duration::from_millis(400);
-                self.quit_grace_until = Some(until.max(now + QUIT_GRACE_REPEAT));
-                return;
-            }
-            self.quit_grace_until = None;
-        }
-        if self.quit_armed {
-            self.should_quit = true;
-        } else {
-            self.quit_armed = true;
-            self.status_msg = Some("Press q or ctrl+c again to quit".to_string());
-        }
-    }
-
-    /// Begins the exit key grace period upon returning from agent handover (called in main loop).
-    pub fn begin_quit_grace(&mut self) {
-        const QUIT_GRACE: std::time::Duration = std::time::Duration::from_millis(1200);
-        self.quit_grace_until = Some(std::time::Instant::now() + QUIT_GRACE);
-    }
-}
-
-/// Distinct `key` values over `sessions`, newest latest activity first and ties
-/// by key: the order every folder list shows. Sessions mapped to `None` are
-/// skipped.
-pub(crate) fn by_latest_activity<K: Ord + Clone + std::hash::Hash>(
-    sessions: &[Session],
-    key: impl Fn(&Session) -> Option<K>,
-) -> Vec<K> {
-    let mut latest: HashMap<K, i64> = HashMap::new();
-    for s in sessions {
-        if let Some(k) = key(s) {
-            let at = latest.entry(k).or_insert(i64::MIN);
-            *at = (*at).max(s.updated_at_ms);
-        }
-    }
-    let mut keys: Vec<(K, i64)> = latest.into_iter().collect();
-    keys.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    keys.into_iter().map(|(k, _)| k).collect()
-}
-
-/// Sessions per `key`; sessions mapped to `None` are not counted.
-pub(crate) fn count_by<'a, K: Eq + std::hash::Hash>(
-    sessions: impl IntoIterator<Item = &'a Session>,
-    key: impl Fn(&Session) -> Option<K>,
-) -> HashMap<K, usize> {
-    let mut counts = HashMap::new();
-    for s in sessions {
-        if let Some(k) = key(s) {
-            *counts.entry(k).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
-/// Full-path folder key of a session; `None` when no cwd was recorded.
-fn cwd_key(s: &Session) -> Option<PathBuf> {
-    (!s.cwd.as_os_str().is_empty()).then(|| s.cwd.clone())
-}
-
-/// Folder-name key (the folder filter's unit); `None` when the name is empty.
-pub(crate) fn folder_name_key(s: &Session) -> Option<String> {
-    (!s.folder.is_empty()).then(|| s.folder.clone())
-}
-
-/// Sessions per cwd, the count every full-path folder list shows.
-pub(crate) fn cwd_counts(sessions: &[Session]) -> HashMap<PathBuf, usize> {
-    count_by(sessions, cwd_key)
-}
-
-/// Session cwds by latest activity, empty cwds skipped.
-pub(crate) fn cwds_by_latest(sessions: &[Session]) -> Vec<PathBuf> {
-    by_latest_activity(sessions, cwd_key)
-}
-
-/// Folder names by latest activity.
-fn folder_names_by_latest(sessions: &[Session]) -> Vec<String> {
-    by_latest_activity(sessions, folder_name_key)
 }
 
 #[cfg(test)]

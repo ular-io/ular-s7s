@@ -4,7 +4,7 @@
 //! file owns the per-screen shortcut catalogs, the `App` open/close and key
 //! handling, and the full-screen help rendering. The help screen has no state
 //! struct; it only toggles `UiMode::Help`. The screen-specific `SHORTCUTS_*`
-//! hotkey grids stay in `ui::render` with the header (`draw_header`) that owns
+//! hotkey grids stay in `ui::render::header` with `draw_header`, which owns
 //! them.
 
 use crate::theme::Theme;

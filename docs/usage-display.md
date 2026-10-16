@@ -2,9 +2,9 @@
 
 > Status: Current and version-sensitive
 > Read when: Changing usage probes, parsing, cache state, or rendering.
-> Entry points: `src/usage.rs`, `src/probe/`, `src/ui/render.rs`
+> Entry points: `src/usage.rs`, `src/probe/`, `src/ui/render/usage.rs`
 
-The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query/parsing) and `src/ui/render.rs::usage_spans` (formatting), on top of the neutral PTY/process driver in `src/probe/` (shared with the model list query — the driver itself knows nothing about usage).
+The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query/parsing) and `src/ui/render/usage.rs::usage_spans` (formatting), on top of the neutral PTY/process driver in `src/probe/` (shared with the model list query — the driver itself knows nothing about usage).
 
 ## Mechanism
 
@@ -64,7 +64,7 @@ Fixed-width columns are maintained across all states to align vertically between
   the row stays stable. Each step is 200ms against the 100ms runtime polling
   cycle. The invisible step replaces content with equal-width spaces instead of
   relying on terminal conceal support. Implementation is
-  `PULSE_SEQ`/`pulse_span` in `src/ui/render.rs`.
+  `PULSE_SEQ`/`pulse_span` in `src/ui/render/usage.rs`.
 
 ## Verification Methods
 

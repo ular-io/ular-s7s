@@ -27,6 +27,8 @@
 
 pub(crate) mod input;
 pub(crate) mod registry;
+#[cfg(test)]
+mod registry_tests;
 pub(crate) mod render;
 pub(crate) mod state;
 #[cfg(test)]

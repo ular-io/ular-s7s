@@ -102,6 +102,92 @@ impl Drop for StagedCache {
 }
 
 impl App {
+    /// Rescans sessions on disk to refresh the session list (utilizes mtime-based incremental cache).
+    ///
+    /// Only modified or new files are parsed. Tracks selection by (agent, profile, id)
+    /// to preserve cursor position post-refresh (even if content modifications re-order lists to the top).
+    /// Used after handovers and mutations. Ctrl+U scans on a worker and shares
+    /// only result application with this synchronous path.
+    pub fn refresh_sessions(&mut self) {
+        self.cancel_refresh_scan();
+        let result = crate::scan::scan(&self.profiles.profiles, false);
+        let detail = self.detail_key().and_then(|key| {
+            result
+                .sessions
+                .iter()
+                .find(|s| key.matches(s))
+                .map(|s| (key, crate::handoff::load_turns(s)))
+        });
+        self.apply_session_scan(result, detail);
+        // A handover is where `←` most often moves a session to the background.
+        self.request_agent_status();
+    }
+
+    /// Applies a completed index against the selection and detail target that
+    /// exist now, including navigation performed while the worker was running.
+    pub(crate) fn apply_session_scan(
+        &mut self,
+        result: crate::scan::ScanResult,
+        detail: Option<DetailRefresh>,
+    ) {
+        let prev = self.current().map(SessionKey::of);
+        let detail_key = self.detail_key();
+        let preview = (
+            self.preview_scroll,
+            self.preview_expanded,
+            self.table_state.borrow().offset(),
+        );
+        self.scan_info = format!(
+            "{} sessions · reparsed {}/{}",
+            result.sessions.len(),
+            result.reparsed_files,
+            result.scanned_files
+        );
+        self.sessions = result.sessions;
+        self.rebuild_all_folders();
+        self.recompute();
+
+        // Restore selection: if the same session still passes the filters, move cursor to its new index.
+        if let Some(key) = prev {
+            if let Some(pos) = self
+                .filtered
+                .iter()
+                .position(|&i| key.matches(&self.sessions[i]))
+            {
+                self.selected = pos;
+                self.preview_scroll = preview.0;
+                self.preview_expanded = preview.1;
+                *self.table_state.borrow_mut().offset_mut() = preview.2;
+            }
+        }
+
+        // Rebind the current Detail target. Only replace its turns when the
+        // result was loaded for that identity; navigation may have changed it.
+        if self.detail.is_some() {
+            let found = detail_key
+                .as_ref()
+                .and_then(|key| self.sessions.iter().position(|s| key.matches(s)));
+            match found {
+                Some(idx) => {
+                    let turns = detail
+                        .filter(|(key, _)| Some(key) == detail_key.as_ref())
+                        .map(|(_, turns)| turns);
+                    if turns.as_ref().is_some_and(Vec::is_empty) {
+                        self.close_session_detail();
+                    } else if let Some(d) = self.detail.as_mut() {
+                        d.session_idx = idx;
+                        if let Some(turns) = turns {
+                            d.selected = d.selected.min(turns.len() - 1);
+                            d.expanded_prompt = d.expanded_prompt.filter(|&i| i < turns.len());
+                            d.turns = turns;
+                        }
+                    }
+                }
+                None => self.close_session_detail(),
+            }
+        }
+    }
+
     pub(crate) fn detail_key(&self) -> Option<SessionKey> {
         self.detail
             .as_ref()
