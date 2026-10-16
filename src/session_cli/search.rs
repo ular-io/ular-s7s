@@ -14,13 +14,16 @@ use std::sync::Arc;
 #[derive(Args, Debug)]
 #[command(after_help = "\
 MATCHING:
-  Space-separated query tokens are AND-matched, each against the user body,
+  By default, space-separated tokens are AND-matched against the user body,
   title, folder name, then the last assistant answer of every turn, then the
   session ID (tokens of 5+ chars).
 
   With --full, every assistant message, tool call argument, and tool result is
   searched in addition to user turns, using the shared detailed parser. Each
-  match displays the best snippet and hit count.
+  match displays up to three snippet lines and the number of matching texts
+  (not keyword occurrences). Tokens may occur in different turns or fields.
+  Titles, folder names, and session IDs are not searched with --full.
+  Full search accepts at most 16 distinct tokens and rejects empty queries.
 
   --folder/--agent/--profile are AND'd with the query; repeating an option
   OR's its values. Folder matches the cwd basename exactly. Results are
@@ -95,7 +98,7 @@ pub(crate) fn run_search(args: &SearchArgs) -> i32 {
     // an empty result set from a typo is more confusing than an up-front notice.
     for profile_id in &args.profile {
         if profiles.find(profile_id).is_none() {
-            eprintln!("warning: profile '{profile_id}' does not exist (ignored).");
+            eprintln!("warning: profile '{profile_id}' does not exist (matches no sessions).");
             eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
         }
     }
@@ -136,9 +139,12 @@ pub(crate) fn run_search(args: &SearchArgs) -> i32 {
 /// Searches all session content across candidate sessions matching metadata filters.
 fn run_full_search(args: &SearchArgs, profiles: &ProfileStore, agents: HashSet<Agent>) -> i32 {
     let query_text = args.query.join(" ");
-    let Some(query) = Query::parse(&query_text) else {
-        eprintln!("error: query holds no valid search token.");
-        return 2;
+    let query = match Query::parse_complete(&query_text) {
+        Ok(query) => query,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return 2;
+        }
     };
 
     // Candidate sessions narrowed by metadata filters first (parity with TUI).
@@ -164,10 +170,7 @@ fn run_full_search(args: &SearchArgs, profiles: &ProfileStore, agents: HashSet<A
         .collect();
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let matches: Vec<(usize, SessionMatch)> = full_search::spawn(jobs, query, cancel)
-        .into_iter()
-        .filter_map(|(idx, m)| m.map(|mat| (idx, mat)))
-        .collect();
+    let matches = collect_full_matches(full_search::spawn(jobs, query, cancel));
 
     if matches.is_empty() {
         println!("No sessions matched.");
@@ -214,7 +217,7 @@ pub(crate) fn run_list(args: &ListArgs) -> i32 {
     // result set from a typo is more confusing than an up-front notice.
     for profile_id in &args.profile {
         if profiles.find(profile_id).is_none() {
-            eprintln!("warning: profile '{profile_id}' does not exist (ignored).");
+            eprintln!("warning: profile '{profile_id}' does not exist (matches no sessions).");
             eprintln!("hint: known profile IDs: {}", known_profile_ids(&profiles));
         }
     }
@@ -277,4 +280,44 @@ fn print_session_rows(sessions: &[Session], indices: &[usize], limit: usize, nou
     }
 
     println!("\nRead one:  s7s session show <ID> --agent <AGENT> --profile <PROFILE> [--turn N]");
+}
+
+/// Worker completion order can differ from scan order. Restore scan order
+/// before applying the display limit so the newest matches always win.
+fn collect_full_matches(
+    results: impl IntoIterator<Item = (usize, Option<SessionMatch>)>,
+) -> Vec<(usize, SessionMatch)> {
+    let mut matches: Vec<_> = results
+        .into_iter()
+        .filter_map(|(idx, found)| found.map(|m| (idx, m)))
+        .collect();
+    matches.sort_unstable_by_key(|(idx, _)| *idx);
+    matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_matches_restore_scan_order_before_limiting() {
+        let found = SessionMatch {
+            turn: 2,
+            field: full_search::MatchField::User,
+            lines: Vec::new(),
+            hits: 1,
+        };
+        let matches = collect_full_matches([
+            (7, Some(found.clone())),
+            (1, None),
+            (3, Some(found.clone())),
+            (0, Some(found.clone())),
+        ]);
+        assert_eq!(
+            matches.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            [0, 3, 7]
+        );
+        assert_eq!(matches.first(), Some(&(0, found)));
+        assert!(collect_full_matches([(0, None)]).is_empty());
+    }
 }

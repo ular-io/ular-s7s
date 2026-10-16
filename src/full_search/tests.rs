@@ -259,3 +259,22 @@ fn real_data_full_search() {
     }
     assert_eq!(missed, 0, "prefilter dropped a matching session");
 }
+
+#[test]
+fn complete_queries_reject_empty_or_excess_tokens_instead_of_truncating() {
+    assert!(Query::parse_complete(" \t ").is_err());
+    let sixteen = (0..16)
+        .map(|i| format!("token{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let query = Query::parse_complete(&sixteen).expect("16 distinct tokens");
+    assert_eq!(query.tokens.len(), 16);
+    assert_eq!(
+        Query::parse_complete(&format!("{sixteen} TOKEN0")).unwrap(),
+        query
+    );
+    assert!(Query::parse_complete(&format!("{sixteen} absent"))
+        .unwrap_err()
+        .contains("at most 16"));
+    assert_eq!(Query::parse_complete("É e\u{301}").unwrap().tokens, ["é"]);
+}

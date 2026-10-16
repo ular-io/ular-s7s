@@ -23,10 +23,10 @@ them, and move enduring behavior into the owning domain document.
 
 | Candidate | Likely owner | Main decision required |
 | --- | --- | --- |
-| JSON/NDJSON output for `session show/search` | `session_cli.rs`, `session_context/render.rs` | Stable schema/versioning and interaction with `--bootstrap` |
+| JSON/NDJSON output for `session show/search` | `session_cli/`, `session_context/render.rs` | Stable schema/versioning and interaction with `--bootstrap` |
 | Partial session-ID resolution | `session_context/resolve.rs` | Minimum prefix and ambiguity behavior |
-| Turn ranges for very large sessions | `session_cli.rs`, `session_context/render.rs` | CLI shape and output limits |
-| Per-result keyword snippets in session search | `session_cli.rs`, list index | Index size and snippet source |
+| Turn ranges for very large sessions | `session_cli/`, `session_context/render.rs` | CLI shape and output limits |
+| Per-result keyword snippets in session search | `session_cli/`, list index | Index size and snippet source |
 | Configurable bootstrap response language | bootstrap rendering/config | Trust boundary and default behavior |
 | Cross-session reference graph/deduplication | parser/context model | Requires nested-reference recognition first |
 

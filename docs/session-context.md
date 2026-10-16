@@ -3,7 +3,7 @@
 > Status: Current
 > Read when: Changing list/context turn selection, `s7s session`, Detail context,
 > New Session with Context, bootstrap filtering, or context-source navigation.
-> Entry points: `src/session_context/`, `src/session_cli.rs`,
+> Entry points: `src/session_context/`, `src/session_cli/`,
 > `src/ui/context_jump.rs`, `src/ui/new_session/`
 
 ## Contract
@@ -240,10 +240,21 @@ shows. A session without an origin renders exactly as before.
 
 ```text
 s7s session search <QUERY...> [--folder <NAME>]... [--agent <AGENT>]...
-                              [--profile <ID>]... [--limit <N>]
+                              [--profile <ID>]... [--limit <N>] [--full]
 ```
 
-- Uses the same `Filter` and cached session index as the TUI.
+- Default search uses the same `Filter` and cached session index as the TUI.
+- `--full` instead searches detailed user turns, every assistant message, tool
+  call, and tool result through `full_search`. It does not keyword-match titles,
+  folder names, or session IDs; metadata options still narrow candidates.
+- Full search rejects blank queries and more than 16 distinct normalized tokens
+  with exit code 2; no query tokens are silently discarded. Tokens can occur in
+  different turns or fields within a session.
+- Each full-search result includes `[Match · Turn N · FIELD · H hit(s)]` and up
+  to three sanitized snippet lines. `H` counts texts containing at least one
+  token, not keyword occurrences. The best snippet need not contain every token.
+- Full search waits for all candidates, restores scan order after parallel
+  completion, then applies `--limit`. The total counts matching sessions.
 - Space-separated query tokens are AND-matched. Repeated values of one filter
   are OR-matched; filter categories combine with AND.
 - Results preserve semantic-activity order. `--limit 0` means no cap.
@@ -421,10 +432,12 @@ rules in [ui-style-guide.md](./ui-style-guide.md#full-search-prompt-and-match-bo
   the session (AND, as in the keyword filter); one text need not hold them
   all. The snippet comes from the first text holding the most distinct
   tokens. Titles, folder names, and ids are left to the keyword filter.
-- **Candidates** are the sessions the list shows when the query is submitted:
+- **TUI candidates** are the sessions the list shows when the query is submitted:
   agent/folder/profile/keyword/bookmark filters and the open workspace apply,
   in list order. While the mode is open the list is that set narrowed to the
   matches, so later filter changes narrow it further.
+- **CLI candidates** use only the explicit agent/folder/profile options across
+  configured profiles; TUI keyword/bookmark/workspace state does not apply.
 - **Raw prefilter** (`full_search/raw.rs`). Before decoding, the bytes the
   detailed parser would read (Claude JSONL, the Codex logical rollout through
   `segments::read_rollout`, the Antigravity transcript) are searched as plain

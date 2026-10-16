@@ -26,6 +26,22 @@ impl Query {
         (!tokens.is_empty()).then_some(Query { tokens })
     }
 
+    /// Parses a CLI query without silently dropping tokens beyond the bit limit.
+    /// The interactive parser retains its existing bounded-query behavior.
+    pub fn parse_complete(text: &str) -> Result<Query, String> {
+        let query =
+            Self::parse(text).ok_or_else(|| "query holds no valid search token.".to_string())?;
+        if fold(text)
+            .split_whitespace()
+            .any(|token| !query.tokens.iter().any(|t| t == token))
+        {
+            return Err(format!(
+                "full search accepts at most {MAX_TOKENS} distinct query tokens."
+            ));
+        }
+        Ok(query)
+    }
+
     /// Bit `i` is set when token `i` occurs in the already folded `haystack`.
     pub(crate) fn found_in(&self, haystack: &str) -> u32 {
         self.tokens

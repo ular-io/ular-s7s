@@ -241,10 +241,10 @@ Folder overrides are re-read on each session scan, including `Ctrl+U`.
 | Session bookmarks | `bookmarks.rs`, `ui/bookmarks.rs`, `filter.rs` | `bookmarks.md` |
 | Claude live-session markers | `agent_status.rs`, `ui/agent_status.rs`, `ui/background.rs`, `runtime.rs` (idle wait) | `background-sessions.md` |
 | Workspaces | `workspaces.rs`, `ui/workspace/*`, `ui/quick/registry.rs` | `workspaces.md` |
-| Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli.rs`) | `session-context.md` §Delete |
+| Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli/`) | `session-context.md` §Delete |
 | Session folder | `session_folder.rs`, `session_workspace.rs`, `session_cli/change_folder.rs`, `ui/overlays/change_folder.rs` | `session-folder.md` |
 | Work handoff | `session_handoff.rs`, `config.rs` (`handoff_instruction`) | `session-context.md` §Handoff |
-| Detailed context/CLI | `session_context/*`, `session_cli.rs` | `session-context.md` |
+| Detailed context/CLI | `session_context/*`, `session_cli/` | `session-context.md` |
 | Full-content search | `full_search/*`, `ui/full_search/*`, `ui/background.rs` | `session-context.md` §Full-content search, `ui-style-guide.md` |
 | Usage/model probes | `usage.rs`, `models.rs`, `probe/*` | `usage-display.md`, `models.md` |
 | Profiles/env injection | `profile.rs`, `resume.rs`, `ui/profile/*` | `profiles.md` |

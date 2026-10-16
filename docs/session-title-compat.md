@@ -3,7 +3,7 @@
 > Status: Current and version-sensitive
 > Read when: Changing title parsing, rename behavior, or agent storage paths.
 > Entry points: `src/rename.rs`, `src/title.rs`, agent list parsers,
-> `s7s session rename` (`src/session_cli.rs`)
+> `s7s session rename` (`src/session_cli/`)
 
 The session title processing logic of `s7s` strongly depends on the internal storage structures of external agent CLIs.
 These storage structures and rename behaviors can change at any time during agent upgrades.
