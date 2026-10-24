@@ -1,6 +1,7 @@
 //! `s7s session search` and `list`: query sessions by keyword or filters.
 
 use super::known_profile_ids;
+use crate::bookmarks::BookmarkStore;
 use crate::filter::Filter;
 use crate::full_search::{self, Query, SessionMatch};
 use crate::model::{Agent, Session};
@@ -211,6 +212,20 @@ fn run_full_search(args: &SearchArgs, profiles: &ProfileStore, agents: HashSet<A
 
 /// Lists sessions narrowed by filters only, with no keyword.
 pub(crate) fn run_list(args: &ListArgs) -> i32 {
+    run_filtered_list(args, None)
+}
+
+pub(crate) fn run_bookmark_list(args: &ListArgs) -> i32 {
+    match BookmarkStore::load(&crate::config::bookmarks_path()) {
+        Ok(bookmarks) => run_filtered_list(args, Some(&bookmarks)),
+        Err(error) => {
+            eprintln!("error: cannot read bookmarks: {error:#}");
+            1
+        }
+    }
+}
+
+fn run_filtered_list(args: &ListArgs, bookmarks: Option<&BookmarkStore>) -> i32 {
     let profiles = ProfileStore::load();
 
     // Warn (don't fail) on an unknown --profile, matching `search`: an empty
@@ -239,14 +254,22 @@ pub(crate) fn run_list(args: &ListArgs) -> i32 {
     };
 
     let result = crate::scan::scan(&profiles.profiles, false);
-    let indices = crate::filter::apply(&result.sessions, &filter);
+    let mut indices = crate::filter::apply(&result.sessions, &filter);
+    if let Some(bookmarks) = bookmarks {
+        indices.retain(|&idx| bookmarks.contains(&result.sessions[idx]));
+    }
 
     if indices.is_empty() {
         println!("No sessions matched.");
         return 0;
     }
 
-    print_session_rows(&result.sessions, &indices, args.limit, "session(s)");
+    let noun = if bookmarks.is_some() {
+        "bookmarked session(s)"
+    } else {
+        "session(s)"
+    };
+    print_session_rows(&result.sessions, &indices, args.limit, noun);
     0
 }
 

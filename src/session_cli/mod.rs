@@ -4,6 +4,7 @@
 //!   show <id>       Render one session's context (reference / --turn / --bootstrap).
 //!   search <query>  List sessions matching a keyword (+ folder/agent/profile filters).
 //!   list            List sessions by filter only, with no keyword.
+//!   bookmark        Add, remove, or list session bookmarks.
 //!   rename <id> <t> Set one session's display title.
 //!   change-folder  Set the next resume folder for explicit session IDs.
 //!   delete <id>     Remove one session's on-disk artifacts (irreversible).
@@ -19,6 +20,7 @@ use crate::profile::ProfileStore;
 use crate::session_context::resolve;
 use clap::{Args, Subcommand};
 
+mod bookmark;
 pub mod change_folder;
 mod delete;
 mod handoff;
@@ -29,6 +31,7 @@ mod show;
 #[cfg(test)]
 mod tests;
 
+pub use bookmark::BookmarkArgs;
 pub use delete::DeleteArgs;
 pub use handoff::HandoffArgs;
 pub use rename::RenameArgs;
@@ -50,6 +53,8 @@ pub enum SessionCommand {
     Search(SearchArgs),
     /// List sessions by filter only, without a keyword
     List(ListArgs),
+    /// Add, remove, or list session bookmarks shared with the TUI
+    Bookmark(BookmarkArgs),
     /// Set one session's display title
     Rename(RenameArgs),
     /// Change where explicit Claude or Codex sessions open next time
@@ -65,6 +70,7 @@ pub fn run(args: &SessionArgs) -> i32 {
         SessionCommand::Show(a) => show::run(a),
         SessionCommand::Search(a) => search::run_search(a),
         SessionCommand::List(a) => search::run_list(a),
+        SessionCommand::Bookmark(a) => bookmark::run(a),
         SessionCommand::Rename(a) => rename::run(a),
         SessionCommand::ChangeFolder(a) => change_folder::run(a),
         SessionCommand::Delete(a) => delete::run(a),

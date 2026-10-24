@@ -1,8 +1,8 @@
 # Session Bookmarks
 
 > Status: Current
-> Read when: Changing bookmark storage, title markers, the bookmark filter, or Ctrl+B.
-> Entry points: `src/bookmarks.rs`, `src/ui/bookmarks.rs`, `src/filter.rs`, `ui::App::rebuild_filtered`
+> Read when: Changing bookmark storage, CLI commands, title markers, the bookmark filter, or Ctrl+B.
+> Entry points: `src/bookmarks.rs`, `src/session_cli/bookmark.rs`, `src/ui/bookmarks.rs`, `src/filter.rs`, `ui::App::rebuild_filtered`
 
 ## Behavior
 
@@ -44,6 +44,35 @@
 - The Session and Detail headers show `<ctrl+b> Bookmark`. The fixed five-row
   header does not repeat the conditional source-jump shortcut.
 
+## CLI
+
+```text
+s7s session bookmark add <ID> [--agent <AGENT>] [--profile <ID>]
+s7s session bookmark remove <ID> [--agent <AGENT>] [--profile <ID>]
+s7s session bookmark list [--folder <NAME>]... [--agent <AGENT>]...
+                          [--profile <ID>]... [--limit <N>]
+```
+
+- Add and remove resolve a full session ID through the shared CLI resolver.
+  Missing targets or profiles fail; ambiguous IDs require `--agent` or
+  `--profile`. Both commands are idempotent: adding an existing bookmark or
+  removing an absent one succeeds without rewriting the store. Remove never
+  deletes the session. Live sessions can be bookmarked as well.
+- List uses the ordinary session list's row shape, metadata filters, and
+  latest-activity-first order, restricted to bookmarked identities before the
+  limit (default 20; 0 means unlimited). Filters combine with AND; repeated
+  values of the same filter combine with OR. Unknown profiles warn and match
+  no sessions. Empty results print `No sessions matched.` and exit 0.
+- Only sessions in the scanned index produce list rows. Unavailable sessions
+  keep their stored bookmarks. Add/remove require a resolvable session.
+- All commands use the same `bookmarks.json` as the TUI. A running TUI picks
+  up changes on `ctrl+u`; the CLI does not change agent-owned files or titles.
+- Exit codes: 0 on success, 1 on resolution or storage failure, 2 on invalid
+  arguments. Storage failures print to stderr without success output, and an
+  unreadable/newer store is never replaced.
+- `session_cli::bookmark` adapts the shared store's `add` and `remove` methods.
+  `session_cli::search::run_bookmark_list` shares the ordinary list path.
+
 ## Storage and boundaries
 
 - `config::bookmarks_path()` resolves `~/.config/s7s/bookmarks.json`, redirected
@@ -56,11 +85,12 @@
   TUI decoration rather than title content.
 - Missing storage starts empty. Read/parse/version errors are shown at startup;
   a toggle re-reads the store and refuses to replace an unreadable/newer file.
-  Successful toggles use a private (`0600` on Unix), unique temporary file,
+  Successful writes use a private (`0600` on Unix), unique temporary file,
   flush it, then atomically rename it over the store. In-memory state changes
   only after persistence succeeds. A failed write leaves the marker unchanged.
-- Each toggle re-reads completed changes from other app instances. Simultaneous
-  writes are not locked; the last atomic write wins. The active app does not poll
+- Each toggle, add, and remove re-reads completed changes from other app
+  instances. Simultaneous writes are not locked; the last atomic write wins.
+  The active app does not poll
   the bookmark file for external changes; `ctrl+u` reloads it
   (`App::reload_shared_stores`), keeping the cursor on the same session.
 - Records for unavailable sessions are retained, since a missing session may
@@ -81,6 +111,12 @@
 
 - Baseline: `scripts/check.sh`.
 - Storage/UI regression coverage: `bookmarks::tests`, `ui::bookmarks::tests`.
+- CLI regression coverage: `tests/session_bookmarks.rs` (isolated stores;
+  idempotence, filters/order/limits, ambiguous profiles, unavailable sessions,
+  transcript preservation, and storage/argument errors).
+- Release CLI: use disposable sessions with `session bookmark add`, repeat the
+  add, inspect `session bookmark list`, then repeat `session bookmark remove`.
+  Confirm the session remains readable and only its bookmark is removed.
 - Delete regression coverage: `session_delete::tests`,
   `ui::detail::tests::detail_delete_returns_to_session_screen_with_next_selected`.
 - Source-jump return behavior: `ui::context_jump::tests::palette_back_*` plus

@@ -82,6 +82,16 @@ impl BookmarkStore {
         Ok(store)
     }
 
+    /// Add only this identity; repeated additions do not rewrite the store.
+    pub(crate) fn add(path: &Path, session: &Session) -> Result<Self> {
+        let mut store = Self::load(path)?;
+        if !store.contains(session) {
+            store.set(session, true);
+            store.save(path)?;
+        }
+        Ok(store)
+    }
+
     /// Remove only this identity, retaining other instances' completed changes.
     /// An absent entry does not create or rewrite a store.
     pub(crate) fn remove(path: &Path, session: &Session) -> Result<Self> {

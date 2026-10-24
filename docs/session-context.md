@@ -35,8 +35,8 @@ src/session_context/
 └── resolve.rs      cross-profile source resolution
 ```
 
-- `src/session_cli/` owns the `show`, `search`, `list`, `rename`, `delete`, and
-  `handoff` commands.
+- `src/session_cli/` owns the `show`, `search`, `list`, `bookmark`, `rename`,
+  `delete`, and `handoff` commands.
 - `src/full_search/` searches detailed context for the TUI full search and
   `s7s session search --full`; it consumes `session_context::load` and adds no
   parser (§Full-content search).
@@ -278,6 +278,14 @@ s7s session list [--folder <NAME>]... [--agent <AGENT>]...
 - An unknown `--profile` warns and is kept as a filter value (matching nothing),
   mirroring `search`: for a discovery command an up-front notice beats an
   unexplained empty result.
+
+### Bookmark
+
+`s7s session bookmark add <ID>`, `remove <ID>`, and `list` share the TUI's
+bookmark store. Add/remove are idempotent and use the same exact-ID resolution
+as other single-session commands. List shares the ordinary list's metadata
+filters, ordering, and limit, restricted to bookmarked sessions before limiting.
+See [bookmarks.md](./bookmarks.md#cli) for the full CLI and storage contract.
 
 ### Rename
 

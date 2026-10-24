@@ -80,6 +80,7 @@ s7s .                       # Run TUI with the New Session dialog open on that f
 s7s demo                    # Run TUI in demo mode using mock English sessions (disposable sandbox under the OS cache dir, e.g. macOS ~/Library/Caches/s7s/demo)
 s7s session search <QUERY>  # List past sessions matching a keyword (no TUI, see below)
 s7s session list            # List past sessions by filter alone, without a keyword
+s7s session bookmark list  # List bookmarked sessions (add/remove <ID> to update)
 s7s session show <ID>       # View one past session's context
 s7s session rename <ID> <TITLE>   # Set one session's display title
 s7s session delete <ID> --yes     # Delete one session's files on disk (irreversible)
@@ -219,6 +220,21 @@ Use `:` → **Toggle Bookmark** for the same action, or **Filter Bookmarked
 Sessions** to show only bookmarked sessions under the current search/filters.
 Run that filter command again to turn it off, or press `0` to clear all filters.
 
+Manage the same bookmarks without opening the TUI:
+
+```bash
+s7s session bookmark add <ID>
+s7s session bookmark remove <ID>
+s7s session bookmark list
+s7s session bookmark list --folder my-project --agent codex --limit 0
+```
+
+Add/remove accept `--agent` and `--profile` to disambiguate full session IDs.
+Both are idempotent; removing a bookmark keeps the session itself. List supports
+the same filters as `s7s session list`, newest first, with a default limit of 20
+(`--limit 0` shows all). Unavailable sessions keep their bookmarks but are not
+listed. Press `ctrl+u` in a running TUI to reload CLI changes.
+
 ## Session Folder
 
 A session's folder is where s7s opens it: the list shows it, the folder filter groups by it, and resume runs the agent CLI there. It normally comes from the agent's own storage, and **Change Folder** in the `:` palette overrides it for one session — [Details](docs/session-folder.md).
@@ -268,10 +284,15 @@ s7s session search test --folder vqs-gw --folder vqs-api --agent codex --agent c
 
 # Larger result set from one profile
 s7s session search rename --profile builtin-claude --limit 50
+
+# Search every assistant message, tool call, and tool result with snippets
+s7s session search "cargo build" --full --limit 10
 ```
 
 - `--folder` matches the folder name (cwd basename) exactly; `--agent` accepts `claude`/`codex`/`antigravity`. Query and filters are AND'd; repeated values of one option are OR'd. `--limit 0` removes the cap.
 - Each result shows `ID  agent/profile  [folder]  updated  Q<turns>` and the title, then a hint for reading a result with `s7s session show`.
+- `--full` searches detailed conversation content rather than titles, folders,
+  and session IDs. Each result includes a matching snippet and a turn number.
 - Not supported: keyword OR (all tokens are AND), phrase/adjacency matching (quoting a query is equivalent to unquoted tokens), negation, regex, and substring folder matching.
 - See `s7s session --help` and `s7s session <cmd> --help` for detailed options, excerpt limits, matching, and error rules.
 
