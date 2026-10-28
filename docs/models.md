@@ -2,10 +2,11 @@
 
 > Status: Current and version-sensitive
 > Read when: Changing model discovery, caching, selection, or command injection.
-> Entry points: `src/models.rs`, `src/ui/new_session/`, `src/resume.rs`
+> Entry points: `src/models.rs`, `src/models/{catalog,claude,codex,agy}.rs`, `src/ui/new_session/`, `src/resume.rs`
 
 Contract for querying, caching, and injecting selectable models in the New
-Session dialog. `src/models.rs` owns query/cache data,
+Session dialog. `src/models.rs` owns queries (per-CLI enumeration in
+`src/models/{claude,codex,agy}.rs`) and `src/models/catalog.rs` the cache,
 `src/ui/new_session/` owns dialog state and interaction, `src/ui/background.rs`
 coordinates probes, and `src/resume.rs::with_model_flag` injects the command.
 
@@ -24,7 +25,7 @@ coordinates probes, and `src/resume.rs::with_model_flag` injects the command.
 - codex is also queried per profile (injecting `CODEX_HOME`), but it's a fast subprocess. The catalog is confirmed to be output even in an empty CODEX_HOME (bundled catalog).
 - agy cannot inject config env (see "agy env injection verification" below), so it is queried **globally once for the default path profile**, and additional agy profiles share that result (`ModelCatalog::for_profile` fallback).
 
-### agy row parsing (`models.rs::parse_agy_models`)
+### agy row parsing (`models/agy.rs::parse_agy_models`)
 
 - agy 1.1.11 emits `slug<TAB>display name`, for example
   `gemini-3.6-flash-high<TAB>Gemini 3.6 Flash (High)`.
@@ -36,7 +37,7 @@ coordinates probes, and `src/resume.rs::with_model_flag` injects the command.
   zero width while terminals advance it to the next tab stop; measuring the row as zero-width and
   then emitting the raw tab corrupts every later cell in that row, including the popup border.
 
-### claude row name → `--model` value (`models.rs::claude_model_value`)
+### claude row name → `--model` value (`models/claude.rs::claude_model_value`)
 
 The `/model` row name is **not** always the alias. Through 2.1.207 it was (`Opus` → `opus`).
 2.1.220 renamed the long-context row to `Opus (1M context)`, whose alias is `opus[1m]`.
@@ -73,7 +74,8 @@ The `Haiku 4.5` row maps to the dated ID `claude-haiku-4-5-20251001`. Check the 
 
 ## Cache and Update Timing
 
-- Cache: `~/.config/s7s/models.json` (profile id key, `ModelCatalog`). The CLI version at the time of query (first line of `--version`) is saved along with the items.
+- Cache: `~/.config/s7s/models.json` (profile id key, `ModelCatalog` in `src/models/catalog.rs`). The CLI version at the time of query (first line of `--version`) is saved along with the items.
+- **Shared by running instances**: a save writes back only the profiles this instance changed (`insert`, `set_last_selected`) or removed, onto the file's current contents under `store_lock::with_store_lock`, replaces the file atomically, and adopts the merged result. Other instances re-read the file within about a second of a change (`App::poll_shared_caches`, `ModelCatalog::reload_from`), keeping any change of their own not yet saved. Before this, each save wrote the whole in-memory catalog and dropped catalogs another instance had just stored.
 - **Schema version (`MODELS_FILE_VERSION`)**: a file whose `version` differs is discarded wholesale on load. Bump it whenever cached values can be *wrong* rather than merely stale — the version gate below keys off the CLI version, so a parser fix alone would never evict a bad entry (nor the `default_model` / `last_selected` derived from it). v2 = claude aliases normalized; v3 = agy tab-separated rows split into slug/display fields; v4 = Claude versioned rows and full-list capture, evicting v3 lists that contained only one accepted row.
 - **App Startup**: Initiates background querying but with a **version gate** — if the cached CLI version and current version match, re-querying is skipped (`ModelsResult::Skipped`) to eliminate the cost of booting the claude PTY. The model list only changes upon CLI upgrade/plan change.
 - **ctrl+u**: Force re-query (ignores version gate) — covers plan changes.

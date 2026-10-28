@@ -16,7 +16,7 @@ planning; backlog entries are not implementation authorization.
 | If you change… | Read first |
 | --- | --- |
 | Rename / session-title | [session-title-compat.md](./docs/session-title-compat.md) + [testing.md](./docs/testing.md) |
-| Usage display / parsing | [usage-display.md](./docs/usage-display.md) |
+| Usage display / parsing / sharing across instances (`src/usage.rs`, `src/usage/`, `src/ui/shared_cache.rs`) | [usage-display.md](./docs/usage-display.md) |
 | Profiles / env injection (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) | [profiles.md](./docs/profiles.md) |
 | Model list / New Session model dropdown | [models.md](./docs/models.md) |
 | Session folder (`Change Folder`, `session change-folder`, `src/session_folder.rs`, `src/session_workspace.rs`, `scan::apply_workspace_cwd`) | [session-folder.md](./docs/session-folder.md) + [testing.md](./docs/testing.md) |
@@ -29,8 +29,8 @@ planning; backlog entries are not implementation authorization.
 | Session bookmarks / Ctrl+B / bookmark filter (`src/bookmarks.rs`, `src/ui/bookmarks.rs`) | [bookmarks.md](./docs/bookmarks.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
 | Live-session markers, attach dialog, and live-session blocking (Claude background / open elsewhere, agy presence locks) / `claude agents --json` (`src/agent_status.rs`, `src/ui/agent_status.rs`, `src/ui/overlays/attach.rs`) | [background-sessions.md](./docs/background-sessions.md) |
 | Workspace pane / workspace edit dialog / open-workspace scope / `ctrl+w` palette rows (`src/workspaces.rs`, `src/ui/workspace/`) | [workspaces.md](./docs/workspaces.md) + [ui-style-guide.md](./docs/ui-style-guide.md) |
-| Multi-instance saving / `ctrl+u` reload of app-owned stores (`src/store_lock.rs`, `src/ui/reload.rs`) | [workspaces.md](./docs/workspaces.md) §Multiple running instances + [profiles.md](./docs/profiles.md) |
-| Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
+| Multi-instance saving / `ctrl+u` reload of app-owned stores (`src/store_lock.rs`, `src/ui/reload.rs`) | [workspaces.md](./docs/workspaces.md) §Multiple running instances + [profiles.md](./docs/profiles.md) (usage/model caches: [usage-display.md](./docs/usage-display.md) §Sharing) |
+| Terminal lifecycle, paste handling, text input/cursor/truncation (`runtime/terminal.rs`, `ui/paste.rs`, `ui/components/{input,text}.rs`) | [terminal-input-hardening.md](./docs/terminal-input-hardening.md) |
 | Release process | [releasing.md](./docs/releasing.md) |
 
 For past reasoning, prefer `git log -- <path>`, `git blame`, and `git show`.

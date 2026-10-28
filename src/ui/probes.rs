@@ -3,7 +3,7 @@
 
 use super::{effect, App};
 use crate::models;
-use crate::usage::{self, UsagePhase};
+use crate::usage::UsagePhase;
 
 impl App {
     /// Spawns parallel queries to fetch usage (remaining %) for all fetchable profiles. Ignored if queries are already in flight.
@@ -44,7 +44,8 @@ impl App {
             // Retain the prior successful value (`last`) while turning on the progress indicator.
             self.usage.entry_mut(&p.id).phase = UsagePhase::Loading;
         }
-        self.background.spawn_usage(targets);
+        self.background
+            .spawn_usage(targets, crate::config::usage_cache_path());
     }
 
     /// Applies background usage query results to app state. Returns true if updates occurred (triggering a redraw).
@@ -54,33 +55,13 @@ impl App {
         }
         let results = self.background.drain_usage();
         let updated = !results.is_empty();
-        for (profile_id, res) in results {
+        for (profile_id, fetched) in results {
+            // The worker's entry is authoritative for this profile: take its
+            // phase and last success, including a cleared value after the
+            // profile moved to another folder.
             let entry = self.usage.entry_mut(&profile_id);
-            match res {
-                usage::UsageResult::Ready(snapshot) => {
-                    entry.last = Some(snapshot);
-                    entry.phase = UsagePhase::Ready;
-                }
-                // Logged out, missing CLI, missing dir, or unavailable: clear `last` to prevent misleading displays.
-                usage::UsageResult::NotLoggedIn => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::NotLoggedIn;
-                }
-                usage::UsageResult::NotInstalled => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::NotInstalled;
-                }
-                usage::UsageResult::MissingDir => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::MissingDir;
-                }
-                usage::UsageResult::Unavailable => {
-                    entry.last = None;
-                    entry.phase = UsagePhase::Unavailable;
-                }
-                // Keep the prior value (`last`) even if the current query failed.
-                usage::UsageResult::Failed(_) => entry.phase = UsagePhase::Failed,
-            }
+            entry.phase = UsagePhase::Idle;
+            entry.apply(&fetched.entry);
         }
         if updated
             && !self.background.usage_in_flight()
@@ -89,7 +70,11 @@ impl App {
                 effect::RefreshAllPhase::Prepared | effect::RefreshAllPhase::Scanning
             )
         {
-            self.status_msg = Some("usage update complete".to_string());
+            self.status_msg = Some(if self.background.usage_queried() {
+                "usage update complete".to_string()
+            } else {
+                "usage is up to date".to_string()
+            });
         }
         updated
     }

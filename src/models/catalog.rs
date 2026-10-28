@@ -4,14 +4,21 @@ use super::{LastSelection, ProfileModels};
 use crate::config::config_base_dir;
 use crate::model::Agent;
 use crate::profile::Profile;
+use crate::store_lock::{replace_file, with_store_lock};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Cache of model lists per profile (key = profile id), persisted in models.json.
+///
+/// Several running instances share the file, so a save writes back only the
+/// profiles this instance changed (`dirty`, `removed`) onto the file's current
+/// contents, under the store lock, and adopts the merged result.
 #[derive(Debug, Default)]
 pub struct ModelCatalog {
     pub(super) entries: HashMap<String, ProfileModels>,
+    dirty: HashSet<String>,
+    removed: HashSet<String>,
 }
 
 /// Serialization structure for models.json.
@@ -41,17 +48,29 @@ impl ModelCatalog {
     }
 
     pub(super) fn load_from(path: &Path) -> Self {
-        let entries = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|data| serde_json::from_str::<ModelsFile>(&data).ok())
-            .filter(|f| f.version == MODELS_FILE_VERSION)
-            .map(|f| f.profiles)
-            .unwrap_or_default();
-        ModelCatalog { entries }
+        ModelCatalog {
+            entries: read_entries(path),
+            ..Self::default()
+        }
+    }
+
+    /// Replaces the in-memory catalog with the file (another instance saved),
+    /// keeping any change of ours that has not been saved yet.
+    pub(crate) fn reload_from(&mut self, path: &Path) {
+        let mut entries = read_entries(path);
+        for id in &self.dirty {
+            if let Some(pm) = self.entries.get(id) {
+                entries.insert(id.clone(), pm.clone());
+            }
+        }
+        for id in &self.removed {
+            entries.remove(id);
+        }
+        self.entries = entries;
     }
 
     /// Saves to models.json (failures are non-fatal and can be ignored by callers).
-    pub fn save(&self) -> std::io::Result<()> {
+    pub fn save(&mut self) -> std::io::Result<()> {
         // Unit tests must never touch the real user cache (start_new_session_at persists the
         // last pick through this path). `save_to` stays unguarded for roundtrip tests.
         if cfg!(test) {
@@ -60,16 +79,29 @@ impl ModelCatalog {
         self.save_to(&models_file_path())
     }
 
-    pub(super) fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let file = ModelsFile {
-            version: MODELS_FILE_VERSION,
-            profiles: self.entries.clone(),
-        };
-        let data = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
-        std::fs::write(path, data)
+    pub(super) fn save_to(&mut self, path: &Path) -> std::io::Result<()> {
+        let merged = with_store_lock(path, || {
+            let mut profiles = read_entries(path);
+            for id in &self.dirty {
+                if let Some(pm) = self.entries.get(id) {
+                    profiles.insert(id.clone(), pm.clone());
+                }
+            }
+            for id in &self.removed {
+                profiles.remove(id);
+            }
+            let file = ModelsFile {
+                version: MODELS_FILE_VERSION,
+                profiles,
+            };
+            replace_file(path, &serde_json::to_vec_pretty(&file)?)?;
+            Ok(file.profiles)
+        })
+        .map_err(std::io::Error::other)?;
+        self.entries = merged;
+        self.dirty.clear();
+        self.removed.clear();
+        Ok(())
     }
 
     /// Inserts (replaces) a profile's model catalog. Background re-fetches produce a fresh
@@ -81,6 +113,8 @@ impl ModelCatalog {
                 models.last_selected = prev.last_selected.clone();
             }
         }
+        self.removed.remove(&profile_id);
+        self.dirty.insert(profile_id.clone());
         self.entries.insert(profile_id, models);
     }
 
@@ -90,12 +124,15 @@ impl ModelCatalog {
     pub fn set_last_selected(&mut self, profile_id: &str, selection: LastSelection) {
         if let Some(pm) = self.entries.get_mut(profile_id) {
             pm.last_selected = Some(selection);
+            self.dirty.insert(profile_id.to_string());
         }
     }
 
     /// Clears cache when a profile is deleted.
     pub fn remove(&mut self, profile_id: &str) {
         self.entries.remove(profile_id);
+        self.dirty.remove(profile_id);
+        self.removed.insert(profile_id.to_string());
     }
 
     /// Cached CLI version of a profile (input for version gate).
@@ -118,7 +155,18 @@ impl ModelCatalog {
     }
 }
 
+/// The file's profiles; empty when missing, unreadable, or of another schema
+/// version (a mismatch discards the whole file, see [`MODELS_FILE_VERSION`]).
+fn read_entries(path: &Path) -> HashMap<String, ProfileModels> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|data| serde_json::from_str::<ModelsFile>(&data).ok())
+        .filter(|f| f.version == MODELS_FILE_VERSION)
+        .map(|f| f.profiles)
+        .unwrap_or_default()
+}
+
 /// models.json path: `~/.config/s7s/models.json`.
-pub(super) fn models_file_path() -> PathBuf {
+pub(crate) fn models_file_path() -> PathBuf {
     config_base_dir().join("models.json")
 }

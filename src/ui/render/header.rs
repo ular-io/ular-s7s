@@ -1,6 +1,8 @@
 //! Header: logo, per-screen shortcut columns, and the profile usage rows.
 
-use super::usage::{is_eye_closed_now, pulse_level_now, pulse_span, usage_spans};
+use super::usage::{
+    is_eye_closed_now, pulse_level_now, pulse_span, usage_tail_span, usage_value_spans, TAIL_W,
+};
 use crate::ui::components::text::{pad_w, truncate_w};
 use crate::ui::{App, Focus, Screen};
 use ratatui::{
@@ -111,7 +113,7 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     // Layout from left: 1 space padding -> quick-keys + usage column -> screen-specific columns (2) + common column (1).
     // Quick-keys column width = key (3) + space (1) + name (max of active profiles, clamped between 12-18)
     //                          + usage leading space (1) + usage segments (current 12 + space 1 + weekly 12 + " left" 5)
-    //                          + right padding 8 (margin to column 2).
+    //                          + gap 2 + trailing slot (age or status, TAIL_W) + right padding 4 (margin to column 2).
     // Left hotkey columns dynamically fit to content maximum width + 4 right padding. Drops rightmost columns if space is constrained.
     let name_w = numbered
         .iter()
@@ -119,7 +121,7 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(12)
         .clamp(12, 18);
-    let agent_col_w = 4 + name_w as u16 + 39;
+    let agent_col_w = 4 + name_w as u16 + 31 + 2 + TAIL_W as u16 + 4;
     let screen_cols: &[&[(&str, &str)]; 2] = match app.screen {
         Screen::Session if app.focus == Focus::Workspaces => &SHORTCUTS_WORKSPACE_LIST,
         Screen::Session => &SHORTCUTS_SESSION,
@@ -188,6 +190,7 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     // Always top-aligned. Profile names are padded to fit width, keeping usage stats left-aligned.
     let th = &app.theme;
     let key_style = th.key_style();
+    let now = crate::usage::now_ms();
     let agent_lines: Vec<Line> = numbered
         .iter()
         .enumerate()
@@ -200,13 +203,15 @@ pub(super) fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(format!(" {}", name), th.soft_dim()),
                 Span::raw(" "),
             ];
-            // During Loading queries, only the "Loading..." placeholder in the usage column fades/pulses.
-            let usage = usage_spans(entry, th);
+            // During Loading queries only the trailing slot (the value's age, or
+            // `Loading...` without one) fades/pulses; the values stay readable.
+            spans.extend(usage_value_spans(entry, now, th));
+            spans.push(Span::raw("  "));
+            let tail = usage_tail_span(entry, now, th);
             if entry.phase == crate::usage::UsagePhase::Loading {
-                let level = pulse_level_now();
-                spans.extend(usage.into_iter().map(|s| pulse_span(s, level, th)));
+                spans.push(pulse_span(tail, pulse_level_now(), th));
             } else {
-                spans.extend(usage);
+                spans.push(tail);
             }
             Line::from(spans)
         })

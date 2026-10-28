@@ -2,7 +2,7 @@
 
 > Status: Current
 > Read when: A change crosses feature boundaries or its owning module is unclear.
-> Entry points: `src/lib.rs`, `src/runtime.rs`, `src/ui/mod.rs`
+> Entry points: `src/lib.rs`, `src/runtime.rs` (+ `src/runtime/{handover,terminal}.rs`), `src/ui/mod.rs`
 
 This document maps current responsibilities and data flow. Feature contracts and
 verification details belong to the domain documents routed from `AGENTS.md`.
@@ -20,7 +20,8 @@ verification details belong to the domain documents routed from `AGENTS.md`.
 | `s7s version`, `-v`, `--version` | `runtime` |
 
 `src/main.rs` is a thin binary shim. `src/lib.rs` exposes `run`; command parsing,
-the event loop, handovers, and terminal ownership live in `src/runtime.rs`.
+the event loop lives in `src/runtime.rs`, handovers in `src/runtime/handover.rs`,
+and terminal ownership in `src/runtime/terminal.rs`.
 
 ## Session index flow
 
@@ -110,6 +111,7 @@ discrete request fields drained by `runtime`.
 | --- | --- |
 | Screen/mode enums, screen switching, quit arming | `ui/modes.rs`, `ui/screen.rs` |
 | Usage/model probe spawning and result application | `ui/probes.rs` |
+| Re-reading `usage.json` / `models.json` saved by other instances, idle redraw tick | `ui/shared_cache.rs` |
 | Shared frame, body layout, status bar | `ui/render.rs` |
 | Header, usage spans, metadata grid and preview helpers | `ui/render/{header,usage,meta}.rs` |
 | Session list/search/preview | `ui/session/` |
@@ -123,7 +125,7 @@ discrete request fields drained by `runtime`.
 | Context-source navigation stack | `ui/context_jump.rs` |
 | Bookmark actions and title decoration | `ui/bookmarks.rs` |
 | Claude live-session status sweeps, markers, and live-session blocking | `ui/agent_status.rs` (CLI client: `agent_status.rs`) |
-| Attach/Cancel dialog for a background session | `ui/overlays/attach.rs` (handover: `runtime::handover_attach`) |
+| Attach/Cancel dialog for a background session | `ui/overlays/attach.rs` (handover: `runtime::handover::handover_attach`) |
 | Clipboard projections | `ui/copy.rs` |
 | Paste routing | `ui/paste.rs` |
 | Reusable input/modal/scroll/text primitives | `ui/components/` |
@@ -179,7 +181,7 @@ live in [usage-display.md](./usage-display.md) and [models.md](./models.md).
 `[SCRATCH]` row of the New Session folder dropdown. Sessions started there run
 without a project.
 
-- `runtime::handover_new_session` calls `scratch::prepare` immediately before the
+- `runtime::handover::handover_new_session` calls `scratch::prepare` immediately before the
   handover: it deletes every direct entry except `AGENTS.md`/`CLAUDE.md`, then
   rewrites both from the source constants. An earlier session's leftovers must
   never become the next session's context — a stale `CLAUDE.md` in the working
@@ -210,6 +212,8 @@ without a project.
 | `~/.config/s7s/themes/*.toml` | user | TOML |
 | `~/.config/s7s/profiles.json` | app | JSON |
 | `~/.config/s7s/models.json` | app | JSON |
+| `~/.config/s7s/usage.json` | app | versioned JSON; last usage success and attempt per profile, shared by running instances |
+| `~/.config/s7s/.usage-<profile id>.lock` | app | empty; per-profile probe lock (`flock`) |
 | `~/.config/s7s/theme.json` | app | JSON |
 | `~/.config/s7s/{quick,terminal}_history.json` | app | JSON |
 | `~/.config/s7s/session_workspaces.json` | app | JSON; per-profile/session folder overrides and handoff cwd records |
@@ -223,13 +227,16 @@ without a project.
 Rule: user-edited configuration is TOML; app-owned state is JSON; the session
 index is a disposable cache.
 
-Several s7s instances may run at once. `profiles.json`, `workspaces.json`, and
-`session_workspaces.json`
+Several s7s instances may run at once. `profiles.json`, `workspaces.json`,
+`session_workspaces.json`, `usage.json`, and `models.json`
 are saved per change: lock (`store_lock::with_store_lock`), re-read, apply the
 change by id, atomic replace. `bookmarks.json` re-reads before each toggle.
 Profiles, workspaces, and bookmarks are not watched; an instance reloads those
-three only at startup and on `ctrl+u` (`ui/reload.rs`). Theme, histories, and
-`models.json` are not reloaded.
+three only at startup and on `ctrl+u` (`ui/reload.rs`). `usage.json` and
+`models.json` are re-read once a second when their modification time changes
+(`ui/shared_cache.rs`), and usage probes take a per-profile lock so two
+instances never query the same profile at once (`usage/shared.rs`). Theme and
+histories are not reloaded.
 Folder overrides are re-read on each session scan, including `Ctrl+U`.
 
 ## Cross-cutting change map
@@ -239,7 +246,7 @@ Folder overrides are re-read on each session scan, including `Ctrl+U`.
 | Scan, list, filter | `scan.rs`, `filter.rs`, `parser/*`, `cache.rs` | `session-context.md` when turn selection changes |
 | Rename/title | `rename.rs`, `title.rs`, parser title paths | `session-title-compat.md` |
 | Session bookmarks | `bookmarks.rs`, `ui/bookmarks.rs`, `filter.rs` | `bookmarks.md` |
-| Claude live-session markers | `agent_status.rs`, `ui/agent_status.rs`, `ui/background.rs`, `runtime.rs` (idle wait) | `background-sessions.md` |
+| Claude live-session markers | `agent_status.rs`, `ui/agent_status.rs`, `ui/background.rs`, `ui/shared_cache.rs` (`App::idle_wait`) | `background-sessions.md` |
 | Workspaces | `workspaces.rs`, `ui/workspace/*`, `ui/quick/registry.rs` | `workspaces.md` |
 | Session deletion | `session_delete.rs` (shared by `ui/effect.rs` and `session_cli/`) | `session-context.md` §Delete |
 | Session folder | `session_folder.rs`, `session_workspace.rs`, `session_cli/change_folder.rs`, `ui/overlays/change_folder.rs` | `session-folder.md` |
@@ -248,8 +255,8 @@ Folder overrides are re-read on each session scan, including `Ctrl+U`.
 | Full-content search | `full_search/*`, `ui/full_search/*`, `ui/background.rs` | `session-context.md` §Full-content search, `ui-style-guide.md` |
 | Usage/model probes | `usage.rs`, `models.rs`, `probe/*` | `usage-display.md`, `models.md` |
 | Profiles/env injection | `profile.rs`, `resume.rs`, `ui/profile/*` | `profiles.md` |
-| TUI/input/terminal | `ui/*`, `runtime.rs` | `ui-style-guide.md`, `terminal-input-hardening.md` |
-| Scratch workspace / its policy text | `scratch.rs`, `ui/new_session/*`, `runtime.rs` | §Scratch workspace above, `testing.md` |
+| TUI/input/terminal | `ui/*`, `runtime.rs`, `runtime/terminal.rs` | `ui-style-guide.md`, `terminal-input-hardening.md` |
+| Scratch workspace / its policy text | `scratch.rs`, `ui/new_session/*`, `runtime/handover.rs` | §Scratch workspace above, `testing.md` |
 | Release | `scripts/release.sh` | `releasing.md` |
 
 [testing.md](./testing.md) is the authoritative verification matrix.

@@ -5,24 +5,37 @@ use super::header::{
     SHORTCUTS_WORKSPACE_LIST,
 };
 use super::test_support::*;
-use super::usage_spans;
+use super::{age_label, usage_tail_span, usage_value_spans};
 use crate::ui::components::text::{pad_w, truncate_w};
 use crate::usage::{ResetCountdown, UsageEntry, UsagePhase, UsageSnapshot, UsageWindow};
 use ratatui::style::{Color, Modifier};
 use ratatui::{backend::TestBackend, Terminal};
 
+/// Fixed render time; `ready_usage` values are read exactly then.
+const NOW: i64 = 1_800_000_000_000;
+const MINUTE: i64 = 60_000;
+
 fn plain_usage(entry: UsageEntry) -> String {
-    usage_spans(entry, &crate::theme::default_theme())
+    plain_usage_at(entry, NOW)
+}
+
+fn plain_usage_at(entry: UsageEntry, now: i64) -> String {
+    usage_value_spans(entry, now, &crate::theme::default_theme())
         .into_iter()
         .map(|span| span.content.into_owned())
         .collect()
 }
 
 fn usage_style_attrs(entry: UsageEntry) -> Vec<(Option<Color>, Modifier)> {
-    usage_spans(entry, &crate::theme::default_theme())
+    usage_value_spans(entry, NOW, &crate::theme::default_theme())
         .into_iter()
         .map(|span| (span.style.fg, span.style.add_modifier))
         .collect()
+}
+
+fn tail(entry: UsageEntry, now: i64) -> (String, Option<Color>) {
+    let span = usage_tail_span(entry, now, &crate::theme::default_theme());
+    (span.content.into_owned(), span.style.fg)
 }
 
 /// Muted (soft-dim) fg of the default theme — what grayed-out usage spans use.
@@ -37,6 +50,19 @@ fn ready_usage(current: UsageWindow, weekly: UsageWindow) -> UsageEntry {
             current: Some(current),
             weekly: Some(weekly),
         }),
+        last_at: Some(NOW),
+    }
+}
+
+fn with_phase(entry: UsageEntry, phase: UsagePhase) -> UsageEntry {
+    UsageEntry { phase, ..entry }
+}
+
+fn without_value(phase: UsagePhase) -> UsageEntry {
+    UsageEntry {
+        phase,
+        last: None,
+        last_at: None,
     }
 }
 
@@ -200,9 +226,9 @@ fn header_usage_lines_match_documented_spacing() {
 #[test]
 fn header_hides_logo_before_shortcut_columns() {
     let app = session_app();
-    // This fixture's complete left side needs 137 cells; 154 leaves room for
+    // This fixture's complete left side needs 148 cells; 165 leaves room for
     // the 16-cell logo but not the required 2-cell gap.
-    let text = rendered_text(&app, 154, 20);
+    let text = rendered_text(&app, 165, 20);
 
     assert!(text.contains("Quick Command"));
     assert!(text.contains("Help"));
@@ -212,7 +238,7 @@ fn header_hides_logo_before_shortcut_columns() {
 #[test]
 fn header_shows_logo_when_shortcuts_logo_and_gap_fit() {
     let app = session_app();
-    let text = rendered_text(&app, 155, 20);
+    let text = rendered_text(&app, 166, 20);
 
     assert!(text.contains("Quick Command"));
     assert!(text.contains("Help"));
@@ -222,7 +248,7 @@ fn header_shows_logo_when_shortcuts_logo_and_gap_fit() {
 #[test]
 fn header_drops_rightmost_shortcut_column_after_logo_is_hidden() {
     let app = session_app();
-    let text = rendered_text(&app, 136, 20);
+    let text = rendered_text(&app, 147, 20);
 
     assert!(text.contains("Resume Session"));
     assert!(!text.contains("Quick Command"));
@@ -230,58 +256,93 @@ fn header_drops_rightmost_shortcut_column_after_logo_is_hidden() {
 }
 
 #[test]
-fn usage_spans_show_not_logged_in() {
-    let entry = UsageEntry {
-        phase: UsagePhase::NotLoggedIn,
-        last: None,
-    };
-    assert_eq!(plain_usage(entry), "Not logged in");
+fn age_labels_floor_to_one_unit() {
+    assert_eq!(age_label(NOW, NOW + 59_999), "just now");
+    assert_eq!(age_label(NOW, NOW + 5 * MINUTE), "5m ago");
+    assert_eq!(age_label(NOW, NOW + 90 * MINUTE), "1h ago");
+    assert_eq!(age_label(NOW, NOW + (23 * 60 + 59) * MINUTE), "23h ago");
+    assert_eq!(age_label(NOW, NOW + 3 * 1440 * MINUTE), "3d ago");
+    // A clock that moved backwards never shows a negative age.
+    assert_eq!(age_label(NOW, NOW - MINUTE), "just now");
+}
+
+#[test]
+fn reset_countdowns_keep_counting_and_mark_a_passed_reset() {
+    let entry = ready_usage(usage_window(72, 0, 4, 30), usage_window(52, 0, 1, 0));
     assert_eq!(
-        usage_style_attrs(entry),
-        vec![(Some(muted()), Modifier::empty())]
+        plain_usage_at(entry, NOW + 90 * MINUTE),
+        " 72%(3h  0m)  52%(reset)  left"
+    );
+    // The window whose reset passed is grayed on its own.
+    let attrs: Vec<_> = usage_value_spans(entry, NOW + 90 * MINUTE, &crate::theme::default_theme())
+        .into_iter()
+        .map(|span| span.style.fg)
+        .collect();
+    let th = crate::theme::default_theme();
+    assert_eq!(attrs[0], Some(th.usage_high));
+    assert_eq!(attrs[2], Some(muted()));
+    // Within the first minute the value reads exactly as captured.
+    assert_eq!(
+        plain_usage_at(entry, NOW + 30_000),
+        " 72%(4h 30m)  52%(    1h) left"
     );
 }
 
 #[test]
-fn usage_spans_show_not_installed() {
-    let entry = UsageEntry {
-        phase: UsagePhase::NotInstalled,
-        last: None,
-    };
-    assert_eq!(plain_usage(entry), "Not installed");
-}
+fn tail_shows_the_age_of_a_value_and_pulses_nothing_else_while_loading() {
+    let entry = ready_usage(usage_window(72, 0, 4, 30), usage_window(52, 2, 16, 0));
+    assert_eq!(tail(entry, NOW).0, "just now");
+    assert_eq!(tail(entry, NOW + 125 * MINUTE).0, "2h ago");
 
-#[test]
-fn usage_spans_show_missing_dir() {
-    let entry = UsageEntry {
-        phase: UsagePhase::MissingDir,
-        last: None,
-    };
-    assert_eq!(plain_usage(entry), "Config folder not found");
+    // Rechecking keeps the values on screen; only the age is the loading cue.
+    let rechecking = with_phase(entry, UsagePhase::Loading);
+    assert_eq!(plain_usage(rechecking), plain_usage(entry));
+    assert_eq!(tail(rechecking, NOW + 125 * MINUTE).0, "2h ago");
     assert_eq!(
-        usage_style_attrs(entry),
-        vec![(Some(crate::theme::default_theme().error), Modifier::empty())]
+        tail(without_value(UsagePhase::Loading), NOW).0,
+        "Loading..."
+    );
+    assert_eq!(
+        plain_usage(without_value(UsagePhase::Loading)),
+        " --%          --%         left"
     );
 }
 
 #[test]
-fn usage_spans_show_loading_message() {
-    // Under Loading queries, always renders "Loading..." placeholder, bypassing cached results.
-    let fresh = UsageEntry {
-        phase: UsagePhase::Loading,
-        last: None,
-    };
-    let rechecking = UsageEntry {
-        phase: UsagePhase::Loading,
-        last: Some(UsageSnapshot {
-            current: Some(usage_window(72, 0, 4, 30)),
-            weekly: Some(usage_window(52, 2, 16, 0)),
-        }),
-    };
-    assert_eq!(plain_usage(fresh), "Loading...");
-    assert_eq!(plain_usage(rechecking), "Loading...");
+fn failures_and_logouts_keep_the_last_values_grayed() {
+    let th = crate::theme::default_theme();
+    let entry = ready_usage(usage_window(41, 0, 1, 12), usage_window(38, 2, 14, 0));
+    for (phase, label, color) in [
+        (UsagePhase::Failed, "Error", th.error),
+        (UsagePhase::NotLoggedIn, "Not logged in", th.warning),
+    ] {
+        let stale = with_phase(entry, phase);
+        assert_eq!(plain_usage(stale), " 41%(1h 12m)  38%(2d 14h) left");
+        assert!(usage_style_attrs(stale)
+            .iter()
+            .all(|(fg, _)| fg.is_none() || *fg == Some(muted())));
+        assert_eq!(tail(stale, NOW), (label.to_string(), Some(color)));
+    }
+}
+
+#[test]
+fn states_without_values_show_their_reason_in_the_tail() {
+    let th = crate::theme::default_theme();
+    for (phase, label, color) in [
+        (UsagePhase::Failed, "Error", Some(th.error)),
+        (UsagePhase::MissingDir, "Error", Some(th.error)),
+        (UsagePhase::NotLoggedIn, "Not logged in", Some(th.warning)),
+        (UsagePhase::NotInstalled, "Not installed", Some(muted())),
+        (UsagePhase::Unavailable, "Unavailable", Some(muted())),
+    ] {
+        let entry = without_value(phase);
+        assert_eq!(plain_usage(entry), " --%          --%         left");
+        assert_eq!(tail(entry, NOW), (label.to_string(), color), "{phase:?}");
+    }
+    // A missing folder or uninstalled CLI never shows a stale value.
+    let entry = ready_usage(usage_window(41, 0, 1, 12), usage_window(38, 2, 14, 0));
     assert_eq!(
-        usage_style_attrs(fresh),
-        vec![(Some(muted()), Modifier::empty())]
+        plain_usage(with_phase(entry, UsagePhase::MissingDir)),
+        " --%          --%         left"
     );
 }

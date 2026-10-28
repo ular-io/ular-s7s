@@ -10,8 +10,8 @@ use crate::ui::components::modal::titled_block_nav;
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::truncate_w;
 use crate::ui::render::{
-    agent_tag, display_path, pulse_level_now, pulse_span, reset_label_current, reset_label_weekly,
-    LOADING_LABEL, MISSING_DIR_LABEL, NOT_INSTALLED_LABEL, NOT_LOGGED_IN_LABEL,
+    age_label, agent_tag, display_path, pulse_level_now, pulse_span, window_text, LOADING_LABEL,
+    MISSING_DIR_LABEL, NOT_INSTALLED_LABEL, NOT_LOGGED_IN_LABEL,
 };
 use crate::ui::{App, UiMode};
 use ratatui::{
@@ -48,14 +48,16 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
         Cell::from("NAME"),
         Cell::from("STATUS"),
         Cell::from(format!("{:^12}  {:^12}", "5H(LEFT)", "1W(LEFT)")),
+        Cell::from("UPDATED"),
         aligned_cell("SESSION", Alignment::Right),
         Cell::from("CONFIG DIR"),
     ])
     .style(header_style);
 
     // Truncates CONFIG DIR column to fill the remaining width.
-    // Fixed columns (4 + 4 + 20 + 13 + 26 + 7 = 74) + gaps (6 * 2) + borders (2) + highlight (1) + margin (1).
-    let config_dir_w = (area.width as usize).saturating_sub(74 + 12 + 2 + 1 + 1);
+    // Fixed columns (4 + 4 + 20 + 13 + 26 + 8 + 7 = 82) + gaps (7 * 2) + borders (2) + highlight (1) + margin (1).
+    let config_dir_w = (area.width as usize).saturating_sub(82 + 14 + 2 + 1 + 1);
+    let now = crate::usage::now_ms();
 
     let rows: Vec<Row> = app
         .profiles
@@ -117,14 +119,20 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
                 };
                 Cell::from(Span::styled(MISSING_DIR_LABEL, style))
             } else {
-                profile_usage_cell(entry, subdued, th)
+                profile_usage_cell(entry, subdued, now, th)
             };
+            // When the shown values were read; `-` before any success.
+            let updated = entry
+                .last_at
+                .map(|at| age_label(at, now))
+                .unwrap_or_else(|| "-".to_string());
             let mut row = Row::new(vec![
                 aligned_cell(Line::from(Span::styled(num, key_style)), Alignment::Center),
                 aligned_cell(Line::from(Span::styled(tag, tag_style)), Alignment::Center),
                 Cell::from(Span::styled(truncate_w(&p.name, 20), name_style)),
                 Cell::from(status_span),
                 usage_cell,
+                Cell::from(Span::styled(updated, th.soft_dim())),
                 aligned_cell(
                     Line::from(Span::styled(
                         format!("{}", counts.get(p.id.as_str()).copied().unwrap_or(0)),
@@ -150,6 +158,7 @@ pub(crate) fn draw_profile_table(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(20),
         Constraint::Length(13), // STATUS column (max "Not logged in")
         Constraint::Length(26), // USAGE column (5H left + 1W left)
+        Constraint::Length(8),  // UPDATED column (max "just now")
         Constraint::Length(7),
         Constraint::Min(10),
     ];
@@ -237,6 +246,7 @@ fn profile_usage_unavailable(entry: crate::usage::UsageEntry) -> bool {
 fn profile_usage_parts(
     entry: crate::usage::UsageEntry,
     subdued: bool,
+    now: i64,
     th: &Theme,
 ) -> [(String, Style); 2] {
     use crate::usage::{UsagePhase, UsageSnapshot, UsageWindow};
@@ -256,15 +266,14 @@ fn profile_usage_parts(
         let fallback_style = style_override.unwrap_or_else(|| Style::default().fg(th.dim));
         match window {
             Some(window) => {
-                let reset = if weekly {
-                    reset_label_weekly(window.reset)
-                } else {
-                    reset_label_current(window.reset)
+                // A window whose reset has passed since the read is grayed.
+                let (text, passed) = window_text(window, weekly, entry.last_at, now);
+                let style = match style_override {
+                    Some(style) => style,
+                    None if passed => th.soft_dim(),
+                    None => pct_style(window),
                 };
-                (
-                    format!("{:>3}%{reset:<8}", window.pct_left),
-                    style_override.unwrap_or_else(|| pct_style(window)),
-                )
+                (text, style)
             }
             None => (format!("{:>3}%        ", "--"), fallback_style),
         }
@@ -304,9 +313,14 @@ fn profile_usage_parts(
 
 /// Merged USAGE cell (width 26) for profile tables. Its two 12-cell windows use
 /// the header's `72%(4h 30m)` format and are separated by two spaces.
-fn profile_usage_cell(entry: crate::usage::UsageEntry, subdued: bool, th: &Theme) -> Cell<'static> {
+fn profile_usage_cell(
+    entry: crate::usage::UsageEntry,
+    subdued: bool,
+    now: i64,
+    th: &Theme,
+) -> Cell<'static> {
     let [(current, current_style), (weekly, weekly_style)] =
-        profile_usage_parts(entry, subdued, th);
+        profile_usage_parts(entry, subdued, now, th);
     aligned_cell(
         Line::from(vec![
             Span::styled(current, current_style),
@@ -331,6 +345,7 @@ mod tests {
                 current: Some(current),
                 weekly: Some(weekly),
             }),
+            last_at: None,
         }
     }
 
@@ -350,6 +365,7 @@ mod tests {
         let parts = profile_usage_parts(
             ready_usage(usage_window(72, 0, 4, 30), usage_window(52, 2, 16, 0)),
             false,
+            0,
             &crate::theme::default_theme(),
         );
         let texts: Vec<String> = parts.into_iter().map(|(text, _)| text).collect();
@@ -374,6 +390,7 @@ mod tests {
 
         assert!(header.contains("5H(LEFT)"), "{header}");
         assert!(header.contains("1W(LEFT)"), "{header}");
+        assert!(header.contains("UPDATED"), "{header}");
         assert!(!header.contains("RESET"), "{header}");
     }
 

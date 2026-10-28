@@ -3,7 +3,7 @@
 > Status: Current
 > Read when: Changing terminal setup/cleanup, handovers, panic behavior, paste
 > handling, editable text, cursor movement, wrapping, or truncation.
-> Entry points: `src/runtime.rs`, `src/ui/paste.rs`,
+> Entry points: `src/runtime/terminal.rs`, `src/ui/paste.rs`,
 > `src/ui/components/{input,text}.rs`
 
 ## Non-negotiable invariants
@@ -114,7 +114,7 @@ flags are the source of truth for what cleanup may attempt.
 
 ### Cleanup
 
-Restore in the implementation-defined safe order in `runtime.rs`, attempting
+Restore in the implementation-defined safe order in `runtime/terminal.rs`, attempting
 every recorded mode. A successful step clears its flag; a failed step stays
 recorded for retry. Cleanup must be idempotent.
 
@@ -153,7 +153,7 @@ restored only when s7s regains terminal ownership.
 | Whole-value selection: replace, clear, collapse to either edge | `ui/components/input.rs` tests + `ui/new_session/tests.rs` |
 | Grapheme wrapping/truncation/sanitization | `ui/components/text.rs` tests |
 | Exhaustive paste routing and no-submit behavior | `ui/paste.rs` and feature tests |
-| Partial setup, cleanup ordering, retry, panic-mask restoration | `runtime::terminal_lifecycle_tests` |
+| Partial setup, cleanup ordering, retry, panic-mask restoration | `runtime::terminal::tests` (`src/runtime/terminal/tests.rs`) |
 
 The baseline suite is insufficient for terminal ownership changes. Run the real
 terminal and PTY checks in

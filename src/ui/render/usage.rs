@@ -19,6 +19,7 @@ pub(crate) const MISSING_DIR_LABEL: &str = "Config folder not found";
 /// Logged out and installation error labels. Shared by header usage section and STATUS column.
 pub(crate) const NOT_LOGGED_IN_LABEL: &str = "Not logged in";
 pub(crate) const NOT_INSTALLED_LABEL: &str = "Not installed";
+pub(crate) const UNAVAILABLE_LABEL: &str = "Unavailable";
 
 /// Loading pulse animation sequence: normal -> light -> lighter -> invisible -> lighter -> light -> normal ...
 const PULSE_SEQ: [u8; 6] = [0, 1, 2, 3, 2, 1];
@@ -74,6 +75,10 @@ pub(crate) fn pulse_span(span: Span<'static>, level: u8, th: &Theme) -> Span<'st
 const RESET_W_CURRENT: usize = 8;
 /// Width of weekly reset label: `(2d  6h)` = 8.
 const RESET_W_WEEKLY: usize = 8;
+/// Shown in place of a countdown whose reset time has passed since the value was read.
+const RESET_PASSED_LABEL: &str = "(reset)";
+/// Width of the header's trailing slot: the widest label, `Not logged in` / `Not installed`.
+pub(crate) const TAIL_W: usize = 13;
 
 // Current (5h) countdown format: `(4h 30m)`, `(17h  6m)`, `(   45m)` — minutes are right-aligned to width 2.
 pub(crate) fn reset_label_current(reset: Option<crate::usage::ResetCountdown>) -> String {
@@ -103,108 +108,112 @@ pub(crate) fn reset_label_weekly(reset: Option<crate::usage::ResetCountdown>) ->
     }
 }
 
-/// Spans representing agent usage stats (`current weekly left`).
-/// Under `Loading` states, only renders `Loading...` placeholder.
-/// Otherwise, preserves fixed width segments to keep vertical alignment across rows.
-/// 1 space padding separating current and weekly segments:
+/// Age of a value read at `at_ms`, floored to one unit: `just now` (under a
+/// minute), `5m ago`, `1h ago` (1h 30m included), `3d ago`.
+pub(crate) fn age_label(at_ms: i64, now_ms: i64) -> String {
+    let minutes = now_ms.saturating_sub(at_ms).max(0) / 60_000;
+    match minutes {
+        0 => "just now".to_string(),
+        1..=59 => format!("{minutes}m ago"),
+        60..=1439 => format!("{}h ago", minutes / 60),
+        _ => format!("{}d ago", minutes / 1440),
+    }
+}
+
+/// Fixed-width `{:>3}%` + countdown text of one window, the countdown advanced
+/// from `taken_at` to `now`. The flag is true once the reset time has passed:
+/// the countdown reads `(reset)` and the percentage no longer applies.
+pub(crate) fn window_text(
+    window: crate::usage::UsageWindow,
+    weekly: bool,
+    taken_at: Option<i64>,
+    now: i64,
+) -> (String, bool) {
+    let reset_w = if weekly {
+        RESET_W_WEEKLY
+    } else {
+        RESET_W_CURRENT
+    };
+    let (reset, passed) = match (window.reset, taken_at) {
+        (Some(r), Some(at)) => match r.remaining(at, now) {
+            Some(left) => (Some(left), false),
+            None => (None, true),
+        },
+        (reset, _) => (reset, false),
+    };
+    let label = if passed {
+        RESET_PASSED_LABEL.to_string()
+    } else if weekly {
+        reset_label_weekly(reset)
+    } else {
+        reset_label_current(reset)
+    };
+    (
+        format!("{:>3}%{:<w$}", window.pct_left, label, w = reset_w),
+        passed,
+    )
+}
+
+fn has_zero_window(snapshot: crate::usage::UsageSnapshot) -> bool {
+    snapshot.current.is_some_and(|window| window.pct_left == 0)
+        || snapshot.weekly.is_some_and(|window| window.pct_left == 0)
+}
+
+/// The two usage windows plus ` left`, in fixed-width segments so rows align:
 /// ```text
 ///  72%(4h 30m)  52%(2d  6h) left
 ///   0%(17h  6m)   0%(   17h) left
-/// 100%(4h 15m)  51%(    2h) left
+/// 100%(4h 15m)  51%(reset)  left
 ///  --%           --%         left
 /// ```
-/// Percent values are right-aligned to width 3; "left" label is rendered in soft dim gray.
-pub(crate) fn usage_spans(entry: crate::usage::UsageEntry, th: &Theme) -> Vec<Span<'static>> {
-    use crate::usage::{UsagePhase, UsageSnapshot, UsageWindow};
-
-    // `{:>3}% + reset (fixed width)` segment. Pads with whitespace if reset is absent.
-    let render_window = |window: Option<UsageWindow>, weekly: bool| -> (String, Style) {
+/// Values come from the last success whenever one exists (also while
+/// `Loading`). They are gray after a failure or logout, and all gray when any
+/// window is at 0%; a window whose reset has passed is gray on its own.
+pub(crate) fn usage_value_spans(
+    entry: crate::usage::UsageEntry,
+    now: i64,
+    th: &Theme,
+) -> Vec<Span<'static>> {
+    use crate::usage::UsagePhase;
+    let placeholder = |weekly: bool| {
         let reset_w = if weekly {
             RESET_W_WEEKLY
         } else {
             RESET_W_CURRENT
         };
-        match window {
-            Some(window) => {
-                let color = if window.pct_left >= 50 {
-                    th.usage_high
-                } else {
-                    th.usage_low
-                };
-                let reset = if weekly {
-                    reset_label_weekly(window.reset)
-                } else {
-                    reset_label_current(window.reset)
-                };
-                (
-                    format!("{:>3}%{:<w$}", window.pct_left, reset, w = reset_w),
-                    Style::default().fg(color),
-                )
-            }
-            None => (
-                format!("{:>3}%{}", "--", " ".repeat(reset_w)),
-                Style::default().fg(th.dim),
-            ),
-        }
+        (
+            format!("{:>3}%{}", "--", " ".repeat(reset_w)),
+            Style::default().fg(th.dim),
+        )
     };
-
-    let placeholder = |txt: &str, weekly: bool| -> String {
-        let reset_w = if weekly {
-            RESET_W_WEEKLY
-        } else {
-            RESET_W_CURRENT
-        };
-        format!("{:>3}%{}", txt, " ".repeat(reset_w))
-    };
-
-    // Gray out segments to indicate pending or failed states while preserving values.
-    let gray = |seg: (String, Style)| -> (String, Style) { (seg.0, th.soft_dim()) };
-
-    fn has_zero_window(snapshot: UsageSnapshot) -> bool {
-        snapshot.current.is_some_and(|window| window.pct_left == 0)
-            || snapshot.weekly.is_some_and(|window| window.pct_left == 0)
-    }
-
-    // Under query states (startup or Ctrl+U refreshes): only show "Loading..." to consistently indicate active checking.
-    if entry.phase == UsagePhase::Loading {
-        return vec![Span::styled(LOADING_LABEL, th.soft_dim())];
-    }
-
-    // Label-only states without numeric values (fixed width padding not required here; trailing columns handled separately).
-    match entry.phase {
-        UsagePhase::NotLoggedIn => {
-            return vec![Span::styled(NOT_LOGGED_IN_LABEL, th.soft_dim())];
+    let shows_last = matches!(
+        entry.phase,
+        UsagePhase::Ready | UsagePhase::Loading | UsagePhase::Failed | UsagePhase::NotLoggedIn
+    );
+    let (current, weekly) = match entry.last.filter(|_| shows_last) {
+        Some(snapshot) => {
+            let all_gray = matches!(entry.phase, UsagePhase::Failed | UsagePhase::NotLoggedIn)
+                || has_zero_window(snapshot);
+            let segment = |window: Option<crate::usage::UsageWindow>, weekly: bool| match window {
+                Some(window) => {
+                    let (text, passed) = window_text(window, weekly, entry.last_at, now);
+                    let style = if all_gray || passed {
+                        th.soft_dim()
+                    } else if window.pct_left >= 50 {
+                        Style::default().fg(th.usage_high)
+                    } else {
+                        Style::default().fg(th.usage_low)
+                    };
+                    (text, style)
+                }
+                None => placeholder(weekly),
+            };
+            (
+                segment(snapshot.current, false),
+                segment(snapshot.weekly, true),
+            )
         }
-        UsagePhase::NotInstalled => {
-            return vec![Span::styled(NOT_INSTALLED_LABEL, th.soft_dim())];
-        }
-        UsagePhase::MissingDir => {
-            return vec![Span::styled(
-                MISSING_DIR_LABEL,
-                Style::default().fg(th.error),
-            )];
-        }
-        _ => {}
-    }
-
-    let (current, weekly): ((String, Style), (String, Style)) = match (entry.phase, entry.last) {
-        // Failed state: falls back to dim gray rendering of the last cached snapshot if available.
-        (UsagePhase::Failed, Some(snapshot)) => (
-            gray(render_window(snapshot.current, false)),
-            gray(render_window(snapshot.weekly, true)),
-        ),
-        (UsagePhase::Ready, Some(snapshot)) if has_zero_window(snapshot) => (
-            gray(render_window(snapshot.current, false)),
-            gray(render_window(snapshot.weekly, true)),
-        ),
-        (UsagePhase::Ready, Some(snapshot)) => (
-            render_window(snapshot.current, false),
-            render_window(snapshot.weekly, true),
-        ),
-        _ => (
-            (placeholder("--", false), Style::default().fg(th.dim)),
-            (placeholder("--", true), Style::default().fg(th.dim)),
-        ),
+        None => (placeholder(false), placeholder(true)),
     };
     vec![
         Span::styled(current.0, current.1),
@@ -212,4 +221,56 @@ pub(crate) fn usage_spans(entry: crate::usage::UsageEntry, th: &Theme) -> Vec<Sp
         Span::styled(weekly.0, weekly.1),
         Span::styled(" left", th.soft_dim()),
     ]
+}
+
+/// The header's trailing slot: how old the value is (`2h ago`), why there is
+/// none or it is stale (`Error`, `Not logged in`, ...), or `Loading...` for a
+/// first query. While `Loading` with a value, the caller pulses the age.
+pub(crate) fn usage_tail_span(
+    entry: crate::usage::UsageEntry,
+    now: i64,
+    th: &Theme,
+) -> Span<'static> {
+    use crate::usage::UsagePhase;
+    let age = || {
+        entry
+            .last_at
+            .map(|at| age_label(at, now))
+            .unwrap_or_default()
+    };
+    match entry.phase {
+        UsagePhase::Loading if entry.last_at.is_some() => Span::styled(age(), th.soft_dim()),
+        UsagePhase::Loading => Span::styled(LOADING_LABEL, th.soft_dim()),
+        UsagePhase::Ready => Span::styled(age(), th.soft_dim()),
+        UsagePhase::Failed | UsagePhase::MissingDir => {
+            Span::styled("Error", Style::default().fg(th.error))
+        }
+        UsagePhase::NotLoggedIn => {
+            Span::styled(NOT_LOGGED_IN_LABEL, Style::default().fg(th.warning))
+        }
+        UsagePhase::NotInstalled => Span::styled(NOT_INSTALLED_LABEL, th.soft_dim()),
+        UsagePhase::Unavailable => Span::styled(UNAVAILABLE_LABEL, th.soft_dim()),
+        UsagePhase::Idle => Span::raw(""),
+    }
+}
+
+/// Compact usage for the New Session profile combo and list: the value spans,
+/// or a single label where no value exists (`Loading...`, `Not logged in`,
+/// `Not installed`, `Config folder not found`). No age is shown there.
+pub(crate) fn usage_spans(entry: crate::usage::UsageEntry, th: &Theme) -> Vec<Span<'static>> {
+    use crate::usage::UsagePhase;
+    let label = match (entry.phase, entry.last) {
+        (UsagePhase::Loading, None) => Some(Span::styled(LOADING_LABEL, th.soft_dim())),
+        (UsagePhase::NotLoggedIn, None) => Some(Span::styled(NOT_LOGGED_IN_LABEL, th.soft_dim())),
+        (UsagePhase::NotInstalled, _) => Some(Span::styled(NOT_INSTALLED_LABEL, th.soft_dim())),
+        (UsagePhase::MissingDir, _) => Some(Span::styled(
+            MISSING_DIR_LABEL,
+            Style::default().fg(th.error),
+        )),
+        _ => None,
+    };
+    match label {
+        Some(span) => vec![span],
+        None => usage_value_spans(entry, crate::usage::now_ms(), th),
+    }
 }

@@ -195,6 +195,11 @@ pub(crate) fn bookmarks_path() -> PathBuf {
     config_base_dir().join("bookmarks.json")
 }
 
+/// Usage results shared by every running instance (`crate::usage::shared`).
+pub(crate) fn usage_cache_path() -> PathBuf {
+    config_base_dir().join("usage.json")
+}
+
 /// User-defined session scopes listed in the workspace pane (`crate::workspaces`).
 /// Unrelated to `session_workspaces_path`, which records captured session cwds.
 pub(crate) fn workspaces_path() -> PathBuf {

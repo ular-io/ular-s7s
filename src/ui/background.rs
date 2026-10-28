@@ -12,7 +12,7 @@ use crate::full_search::{self, Query, SearchResult};
 use crate::model::Session;
 use crate::models::{self, ModelsResult};
 use crate::profile::Profile;
-use crate::usage::{self, UsageResult};
+use crate::usage::{self, Fetched, Origin};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -23,9 +23,12 @@ type FullSearchResult = SearchResult<super::refresh::SessionKey>;
 /// Coordination state for background probes and session-refresh jobs.
 #[derive(Default)]
 pub(crate) struct BackgroundState {
-    /// Receivers for active usage query results (removed on completion). Items are (profile_id, UsageResult).
+    /// Receivers for active usage query results (removed on completion). Items are (profile_id, Fetched).
     /// Maintained as a vector to allow concurrent runs of full updates (Ctrl+U) and incremental updates (profile add/edit).
-    usage_rxs: Vec<Receiver<(String, usage::UsageResult)>>,
+    usage_rxs: Vec<Receiver<(String, Fetched)>>,
+    /// Whether any result since usage queries last went idle ran (or waited on)
+    /// a CLI, rather than reusing a value under a minute old.
+    usage_queried: bool,
     /// One active session scan, including a completed result awaiting a safe UI mode.
     refresh_rx: Option<Receiver<Result<super::refresh::RefreshResult, String>>>,
     /// Receivers for active model query results (removed on completion).
@@ -97,15 +100,26 @@ impl BackgroundState {
         self.refresh_rx = Some(rx);
     }
 
-    /// Spawns a usage query for `targets` and retains its receiver.
-    pub(crate) fn spawn_usage(&mut self, targets: Vec<Profile>) {
-        self.usage_rxs.push(usage::spawn_fetch(targets));
+    /// Spawns a usage query for `targets` through the shared cache at `store`
+    /// and retains its receiver.
+    pub(crate) fn spawn_usage(&mut self, targets: Vec<Profile>, store: std::path::PathBuf) {
+        if self.usage_rxs.is_empty() {
+            self.usage_queried = false;
+        }
+        self.usage_rxs
+            .push(usage::spawn_fetch_shared(targets, store));
+    }
+
+    /// Whether the usage results since queries last went idle included a real
+    /// (or awaited) CLI query; false when every value was reused.
+    pub(crate) fn usage_queried(&self) -> bool {
+        self.usage_queried
     }
 
     /// Drains all pending usage results, dropping receivers whose channel has
     /// disconnected (query fully complete).
-    pub(crate) fn drain_usage(&mut self) -> Vec<(String, UsageResult)> {
-        let mut results: Vec<(String, UsageResult)> = Vec::new();
+    pub(crate) fn drain_usage(&mut self) -> Vec<(String, Fetched)> {
+        let mut results: Vec<(String, Fetched)> = Vec::new();
         // Iterate receivers to collect incoming messages; remove channels that are fully completed (Disconnected).
         self.usage_rxs.retain(|rx| loop {
             match rx.try_recv() {
@@ -114,6 +128,7 @@ impl BackgroundState {
                 Err(TryRecvError::Disconnected) => break false,
             }
         });
+        self.usage_queried |= results.iter().any(|(_, f)| f.origin != Origin::Reused);
         results
     }
 
@@ -270,8 +285,16 @@ mod tests {
             app.refresh_all = phase;
             app.status_msg = Some("updating sessions and usage…".into());
             let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(("profile".into(), crate::usage::UsageResult::Unavailable))
-                .unwrap();
+            let entry = crate::usage::SharedEntry {
+                path: "/tmp".into(),
+                success: None,
+                attempt: None,
+            };
+            let fetched = crate::usage::Fetched {
+                entry,
+                origin: crate::usage::Origin::Probed,
+            };
+            tx.send(("profile".into(), fetched)).unwrap();
             drop(tx);
             app.background.usage_rxs.push(rx);
             assert!(app.poll_usage());

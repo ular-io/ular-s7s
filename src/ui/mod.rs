@@ -22,6 +22,7 @@ pub(crate) mod reload;
 pub mod render;
 mod screen;
 pub mod session;
+mod shared_cache;
 pub mod workspace;
 
 pub(crate) use components::input::{
@@ -213,6 +214,8 @@ pub struct App {
     /// the model-loading dedup guard). The result caches above stay on `App`;
     /// this owns only the job plumbing (`ui/background.rs`).
     pub(crate) background: BackgroundState,
+    /// Shared `usage.json` / `models.json` written by other running instances.
+    pub(crate) shared_watch: shared_cache::SharedWatch,
     /// Full-content search mode (`ui/full_search/`); `None` while closed.
     pub(crate) full_search: Option<full_search::state::FullSearchState>,
 }
@@ -334,6 +337,12 @@ impl App {
                 ModelCatalog::load()
             },
             background: BackgroundState::default(),
+            shared_watch: shared_cache::SharedWatch::new((!cfg!(test)).then(|| {
+                (
+                    crate::config::usage_cache_path(),
+                    crate::models::models_file_path(),
+                )
+            })),
             full_search: None,
         };
         app.recompute();
@@ -392,8 +401,14 @@ impl App {
         let sessions_updated = self.poll_refresh_scan();
         let status_updated = self.poll_agent_status();
         let search_updated = self.poll_full_search();
+        let shared_updated = self.poll_shared_caches();
         self.tick_agent_status();
-        usage_updated || models_updated || sessions_updated || status_updated || search_updated
+        usage_updated
+            || models_updated
+            || sessions_updated
+            || status_updated
+            || search_updated
+            || shared_updated
     }
 
     fn rebuild_all_folders(&mut self) {

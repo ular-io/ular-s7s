@@ -172,6 +172,9 @@ impl App {
     pub(crate) fn refresh_status_scanned(&self) -> String {
         let suffix = if self.usage_in_flight() {
             " · updating usage…"
+        } else if !self.background.usage_queried() {
+            // Every profile reused a result under a minute old.
+            " · usage is up to date"
         } else {
             ""
         };

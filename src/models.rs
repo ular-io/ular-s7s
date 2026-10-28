@@ -36,6 +36,7 @@ mod claude;
 mod codex;
 
 use agy::fetch_agy;
+pub(crate) use catalog::models_file_path;
 pub use catalog::ModelCatalog;
 use claude::fetch_claude;
 use codex::fetch_codex;

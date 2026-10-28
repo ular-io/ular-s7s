@@ -2,9 +2,9 @@
 
 > Status: Current and version-sensitive
 > Read when: Changing usage probes, parsing, cache state, or rendering.
-> Entry points: `src/usage.rs`, `src/probe/`, `src/ui/render/usage.rs`
+> Entry points: `src/usage.rs`, `src/usage/{parse,shared}.rs`, `src/probe/`, `src/ui/shared_cache.rs`, `src/ui/render/usage.rs`
 
-The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query/parsing) and `src/ui/render/usage.rs::usage_spans` (formatting), on top of the neutral PTY/process driver in `src/probe/` (shared with the model list query — the driver itself knows nothing about usage).
+The feature to display remaining usage per profile (5h/weekly) in the header. Implemented in `src/usage.rs` (query), `src/usage/parse.rs` (screen parsing), `src/usage/shared.rs` (the cache shared by running instances), and `src/ui/render/usage.rs` (`usage_value_spans` / `usage_tail_span` for the header, `usage_spans` for the New Session dialog), on top of the neutral PTY/process driver in `src/probe/` (shared with the model list query — the driver itself knows nothing about usage).
 
 ## Mechanism
 
@@ -17,10 +17,24 @@ The feature to display remaining usage per profile (5h/weekly) in the header. Im
 - On app startup and upon `ctrl+u`, **all profiles are queried in parallel**. `ctrl+u` is two-phase: the usage/model probes start and one preparing frame (`Loading` pulse + "updating sessions and usage…" status) renders **before** the synchronous session rescan runs, so the loading state is visible while the scan blocks the event loop; repeat `ctrl+u` presses during a cycle merge into it (see `docs/architecture.md`, `ui/effect.rs`). Scenarios like missing config folders (`MissingDir`) or missing means to query (`Unavailable` — Antigravity cannot be queried for additional path profiles as env injection is impossible) are considered part of the query and left as phases. **There is no automatic detection at render time** — folder existence is rechecked only upon explicit refreshes, and the screen maintains its last determination even if folders appear or disappear between refreshes.
 - When saving profile additions/edits, an **incremental query of only the saved profile** is run instead of all profiles (`App::start_usage_fetch_for`). Since PTY queries are high-cost operations taking several seconds per profile, the latest values of existing profiles are not reread. Even if a full query is in progress, incremental queries start immediately on a separate channel, and are skipped if the same profile is already Loading.
 - For profiles not at the default path, `CLAUDE_CONFIG_DIR`/`CODEX_HOME` are injected into the PTY env to read the usage for that subscription. **They are not injected for the default path** — explicitly doing so triggers a re-login screen, failing the query ([Details](profiles.md)).
-- State is managed as `UsageEntry { phase, last }`. On failure (`Failed`), `last` (the last successful snapshot) is maintained and displayed in gray so the value isn't lost.
-- While refreshing (`Loading`), regardless of the previous determination (including logged out/uninstalled/missing folder), `Loading...` is displayed **consistently across all profiles** in both the header usage slot and the profile table STATUS column (regardless of whether a previous value exists). The profile table USAGE column retains the previous value in gray. The query thread ensures a **minimum of 500ms** (`usage.rs::MIN_LOADING`) even for instantaneous determinations like missing folders, so the blink is perceptible — providing feedback that "a check occurred" even if the result is the same. (The past sticky blocked display — keeping the blocked message during requeries — has been removed and replaced by this consistent display.)
+- State is managed as `UsageEntry { phase, last, last_at }`; `last_at` (Unix ms, wall clock) is when `last` was read from the CLI and is set together with it. On failure (`Failed`) and on logout (`NotLoggedIn`), `last` is kept and displayed in gray so the value isn't lost — Claude logs out often (Claude Code's own token refresh fails; `~/.claude/daemon.log` `proactive refresh failed`), and a shared logout would otherwise blank every window. Missing folder / not installed / unavailable never show a value.
+- While refreshing (`Loading`), a profile with a last value keeps showing it and only its **age pulses** in the header tail slot; a profile without one shows `--%` values and a pulsing `Loading...` tail. The profile table STATUS column shows `Loading...` and the USAGE column keeps the previous value in gray. The query thread ensures a **minimum of 500ms** (`usage.rs::MIN_LOADING`) even for instantaneous determinations like missing folders, so the pulse is perceptible — providing feedback that "a check occurred" even if the result is the same.
 - New profile config folders that have not completed login/trust will fail with `untrusted folder (trust prompt)`. Running manually once with that config to approve resolves this.
-- The result is a snapshot, and the countdown does not decrease in real-time while the TUI is open.
+- Reset countdowns are stored as read and **counted down from `last_at`** at render time (`ResetCountdown::remaining`, rounded up to the minute). Once a reset time passes without a new query, that window shows `(reset)` and its percentage turns gray: the stored percentage no longer applies. The event loop redraws once a minute (`ui/shared_cache.rs`) so ages and countdowns advance while idle.
+
+## Sharing results across running instances
+
+Several s7s windows usually run at once. A query result one instance obtains is shown by every other instance within about a second, and instances avoid running the same CLI query twice (`src/usage/shared.rs`, `src/ui/shared_cache.rs`).
+
+- **Shared file**: `~/.config/s7s/usage.json` (`version` 1), per profile id: `path` (config root the values belong to), `success` (`at_ms` + snapshot), and `attempt` (`at_ms` + outcome: `ready`, `failed`, `not_logged_in`, `not_installed`, `missing_dir`, `unavailable`). A failed attempt never removes `success`. An entry whose `path` differs from the profile's current folder is ignored. Writes merge one profile under `store_lock::with_store_lock` and replace the file atomically. A corrupt file is replaced; a file with a newer `version` is never overwritten.
+- **Per-profile probe lock**: `~/.config/s7s/.usage-<profile id>.lock`, taken with non-blocking `flock` (`store_lock::try_lock`). The kernel drops it when the holder exits, so a crash leaves no stale lock.
+- **Query flow** (every query: startup, `ctrl+u`, profile save, return from login — `usage::spawn_fetch_shared`):
+  1. Lock held by another instance: wait (poll every 200ms, up to 3 minutes). If the holder recorded an attempt after this request, use it — a failure included, so a failing CLI is not retried once per waiting window. Otherwise (the holder only reused a value, or exited mid-query) continue holding the lock. Past 3 minutes the profile shows as failed.
+  2. A stored success no older than 60s (`REUSE_MS`), whose latest attempt also succeeded, is used without running the CLI (`Origin::Reused`). Failures and logouts are never reused, so after `claude auth login` a `ctrl+u` queries at once.
+  3. Otherwise run the CLI under the lock, store the result, then release the lock.
+- **Other instances** check `usage.json` (and `models.json`) modification times once a second and re-read a file only when it changed (`App::poll_shared_caches`). An entry that is `Loading` in this instance keeps its phase and only takes a newer value; otherwise phase and value follow the file. The first check right after startup shows the stored values while the startup query is still running.
+- **Status message**: when every profile of a query reused a value, the status reads `usage is up to date` (or `session update complete · … · usage is up to date` after `ctrl+u`) instead of `usage update complete`.
+- `--usage-probe` always runs the CLIs and never reads or writes the shared file.
 
 ## Screen Format per Agent (based on actual measurements)
 
@@ -44,27 +58,33 @@ Notes:
 
 ## Display Format
 
-Fixed-width columns are maintained across all states to align vertically between rows:
+Fixed-width columns are maintained across all states to align vertically between rows. Each row ends with a tail slot (`TAIL_W` = 13, the width of `Not logged in`):
 
 ```
-<1> Claude        72%(4h 30m)  52%(2d 16h) left
-<2> Antigravity    0%(17h  6m)   0%(   17h) left
-<3> Codex         95%(4h 15m)  51%(    2h) left
+<1> Claude        72%(4h 30m)  52%(2d 16h) left  just now
+<2> Antigravity    0%(17h  6m)   0%(   17h) left  2h ago
+<3> Codex         95%(4h 15m)  51%(reset)  left  Error
+<4> CDX-Share     --%          --%         left  Not logged in
 ```
 
-- % is right-aligned with width 3. Blue for >=50%, Red for <50%. Loading is a spinner (`✽✻✶%`), failure is `--%`.
+- Tail slot by state: success → age (`just now` under a minute, then `5m ago`, `1h ago` — floored, 1h 30m reads `1h ago` — and `3d ago`; always shown, dim); `Loading` with a value → the age, pulsing; `Loading` without one → `Loading...`, pulsing; `Failed` and missing folder → `Error` (red); logged out → `Not logged in` (warning color); not installed → `Not installed` (dim); unavailable (extra Antigravity profile) → `Unavailable` (dim). The header no longer prints `Config folder not found`; the profile table USAGE cell still does.
+- The New Session dialog keeps its compact form (`usage_spans`): values without the tail slot, or a single label where no value exists.
+
+- % is right-aligned with width 3. Blue for >=50%, Red for <50%. No value is `--%`.
 - In the header, if either current (5h) or weekly is `0%`, both usage segments
   use the theme's faint-text treatment, matching `left`.
 - current(5h) countdown: `(4h 30m)` — minutes right-aligned with width 2.
 - weekly countdown: minutes omitted, `(2d 16h)` / `(   17h)`; under one hour it falls back to minutes, `(   45m)`, instead of `(    0h)`.
 - The profile screen table shows two remaining-usage columns, `5H(LEFT)` and
   `1W(LEFT)`. Each combines the percentage and reset countdown in the same
-  format as the header profile list: `72%(4h 30m)` / `52%(2d 16h)`.
+  format as the header profile list: `72%(4h 30m)` / `52%(2d 16h)`. The
+  following `UPDATED` column (width 8) shows the value's age, or `-` before
+  any success, including for inactive profiles that the header omits.
 - On the profile screen, if either current(5h) or weekly is `0%` based on the latest snapshot, the entire row is displayed in the same light gray as the `left` text.
-- **Profiles determined to have missing config folders** (`UsagePhase::MissingDir` — deleted, renamed, etc.) display `Config folder not found` (Red, `MISSING_DIR_LABEL`) instead of usage — displayed in the usage slot in the header, and in the USAGE cell (width 26) of the profile table, while maintaining `Error` in the STATUS cell so they read side-by-side (ratatui Table cells cannot overflow into adjacent columns, so the adjacent USAGE cell is used instead of STATUS). If inactive, it is submerged with a soft dim. The determination is based on query time; `is_dir()` checks are not made at render time.
-- While usage is refreshing (`Loading`), only the `Loading...` text (header
-  usage slot, profile table STATUS cell) blinks with a fade pulse. The rest of
-  the row stays stable. Each step is 200ms against the 100ms runtime polling
+- **Profiles determined to have missing config folders** (`UsagePhase::MissingDir` — deleted, renamed, etc.) display `Error` in the header tail slot and `Config folder not found` (Red, `MISSING_DIR_LABEL`) in the USAGE cell (width 26) of the profile table, while maintaining `Error` in the STATUS cell so they read side-by-side (ratatui Table cells cannot overflow into adjacent columns, so the adjacent USAGE cell is used instead of STATUS). If inactive, it is submerged with a soft dim. The determination is based on query time; `is_dir()` checks are not made at render time.
+- While usage is refreshing (`Loading`), only the header tail slot (age or
+  `Loading...`) and the profile table STATUS cell blink with a fade pulse. The
+  rest of the row stays stable. Each step is 200ms against the 100ms runtime polling
   cycle. The invisible step replaces content with equal-width spaces instead of
   relying on terminal conceal support. Implementation is
   `PULSE_SEQ`/`pulse_span` in `src/ui/render/usage.rs`.
@@ -84,5 +104,6 @@ mkdir -p /tmp/dump && ULAR_USAGE_DUMP=/tmp/dump ./target/debug/s7s --usage-probe
 ```
 
 - Visually check if the countdowns in the probe results match the actual CLI screens.
+- Sharing (manual, release build): open two s7s windows. `ctrl+u` in one; the other's ages change to `just now` within about a second without input, and only one `claude`/`codex`/`agy` per profile runs (`ps`). `ctrl+u` again within a minute reports `usage is up to date` without starting a CLI. With `claude agents` (or `ps -axo stat,ppid,command | awk '$1 ~ /E/'`), confirm no probe process outlives its query.
 - If the absolute/relative notation is ambiguous, **capture twice a few minutes apart**: if the numbers stay the same, it's absolute time; if they decrease, it's a countdown.
-- Fixtures in unit tests (`src/usage.rs` `tests`) use actual screen captures, and time-dependent logic is verified by injecting a fixed `now`.
+- Fixtures in unit tests (`src/usage/parse_tests.rs`) use actual screen captures, and time-dependent logic is verified by injecting a fixed `now`.

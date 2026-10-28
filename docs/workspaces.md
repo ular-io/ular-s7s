@@ -230,7 +230,9 @@ Start Study `Deck ▾` list. While open it takes every key
 
 - The in-memory list changes only by this instance's own edits, at startup,
   and on `ctrl+u` (`App::reload_shared_stores`, start of a new refresh cycle).
-  There is no file watching or polling.
+  These stores are not watched or polled. (Only the probe caches `usage.json`
+  and `models.json` are re-read on change, once a second — see
+  [usage-display.md](./usage-display.md#sharing-results-across-running-instances).)
 - On reload, the open workspace stays this instance's own: the file's
   `active` (another instance's last scope) is never applied. If the open
   workspace was deleted elsewhere, "All" opens. An open `[NO WORKSPACE]`

@@ -349,8 +349,8 @@ fn run_loop(session: &mut TerminalSession, app: &mut App) -> Result<()> {
             let timeout = if app.background_in_flight() {
                 Duration::from_millis(100)
             } else {
-                // Wake for the periodic live-session status sweep.
-                app.agent_status_wait().max(Duration::from_millis(100))
+                // Wake for the periodic jobs: live-session sweep, shared-file check.
+                app.idle_wait().max(Duration::from_millis(100))
             };
             if event::poll(timeout)? {
                 dispatch_event(app, event::read()?);

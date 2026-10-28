@@ -1,6 +1,7 @@
 //! Cross-process exclusion for app-owned JSON stores that several running s7s
 //! instances read-modify-write (`profiles.json`, `workspaces.json`,
-//! `session_workspaces.json`).
+//! `session_workspaces.json`, `usage.json`, `models.json`), plus the
+//! non-blocking per-profile probe lock (`try_lock`).
 //!
 //! A writer holds the lock from re-reading the file until its atomic replace
 //! lands, so two instances saving at once cannot both start from the same old
@@ -44,6 +45,44 @@ pub(crate) fn with_store_lock<T>(store: &Path, f: impl FnOnce() -> Result<T>) ->
     let result = f();
     drop(file);
     result
+}
+
+/// An exclusive advisory lock held for as long as the value lives.
+pub(crate) struct LockGuard {
+    _file: fs::File,
+}
+
+/// Takes the exclusive lock on `lock_path` without blocking: `Ok(None)` means
+/// another holder (another s7s instance, or another thread here) has it.
+/// The kernel drops the lock when the holder exits, so a crash never leaves a
+/// stale lock behind.
+pub(crate) fn try_lock(lock_path: &Path) -> Result<Option<LockGuard>> {
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(lock_path)
+        .with_context(|| format!("open {}", lock_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: `file` owns a valid descriptor for the duration of the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            return Err(err).with_context(|| format!("lock {}", lock_path.display()));
+        }
+    }
+    Ok(Some(LockGuard { _file: file }))
 }
 
 /// Writes `data` to a fresh `0600` temp file beside `path` and renames it over
@@ -106,5 +145,15 @@ mod tests {
             t.join().unwrap();
         }
         assert_eq!(fs::read_to_string(&path).unwrap(), "160");
+    }
+
+    #[test]
+    fn try_lock_reports_a_held_lock_and_frees_it_on_drop() {
+        let root = crate::ui::test_support::TempBookmarkStore::new();
+        let lock = root.path.with_file_name(".probe.lock");
+        let held = try_lock(&lock).unwrap().expect("first holder");
+        assert!(try_lock(&lock).unwrap().is_none());
+        drop(held);
+        assert!(try_lock(&lock).unwrap().is_some());
     }
 }

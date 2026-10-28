@@ -189,3 +189,40 @@ fn fallback_models_only_for_claude() {
     assert!(fallback_models(Agent::Codex).is_empty());
     assert!(fallback_models(Agent::Antigravity).is_empty());
 }
+
+#[test]
+fn saves_from_two_instances_keep_each_others_profiles() {
+    let dir = std::env::temp_dir().join(format!("s7s-models-merge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("models.json");
+    let models = |agent: Agent| ProfileModels {
+        agent,
+        cli_version: Some("1".into()),
+        models: Vec::new(),
+        default_model: None,
+        last_selected: None,
+    };
+
+    let mut a = ModelCatalog::load_from(&path);
+    let mut b = ModelCatalog::load_from(&path);
+    a.insert("claude".into(), models(Agent::Claude));
+    a.save_to(&path).unwrap();
+    // `b` never saw `claude`; its save must not drop it.
+    b.insert("codex".into(), models(Agent::Codex));
+    b.save_to(&path).unwrap();
+    let merged = ModelCatalog::load_from(&path);
+    assert!(merged.entries.contains_key("claude") && merged.entries.contains_key("codex"));
+    // The saving instance adopts the merged file.
+    assert!(b.entries.contains_key("claude"));
+
+    // A removal reaches the file; an unrelated reload keeps unsaved changes.
+    a.reload_from(&path);
+    a.remove("codex");
+    a.insert("agy".into(), models(Agent::Antigravity));
+    a.reload_from(&path);
+    assert!(!a.entries.contains_key("codex") && a.entries.contains_key("agy"));
+    a.save_to(&path).unwrap();
+    let saved = ModelCatalog::load_from(&path);
+    assert!(!saved.entries.contains_key("codex") && saved.entries.contains_key("agy"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -27,13 +27,18 @@ use crate::probe::pty::{drive_screen, DriveOutcome};
 use crate::probe::{claude_logged_in, CLAUDE_READY_MARKERS};
 use crate::profile::Profile;
 use parse::{parse_agy, parse_claude, parse_codex};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 mod parse;
+mod shared;
+
+pub(crate) use shared::{entry_for, load as load_shared};
+pub use shared::{now_ms, Fetched, Origin, Outcome, SharedEntry};
 
 /// Phase of usage query for a single profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,13 +83,15 @@ pub enum UsageResult {
 /// `last` preserves the last successful snapshot during Loading/Failed phases,
 /// allowing the app to keep displaying previous values while updating.
 ///
-/// The state changes only as a result of explicit updates (app startup, Ctrl+U, profile save).
-/// During updates, it always displays as Loading regardless of the prior state
-/// so users consistently perceive that a query check is taking place.
+/// The state changes on this instance's queries (app startup, Ctrl+U, profile
+/// save) and when another instance stores a result in the shared `usage.json`.
+/// `last_at` (Unix ms) is when `last` was read from the CLI; the two are set
+/// together, and reset countdowns in `last` count from `last_at`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsageEntry {
     pub phase: UsagePhase,
     pub last: Option<UsageSnapshot>,
+    pub last_at: Option<i64>,
 }
 
 impl UsageEntry {
@@ -92,30 +99,84 @@ impl UsageEntry {
         UsageEntry {
             phase: UsagePhase::Idle,
             last: None,
+            last_at: None,
         }
+    }
+
+    /// Takes the phase and last success from a shared entry. A `Loading` entry
+    /// keeps its phase (its own query is still running) and only picks up a
+    /// newer value. Returns whether anything changed.
+    pub fn apply(&mut self, shared: &SharedEntry) -> bool {
+        let before = *self;
+        match shared.success {
+            Some(s) if self.phase != UsagePhase::Loading || self.last_at < Some(s.at_ms) => {
+                self.last = Some(s.snapshot);
+                self.last_at = Some(s.at_ms);
+            }
+            None if self.phase != UsagePhase::Loading => {
+                self.last = None;
+                self.last_at = None;
+            }
+            _ => {}
+        }
+        if self.phase != UsagePhase::Loading {
+            if let Some(attempt) = shared.attempt {
+                self.phase = match attempt.outcome {
+                    Outcome::Ready => UsagePhase::Ready,
+                    Outcome::Failed => UsagePhase::Failed,
+                    Outcome::NotLoggedIn => UsagePhase::NotLoggedIn,
+                    Outcome::NotInstalled => UsagePhase::NotInstalled,
+                    Outcome::MissingDir => UsagePhase::MissingDir,
+                    Outcome::Unavailable => UsagePhase::Unavailable,
+                };
+            }
+        }
+        *self != before
     }
 }
 
 /// Remaining usage in an individual window (e.g., 5h, weekly).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct UsageWindow {
     pub pct_left: u8,
     pub reset: Option<ResetCountdown>,
 }
 
 /// Two usage windows displayed in the header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct UsageSnapshot {
     pub current: Option<UsageWindow>,
     pub weekly: Option<UsageWindow>,
 }
 
 /// Reset countdown normalized into simple day/hour/minute units.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetCountdown {
     pub days: u16,
     pub hours: u8,
     pub minutes: u8,
+}
+
+impl ResetCountdown {
+    fn total_minutes(self) -> i64 {
+        self.days as i64 * 24 * 60 + self.hours as i64 * 60 + self.minutes as i64
+    }
+
+    fn from_minutes(total: i64) -> Self {
+        ResetCountdown {
+            days: (total / (24 * 60)) as u16,
+            hours: (total / 60 % 24) as u8,
+            minutes: (total % 60) as u8,
+        }
+    }
+
+    /// This countdown, read at `taken_at_ms`, as seen at `now_ms`: rounded up
+    /// to the minute so a fresh value reads as captured. `None` once the reset
+    /// time has passed (the stored percentage no longer applies).
+    pub fn remaining(self, taken_at_ms: i64, now_ms: i64) -> Option<ResetCountdown> {
+        let left_ms = self.total_minutes() * 60_000 - now_ms.saturating_sub(taken_at_ms).max(0);
+        (left_ms > 0).then(|| Self::from_minutes((left_ms + 59_999) / 60_000))
+    }
 }
 
 /// Usage states per profile (key = profile ID).
@@ -193,7 +254,29 @@ pub fn spawn_fetch(profiles: Vec<Profile>) -> Receiver<(String, UsageResult)> {
     rx
 }
 
-/// Debug option (`--usage-probe`): Queries all profiles in parallel and prints the results.
+/// Starts parallel queries through the shared cache at `store` (see `shared`)
+/// and returns a receiver for (profile_id, result). Like [`spawn_fetch`], each
+/// result is held for at least `MIN_LOADING`.
+pub fn spawn_fetch_shared(profiles: Vec<Profile>, store: PathBuf) -> Receiver<(String, Fetched)> {
+    let (tx, rx) = mpsc::channel();
+    let requested = now_ms();
+    for profile in profiles {
+        let tx = tx.clone();
+        let store = store.clone();
+        thread::spawn(move || {
+            let started = Instant::now();
+            let res = shared::fetch_shared(&profile, &store, requested);
+            if let Some(rem) = MIN_LOADING.checked_sub(started.elapsed()) {
+                thread::sleep(rem);
+            }
+            let _ = tx.send((profile.id, res));
+        });
+    }
+    rx
+}
+
+/// Debug option (`--usage-probe`): Queries all profiles in parallel and prints
+/// the results. Always runs the CLIs and never touches the shared cache.
 pub fn probe() {
     let store = crate::profile::ProfileStore::load();
     let targets: Vec<Profile> = store.profiles.to_vec();
