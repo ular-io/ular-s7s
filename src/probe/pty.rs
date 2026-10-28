@@ -113,6 +113,10 @@ pub(crate) fn drive_screen(
     let master = pty.master;
 
     // Read PTY output in the background and pass to channel (bypassing blocking read).
+    // Keep draining after the receiver is gone, until the slave side closes: a CLI
+    // whose exit-time output nobody reads never finishes exiting on macOS (stuck in
+    // state `E`), and the cleanup thread's `child.wait()` below then blocks forever
+    // while holding the master — leaking one process, thread, and PTY per probe.
     let mut reader = master
         .try_clone_reader()
         .map_err(|e| anyhow!("PTY reader failed: {e}"))?;
@@ -120,9 +124,10 @@ pub(crate) fn drive_screen(
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
         while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 || btx.send(buf[..n].to_vec()).is_err() {
+            if n == 0 {
                 break;
             }
+            let _ = btx.send(buf[..n].to_vec());
         }
     });
     let mut writer = master

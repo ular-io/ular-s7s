@@ -237,3 +237,59 @@ fn parse_failure_returns_none() {
     assert_eq!(parse_codex_at("", now()), None);
     assert_eq!(parse_agy_at("plain text", now()), None);
 }
+
+/// agy 1.4.9 `/usage` (2026-10-28): three groups, the new Argon bucket last.
+const AGY_1_4_9_SCREEN: &str = "\
+GEMINI MODELS
+  Models within this group: Gemini Flash, Gemini Pro
+  Weekly Limit Remaining
+    [██████████████████████████████████████████░░░░░░░░] 84.85%
+    Refreshes in 61h 36m
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+  Weekly Limit Remaining
+    [██████████████████████████████████████░░░░░░░░░░░░] 76.47%
+    Refreshes in 47h 0m
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+GEMINI 4 ARGON
+  For paid Pro plans, Argon quota is separate.
+  Gemini 4 Argon Weekly Limit
+    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0.00%
+    Refreshes in 42h 35m
+  ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close
+";
+
+#[test]
+fn agy_1_4_9_groups_follow_the_active_model() {
+    let gemini = format!("{AGY_1_4_9_SCREEN}   Gemini 3.8 Flash · high\n");
+    let snap = parse_agy_at(&gemini, now()).unwrap();
+    assert_eq!(
+        snap.current.map(|w| (w.pct_left, w.reset)),
+        Some((100, None))
+    );
+    assert_eq!(
+        snap.weekly.map(|w| (w.pct_left, w.reset)),
+        Some((85, cd(2, 13, 36)))
+    );
+
+    let claude = format!("{AGY_1_4_9_SCREEN}   Claude Opus 5.5 · high\n");
+    let snap = parse_agy_at(&claude, now()).unwrap();
+    assert_eq!(
+        snap.weekly.map(|w| (w.pct_left, w.reset)),
+        Some((76, cd(1, 23, 0)))
+    );
+
+    // The Argon bucket has no five-hour limit; the Gemini group's must not leak in.
+    let argon = format!("{AGY_1_4_9_SCREEN}   Gemini 4 Argon · high\n");
+    let snap = parse_agy_at(&argon, now()).unwrap();
+    assert_eq!(snap.current, None);
+    assert_eq!(
+        snap.weekly.map(|w| (w.pct_left, w.reset)),
+        Some((0, cd(1, 18, 35)))
+    );
+}

@@ -153,6 +153,62 @@ fn parse_claude_2_1_284_picker_with_rows_below_the_fold() {
 }
 
 #[test]
+fn parse_claude_2_1_312_picker_with_haiku_5_5() {
+    // 2.1.312 added `Haiku 5.5`; without its ID the whole list failed to parse.
+    let first = "\
+  Select model
+
+    1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+    2.  Opus 5.5               For complex work and everyday tasks
+    3.  Fable 5.1              For your toughest challenges
+  ❯ 4.  Sonnet 5.5 ✔           Most efficient for simpler tasks
+    5.  Haiku 5.5              Fastest for quick answers
+    6.  Haiku 4.5              Fastest for quick answers
+    7.  Sonnet 5               Efficient for routine tasks
+    8.  Opus 5                 Best for everyday, complex tasks
+    9.  Fable 5                Most capable for your hardest and longest-running tasks
+  ↓ 10. Opus 4.8               Best for everyday, complex tasks
+     … +3 models
+";
+    let last = "\
+  Select model
+
+  ↑ 4.  Sonnet 5.5 ✔           Most efficient for simpler tasks
+    5.  Haiku 5.5              Fastest for quick answers
+    6.  Haiku 4.5              Fastest for quick answers
+    7.  Sonnet 5               Efficient for routine tasks
+    8.  Opus 5                 Best for everyday, complex tasks
+    9.  Fable 5                Most capable for your hardest and longest-running tasks
+    10. Opus 4.8               Best for everyday, complex tasks
+    11. Opus 4.7               Best for everyday, complex tasks
+    12. Opus 4.6               Best for everyday, complex tasks
+  ❯ 13. Sonnet 4.6             Efficient for routine tasks
+";
+    let complete = format!("{first}{CAPTURE_SEPARATOR}{last}");
+    assert!(!claude_picker_has_more_rows(first, &complete));
+    let (models, default_model) = parse_claude_model_screen(&complete).unwrap();
+    let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
+    assert_eq!(
+        values,
+        [
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+        ]
+    );
+    assert_eq!(default_model.as_deref(), Some("claude-sonnet-5-5"));
+}
+
+#[test]
 fn claude_picker_rejects_incomplete_or_unknown_catalogs() {
     let first = "\
   Select model

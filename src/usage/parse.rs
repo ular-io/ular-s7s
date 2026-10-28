@@ -87,25 +87,41 @@ pub(super) fn parse_agy_at(text: &str, now: NaiveDateTime) -> Option<UsageSnapsh
         .find(|l| !l.trim().is_empty())
         .copied()
         .unwrap_or("");
-    let group = if footer.contains("Gemini") {
-        "GEMINI MODELS"
+    // agy 1.4.9 added a separate `GEMINI 4 ARGON` bucket that has only a weekly
+    // limit (`Gemini 4 Argon Weekly Limit`); its models also contain "Gemini".
+    let (group, weekly_labels): (&str, &[&str]) = if footer.contains("Argon") {
+        (
+            "GEMINI 4 ARGON",
+            &["gemini 4 argon weekly limit", "weekly limit"],
+        )
+    } else if footer.contains("Gemini") {
+        ("GEMINI MODELS", &["weekly limit"])
     } else {
-        "CLAUDE AND GPT MODELS"
+        ("CLAUDE AND GPT MODELS", &["weekly limit"])
     };
     let start = lines.iter().position(|l| l.contains(group)).unwrap_or(0);
-    // Group section: from the header to just before the next group header (uppercase line ending with "MODELS").
+    // Group section: from the header to just before the next group header.
     let end = lines
         .iter()
         .enumerate()
         .skip(start + 1)
-        .find(|(_, l)| l.trim().ends_with("MODELS"))
+        .find(|(_, l)| is_agy_group_header(l))
         .map(|(i, _)| i)
         .unwrap_or(lines.len());
     let section = &lines[start..end];
     let current = agy_window(section, &["five hour limit", "5h limit", "5-hour limit"]);
-    let weekly = agy_window(section, &["weekly limit"]);
+    let weekly = agy_window(section, weekly_labels);
     let _ = now; // agy only uses relative notation, but signature is kept consistent with other parsers.
     snapshot_or_none(current, weekly)
+}
+
+/// A quota group heading such as `GEMINI MODELS` or `GEMINI 4 ARGON`: letters, all
+/// uppercase. Gauges, rules, and the `Account:` line never qualify.
+fn is_agy_group_header(line: &str) -> bool {
+    let t = line.trim();
+    t.chars().any(|c| c.is_ascii_alphabetic())
+        && t.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ')
 }
 
 /// Searches for the `N%` gauge (remaining) and `Refreshes in ...` in the 3 lines following the label line.

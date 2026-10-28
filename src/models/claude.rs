@@ -154,6 +154,7 @@ pub(super) fn claude_model_value(name: &str) -> Option<String> {
         "opus 5.5" => "claude-opus-5-5",
         "fable 5.1" => "claude-fable-5-1",
         "sonnet 5.5" => "claude-sonnet-5-5",
+        "haiku 5.5" => "claude-haiku-5-5",
         "sonnet 5" => "claude-sonnet-5",
         "haiku 4.5" => "claude-haiku-4-5-20251001",
         "opus 5" => "claude-opus-5",

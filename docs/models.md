@@ -42,7 +42,9 @@ The `/model` row name is **not** always the alias. Through 2.1.207 it was (`Opus
 2.1.220 renamed the long-context row to `Opus (1M context)`, whose alias is `opus[1m]`.
 2.1.283 shows versioned names such as `Opus 5.5`, `Fable 5.1`, and `Sonnet 5`. These must map to
 pinned IDs (`claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5`); a family alias could select
-a different version after a CLI upgrade. 2.1.284 added `Sonnet 5.5` (`claude-sonnet-5-5`).
+a different version after a CLI upgrade. 2.1.284 added `Sonnet 5.5` (`claude-sonnet-5-5`); 2.1.312
+added `Haiku 5.5` (`claude-haiku-5-5`), and before it was mapped every 2.1.312 query failed as
+`failed to parse /model screen`.
 The `Haiku 4.5` row maps to the dated ID `claude-haiku-4-5-20251001`. Check the ID map against
 [Claude Code model configuration](https://code.claude.com/docs/en/model-config) and
 [Anthropic model IDs](https://platform.claude.com/docs/en/models/overview).
@@ -135,7 +137,7 @@ mkdir -p /tmp/dump && ULAR_USAGE_DUMP=/tmp/dump ./target/release/s7s --model-pro
   that omits a row from the real picker, even if the TUI still shows cached models.
 - For codex, compare with `codex debug models` output (visibility=list), and for agy, with `agy models` output.
 - Since CLIs do not filter out invalid model names, the final verification is to actually launch a session once with the value from the probe result and check the active model notation in the banner/status bar.
-- The claude screen fixtures in unit tests (`src/models.rs::tests`) cover 2.1.220, 2.1.283, and 2.1.284 captures. If the screen format changes, update the fixtures as well.
+- The claude screen fixtures in unit tests (`src/models/claude_tests.rs`) cover 2.1.220, 2.1.283, 2.1.284, and 2.1.312 captures. If the screen format changes, update the fixtures as well.
 
 ## New Session with Context and Model Selection
 
