@@ -119,12 +119,10 @@ pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -
     let mut seen_real_turn = false;
 
     for v in &values {
-        let Some(record) = events::decode(v) else {
+        // Sidechain records and records abandoned by /rewind decode to None.
+        let Some(record) = filter.decode(v) else {
             continue;
         };
-        if !filter.is_active(record.uuid) {
-            continue; // Abandoned by /rewind.
-        }
         match record.kind {
             RecordKind::Title(TitleEvent::Custom(t)) => {
                 // Explicit titles set via `/rename` always take precedence over auto-generated titles.
@@ -166,7 +164,8 @@ pub fn parse_file(path: &Path, source_mtime_ms: i64, meta: Option<&TitleMeta>) -
                             events.push(Event::Boundary);
                             has_open_user_turn = false;
                         }
-                        UserTextKind::Blank | UserTextKind::NoText => {}
+                        // Skill bodies and caveats injected mid-turn keep it open.
+                        UserTextKind::Injected | UserTextKind::Blank | UserTextKind::NoText => {}
                         // Neither a question nor a boundary; counted only
                         // when it is the session's sole user text.
                         UserTextKind::CompactSummary { cleaned } => {

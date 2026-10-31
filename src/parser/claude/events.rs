@@ -94,6 +94,11 @@ pub(crate) enum UserTextKind {
     /// Noise input (slash command, bootstrap prompt, …): closes the current turn
     /// without opening one.
     Boundary,
+    /// CLI-injected `isMeta` noise (a skill's `SKILL.md` body, a local-command
+    /// caveat): neither opens nor closes a turn. A skill loaded mid-turn — by
+    /// the user's `/<skill>` or by the model — must leave the work and final
+    /// answer that follow attached to the turn it belongs to.
+    Injected,
     /// Extractable but blank after cleaning. The consumers deliberately differ
     /// here (the list keeps the turn open, the context parser closes it) —
     /// preserved pre-R12 behavior.
@@ -154,7 +159,9 @@ pub(crate) fn decode(v: &Value) -> Option<DecodedRecord<'_>> {
 }
 
 /// Builds the active-branch membership filter for a parsed session body
-/// (pass 1 of 2 — the leaf is only known once every line has been seen).
+/// (pass 1 of 2 — the leaf is only known once every line has been seen). The
+/// same pass records which slash-command records invoked a skill, since that is
+/// only known from the record that follows them ([`ActiveFilter::decode`]).
 pub(crate) fn chain_filter(values: &[Value]) -> ActiveFilter<'_> {
     let mut branch = ActiveBranch::default();
     for v in values {
@@ -169,6 +176,7 @@ pub(crate) fn chain_filter(values: &[Value]) -> ActiveFilter<'_> {
 struct ActiveBranch<'a> {
     parents: HashMap<&'a str, Option<&'a str>>,
     leaf: Option<&'a str>,
+    skill_calls: HashSet<&'a str>,
 }
 
 impl<'a> ActiveBranch<'a> {
@@ -176,15 +184,32 @@ impl<'a> ActiveBranch<'a> {
         if let Some((Some(uuid), parent)) = record_link(v) {
             self.parents.insert(uuid, parent);
             self.leaf = Some(uuid);
+            if let Some(parent) = parent.filter(|_| is_skill_body(v)) {
+                self.skill_calls.insert(parent);
+            }
         }
     }
 
     /// Reduces the chain to the active-branch filter (leaf → root walk).
-    fn finish(&self) -> ActiveFilter<'a> {
+    fn finish(self) -> ActiveFilter<'a> {
         ActiveFilter {
             active: active_uuid_set(&self.parents, self.leaf),
+            skill_calls: self.skill_calls,
         }
     }
+}
+
+/// Prefix of the `isMeta` user record that carries a skill's `SKILL.md` body.
+const SKILL_BODY_PREFIX: &str = "Base directory for this skill:";
+
+/// The `isMeta` skill-body record the CLI writes right after a skill starts.
+/// Its `parentUuid` names the record that started the skill: the user's
+/// `/<skill>` command record, or a tool result when the model called the skill
+/// itself (observed on Claude 2.1.2xx–2.1.316).
+fn is_skill_body(v: &Value) -> bool {
+    v.get("type").and_then(Value::as_str) == Some("user")
+        && is_meta(v)
+        && turn::extract_user_text(v).is_some_and(|t| t.trim_start().starts_with(SKILL_BODY_PREFIX))
 }
 
 /// Membership filter over the active `parentUuid` branch (`/rewind` semantics).
@@ -194,6 +219,8 @@ impl<'a> ActiveBranch<'a> {
 /// blank a session). Records without a uuid are always active.
 pub(crate) struct ActiveFilter<'a> {
     active: Option<HashSet<&'a str>>,
+    /// Uuids of records whose child is a skill body ([`is_skill_body`]).
+    skill_calls: HashSet<&'a str>,
 }
 
 impl ActiveFilter<'_> {
@@ -203,6 +230,62 @@ impl ActiveFilter<'_> {
             _ => true,
         }
     }
+
+    /// Decodes one record for a consumer: `None` for records [`decode`] drops
+    /// and for records off the active branch (abandoned by `/rewind`).
+    ///
+    /// A slash-command record the user typed to start a skill (`/wrapup`,
+    /// `/tde <args>`) is promoted from a boundary to a turn, shown as the
+    /// command line. Built-in commands (`/model`, `/compact`) have no skill
+    /// body after them and stay boundaries.
+    pub(crate) fn decode<'v>(&self, v: &'v Value) -> Option<DecodedRecord<'v>> {
+        let mut record = decode(v)?;
+        if !self.is_active(record.uuid) {
+            return None;
+        }
+        if let (Some(uuid), RecordKind::User(u)) = (record.uuid, &mut record.kind) {
+            if self.skill_calls.contains(uuid) {
+                promote_skill_call(u);
+            }
+        }
+        Some(record)
+    }
+}
+
+/// Rewrites a `<command-name>/x</command-name><command-args>y</command-args>`
+/// record as the command line `/x y` and classifies it as a turn.
+fn promote_skill_call(u: &mut UserRecord) {
+    if !matches!(u.text_kind, UserTextKind::Boundary) {
+        return;
+    }
+    let Some(raw) = u.text.as_deref() else {
+        return;
+    };
+    let Some(name) = tag_body(raw, "command-name").map(str::trim) else {
+        return;
+    };
+    let mut line = if name.starts_with('/') {
+        name.to_string()
+    } else {
+        format!("/{name}")
+    };
+    if let Some(args) = tag_body(raw, "command-args").map(str::trim) {
+        if !args.is_empty() {
+            line.push(' ');
+            line.push_str(args);
+        }
+    }
+    if let Some(cleaned) = clean_turn(&line) {
+        u.text = Some(line);
+        u.text_kind = UserTextKind::Turn { cleaned };
+    }
+}
+
+/// Body of the first `<tag>…</tag>` in `text`.
+fn tag_body<'t>(text: &'t str, tag: &str) -> Option<&'t str> {
+    let open = format!("<{tag}>");
+    let rest = &text[text.find(&open)? + open.len()..];
+    Some(&rest[..rest.find(&format!("</{tag}>"))?])
 }
 
 /// The chain link of one record, shared by pass 1 and `decode` so both apply
@@ -280,6 +363,7 @@ fn decode_user(v: &Value) -> UserRecord {
             None => UserTextKind::Blank,
         },
         None => UserTextKind::NoText,
+        Some(t) if is_noise_turn(t) && is_meta(v) => UserTextKind::Injected,
         Some(t) if is_noise_turn(t) => UserTextKind::Boundary,
         Some(t) => match clean_turn(t) {
             Some(cleaned) => UserTextKind::Turn { cleaned },
@@ -291,9 +375,13 @@ fn decode_user(v: &Value) -> UserRecord {
         is_task_notification,
         text,
         text_kind,
-        is_meta: v.get("isMeta").and_then(Value::as_bool).unwrap_or(false),
+        is_meta: is_meta(v),
         submitted_at_ms: record_timestamp_ms(v),
     }
+}
+
+fn is_meta(v: &Value) -> bool {
+    v.get("isMeta").and_then(Value::as_bool) == Some(true)
 }
 
 fn origin_is_task_notification(v: &Value) -> bool {

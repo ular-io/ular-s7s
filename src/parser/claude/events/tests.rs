@@ -15,6 +15,9 @@ fn decode_classifies_user_text_kinds() {
     let compacted = val(
         r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}"#,
     );
+    let injected = val(
+        r#"{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x"}]}}"#,
+    );
 
     for (v, expect) in [
         (&turn, "turn"),
@@ -22,6 +25,7 @@ fn decode_classifies_user_text_kinds() {
         (&blank, "blank"),
         (&tool, "notext"),
         (&compacted, "compact"),
+        (&injected, "injected"),
     ] {
         let Some(RecordKind::User(u)) = decode(v).map(|d| d.kind) else {
             panic!("expected user record");
@@ -32,6 +36,7 @@ fn decode_classifies_user_text_kinds() {
                 "turn"
             }
             UserTextKind::Boundary => "boundary",
+            UserTextKind::Injected => "injected",
             UserTextKind::Blank => "blank",
             UserTextKind::NoText => "notext",
             UserTextKind::CompactSummary { .. } => "compact",
@@ -159,4 +164,58 @@ fn assistant_items_preserve_content_order() {
 fn empty_title_event_decodes_to_nothing() {
     let v = val(r#"{"type":"custom-title","customTitle":"  "}"#);
     assert!(decode(&v).is_none());
+}
+
+#[test]
+fn user_skill_call_becomes_a_turn_and_builtin_commands_stay_boundaries() {
+    // Shapes observed on Claude 2.1.316: the skill body names the command
+    // record as its parent; a built-in command is followed by its stdout; a
+    // skill the model calls itself hangs off a tool result.
+    let values = parse_lines(
+        r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문"}}
+{"type":"user","uuid":"b","parentUuid":"a","message":{"role":"user","content":"<command-message>tde</command-message>\n<command-name>/tde</command-name>\n<command-args>문서 읽어</command-args>"}}
+{"type":"user","uuid":"c","parentUuid":"b","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/tde\n\n본문"}]}}
+{"type":"user","uuid":"d","parentUuid":"c","message":{"role":"user","content":"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"}}
+{"type":"user","uuid":"e","parentUuid":"d","message":{"role":"user","content":"<local-command-stdout>Set model</local-command-stdout>"}}
+{"type":"user","uuid":"f","parentUuid":"e","message":{"role":"user","content":"<command-message>wrapup</command-message>\n<command-name>/wrapup</command-name>"}}
+{"type":"user","uuid":"g","parentUuid":"f","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/wrapup"}]}}
+{"type":"assistant","uuid":"h","parentUuid":"g","message":{"content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"tde"}}]}}
+{"type":"user","uuid":"i","parentUuid":"h","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}
+{"type":"user","uuid":"j","parentUuid":"i","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/tde"}]}}
+"#,
+    );
+    let filter = chain_filter(&values);
+    let kinds: Vec<String> = values
+        .iter()
+        .filter_map(|v| filter.decode(v))
+        .filter_map(|r| match r.kind {
+            RecordKind::User(u) => Some(match u.text_kind {
+                UserTextKind::Turn { cleaned } => {
+                    assert_eq!(u.text.as_deref(), Some(cleaned.as_str()));
+                    format!("turn:{cleaned}")
+                }
+                UserTextKind::Boundary => "boundary".into(),
+                UserTextKind::Injected => "injected".into(),
+                UserTextKind::Blank => "blank".into(),
+                UserTextKind::NoText => "notext".into(),
+                UserTextKind::CompactSummary { .. } => "compact".into(),
+            }),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "turn:질문",
+            "turn:/tde 문서 읽어",
+            "injected",
+            "boundary",
+            "boundary",
+            "turn:/wrapup",
+            "injected",
+            "notext",
+            "injected",
+        ]
+    );
 }

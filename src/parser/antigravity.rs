@@ -8,13 +8,17 @@
 //! - Table `steps`, rows where `step_type=14` represent user turns.
 //! - In `step_payload` (protobuf), user message is field `19.2`,
 //!   timestamp (seconds) is field `5.1.1`, and workspace URI is field `19.12.12`.
+//!   A `/<skill>` input carries each invoked skill as repeated `19.3`, with the
+//!   skill name at `.2.27.1.1` and its `<SKILL>` body at `.2.27.1.2` (agy 1.4.x).
 //! - Rows where `step_type=138` represent ask_question (agent questions). For each field `154.1` block,
 //!   question is `1`, options are repeated `2` (`.1` code, `.2` text), and the selected
 //!   option code is `4` (only present when answered, skipped questions contain a `6` flag instead).
 //!
 //! Since one file equals one session, file-level mtime cache is applied similar to claude/codex.
 
-use super::{build_assistant_blob, clean_turn, finalize, is_noise_turn, session_updated_at_ms};
+use super::{
+    build_assistant_blob, clean_turn, finalize, is_noise_turn, is_skill_call, session_updated_at_ms,
+};
 use crate::model::{Agent, Session};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -150,7 +154,13 @@ pub fn parse_db(
                         }
                         continue;
                     }
-                    if let Some((msg, ws, ts)) = extract_user_step(&payload) {
+                    if let Some(UserStep {
+                        msg,
+                        workspace: ws,
+                        ts_ms: ts,
+                        skills,
+                    }) = extract_user_step(&payload)
+                    {
                         if cwd.is_none() {
                             if let Some(w) = ws {
                                 if !w.is_empty() {
@@ -163,7 +173,8 @@ pub fn parse_db(
                         if context_source.is_none() && turns.is_empty() {
                             context_source = crate::parser::parse_context_bootstrap(&msg);
                         }
-                        if !is_noise_turn(&msg) {
+                        let skill_call = skills.iter().any(|s| is_skill_call(&msg, s));
+                        if skill_call || !is_noise_turn(&msg) {
                             if let Some(cleaned) = clean_turn(&msg) {
                                 turns.push(cleaned);
                                 turn_timestamps.push((ts > 0).then_some(ts));
@@ -248,11 +259,27 @@ pub fn parse_db(
 }
 
 /// Extracts (user message, workspace, timestamp in ms) from step_type=14 payload.
-fn extract_user_step(payload: &[u8]) -> Option<(String, Option<String>, i64)> {
+/// One decoded user step (`step_type=14`).
+struct UserStep {
+    msg: String,
+    workspace: Option<String>,
+    ts_ms: i64,
+    /// Names of the skills the input invoked (`19.3[].2.27.1.1`).
+    skills: Vec<String>,
+}
+
+fn extract_user_step(payload: &[u8]) -> Option<UserStep> {
     // User message: 19.2 (string)
     let f19 = pb_get_bytes(payload, 19)?;
     let msg_bytes = pb_get_bytes(f19, 2)?;
     let msg = String::from_utf8_lossy(msg_bytes).to_string();
+
+    let skills = pb_get_bytes_all(f19, 3)
+        .into_iter()
+        .filter_map(|item| pb_get_bytes(pb_get_bytes(pb_get_bytes(item, 2)?, 27)?, 1))
+        .filter_map(|skill| pb_get_bytes(skill, 1))
+        .map(|name| String::from_utf8_lossy(name).to_string())
+        .collect();
 
     // Workspace: 19.12.12 (file:// URI)
     let workspace = pb_get_bytes(f19, 12)
@@ -261,7 +288,12 @@ fn extract_user_step(payload: &[u8]) -> Option<(String, Option<String>, i64)> {
 
     let ts_ms = step_timestamp_ms(payload).unwrap_or(0);
 
-    Some((msg, workspace, ts_ms))
+    Some(UserStep {
+        msg,
+        workspace,
+        ts_ms,
+        skills,
+    })
 }
 
 /// Timestamp: 5.1.1 (seconds) + 5.1.2 (nanos) -> ms.

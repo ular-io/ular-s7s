@@ -166,12 +166,19 @@ pub fn clean_turn(raw: &str) -> Option<String> {
 }
 
 /// Identifies if a user input line is noise rather than a question (e.g. slash/local commands, system injections, skill documents).
+///
+/// The text alone cannot tell a built-in command from a skill call, so a
+/// user-typed skill call is noise here too. Each parser restores it from the
+/// agent's own record of the call: Claude's skill-body record
+/// (`parser::claude::events`) and agy's invoked-skill field ([`is_skill_call`]).
+/// Codex records `$<skill>`, which is never noise.
 pub fn is_noise_turn(text: &str) -> bool {
     let t = text.trim_start();
     let trimmed = text.trim();
 
     // Exclude single-token slash commands without arguments (e.g. /usage, /exit, /status, /clear).
-    // Note that skill invocations with arguments (e.g. "/tde confluence docs...") are retained as questions.
+    // Slash input with arguments (e.g. "/tde confluence docs...") is retained as a question
+    // unless the agent wraps it in `<command-name>` (Claude).
     if trimmed.starts_with('/') && !trimmed.contains(char::is_whitespace) {
         return true;
     }
@@ -192,6 +199,13 @@ pub fn is_noise_turn(text: &str) -> bool {
             trimmed,
             "exit" | "quit" | "\\q" | "\\quit" | ":q" | ":wq" | "q"
         )
+}
+
+/// Whether `text` is the bare slash call `/<skill>` of a skill the agent
+/// recorded as invoked by that input. Such input is a question even though
+/// [`is_noise_turn`] drops a bare slash command.
+pub(crate) fn is_skill_call(text: &str, skill: &str) -> bool {
+    !skill.is_empty() && text.trim().strip_prefix('/') == Some(skill)
 }
 
 #[cfg(test)]
@@ -319,5 +333,14 @@ mod tests {
             "  <task-notification><tool-use-id>toolu_x</tool-use-id></task-notification>"
         ));
         assert!(!is_noise_turn("task notification about the deploy"));
+    }
+
+    #[test]
+    fn bare_slash_call_of_a_recorded_skill_is_a_skill_call() {
+        assert!(is_noise_turn("/wrapup"));
+        assert!(is_skill_call(" /wrapup\n", "wrapup"));
+        assert!(!is_skill_call("/wrapup", "tde"));
+        assert!(!is_skill_call("/model", ""));
+        assert!(!is_skill_call("wrapup", "wrapup"));
     }
 }

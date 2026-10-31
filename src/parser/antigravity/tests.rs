@@ -370,3 +370,52 @@ fn loads_title_from_annotation_pbtxt() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A user step whose input invoked `skill` (`19.3[].2.27.1.{1,2}`, agy 1.4.x).
+fn skill_call_payload(message: &str, skill: &str, timestamp_ms: i64) -> Vec<u8> {
+    let mut entry = pb_len_field(1, skill.as_bytes());
+    entry.extend(pb_len_field(2, b"<SKILL>The user has explicitly invoked"));
+    let mention = pb_len_field(2, &pb_len_field(27, &pb_len_field(1, &entry)));
+    let mut step = pb_len_field(2, message.as_bytes());
+    step.extend(pb_len_field(3, &mention));
+    let mut payload = pb_len_field(19, &step);
+    payload.extend(timestamp_payload(timestamp_ms));
+    payload
+}
+
+#[test]
+fn parse_db_keeps_a_bare_skill_call_and_drops_a_bare_builtin_command() {
+    let path = std::env::temp_dir().join(format!(
+        "s7s-antigravity-skill-call-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let conn = rusqlite::Connection::open(&path).expect("open temp DB");
+    conn.execute(
+        "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+        [],
+    )
+    .expect("create steps");
+    for (idx, payload) in [
+        user_payload("first question", 1_784_768_523_000),
+        user_payload("/model", 1_784_768_600_000),
+        skill_call_payload("/wrapup", "wrapup", 1_784_768_700_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO steps VALUES (?1, 14, ?2)",
+            rusqlite::params![idx as i64, payload],
+        )
+        .expect("insert user step");
+    }
+    drop(conn);
+
+    let session = parse_db(&path, 0, &HashMap::new()).expect("parse session");
+    assert_eq!(session.user_turns, vec!["first question", "/wrapup"]);
+    let _ = std::fs::remove_file(path);
+}

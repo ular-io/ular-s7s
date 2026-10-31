@@ -28,12 +28,10 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
     let mut current: Option<ContextTurn> = None;
 
     for v in &values {
-        let Some(record) = events::decode(v) else {
-            continue; // Sidechain (subagent) records.
+        // Sidechain (subagent) records and records abandoned by /rewind.
+        let Some(record) = filter.decode(v) else {
+            continue;
         };
-        if !filter.is_active(record.uuid) {
-            continue; // Abandoned by /rewind.
-        }
 
         match record.kind {
             RecordKind::User(u) => {
@@ -70,11 +68,11 @@ pub fn parse_turns(path: &Path) -> Result<Vec<ContextTurn>> {
                     }
                     // Any extractable user text closes the current turn, even when it
                     // opens none (noise input, blank text) — except CLI-injected meta
-                    // records (isMeta: a skill's SKILL.md body loaded mid-turn). Those
-                    // are not user boundaries: closing here would orphan the rest of the
-                    // turn (subsequent tool work and the final answer) as the current
-                    // turn goes empty. Turn count is unaffected (a boundary never opens
-                    // a turn), so list/detail parity is preserved.
+                    // records. Those are not user boundaries: closing here would orphan
+                    // the rest of the turn (subsequent tool work and the final answer)
+                    // as the current turn goes empty. Turn count is unaffected (a
+                    // boundary never opens a turn), so list/detail parity is preserved.
+                    UserTextKind::Injected => {}
                     UserTextKind::Boundary | UserTextKind::Blank => {
                         if !u.is_meta {
                             if let Some(done) = current.take() {
@@ -329,6 +327,32 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].submitted_at_ms, Some(1_784_768_523_456));
         assert_eq!(turns[1].submitted_at_ms, Some(1_784_772_184_567));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn user_skill_call_is_a_turn_that_keeps_its_work() {
+        // Before: `/wrapup` closed the previous turn and opened none, so the
+        // skill's git work and final answer were dropped from the detail.
+        let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
+{"type":"assistant","uuid":"b","parentUuid":"a","message":{"content":[{"type":"text","text":"답1"}]}}
+{"type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"<command-message>wrapup</command-message>\n<command-name>/wrapup</command-name>\n<command-args>push 금지</command-args>"}}
+{"type":"user","uuid":"d","parentUuid":"c","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/wrapup"}]}}
+{"type":"assistant","uuid":"e","parentUuid":"d","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git commit"}}]}}
+{"type":"user","uuid":"f","parentUuid":"e","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"[main c1cc872] done"}]}}
+{"type":"assistant","uuid":"g","parentUuid":"f","message":{"content":[{"type":"text","text":"커밋했다."}]}}
+"#;
+        let path = write_temp("skill-call", content);
+        let turns = parse_turns(&path).expect("parse");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].last_assistant_text.as_deref(), Some("답1"));
+        assert_eq!(turns[1].user, "/wrapup push 금지");
+        assert_eq!(turns[1].last_assistant_text.as_deref(), Some("커밋했다."));
+        assert!(turns[1]
+            .entries
+            .iter()
+            .any(|e| e.kind == ContextEntryKind::ToolResult && e.text.contains("c1cc872")));
         let _ = std::fs::remove_file(path);
     }
 }

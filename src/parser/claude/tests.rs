@@ -323,3 +323,23 @@ fn assistant_blob_excludes_bootstrap_ready_response() {
     assert!(!session.assistant_blob.contains("readykw"));
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn user_skill_call_is_a_turn_whose_answer_is_indexed() {
+    // `/wrapup` is followed by its skill body; the answer after the body
+    // belongs to the `/wrapup` turn. `/model` stays out of the turn list.
+    let content = r#"
+{"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"질문1"}}
+{"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"답1"}]}}
+{"type":"user","uuid":"c","parentUuid":"b","message":{"role":"user","content":"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"}}
+{"type":"user","uuid":"d","parentUuid":"c","message":{"role":"user","content":"<local-command-stdout>Set model</local-command-stdout>"}}
+{"type":"user","uuid":"e","parentUuid":"d","message":{"role":"user","content":"<command-message>wrapup</command-message>\n<command-name>/wrapup</command-name>"}}
+{"type":"user","uuid":"f","parentUuid":"e","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/wrapup"}]}}
+{"type":"assistant","uuid":"g","parentUuid":"f","message":{"role":"assistant","content":[{"type":"text","text":"커밋 완료 wrapupkw"}]}}
+"#;
+    let path = write_temp("skill-call", content);
+    let session = parse_file(&path, 0, None).expect("expected session");
+    assert_eq!(session.user_turns, vec!["질문1", "/wrapup"]);
+    assert!(session.assistant_blob.contains("wrapupkw"));
+    let _ = std::fs::remove_file(path);
+}

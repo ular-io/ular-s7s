@@ -52,6 +52,22 @@ src/session_context/
 List Q count, Detail turn count, and CLI turn count must agree. All parser paths
 share `parser::{clean_turn, is_noise_turn}`.
 
+A slash command the user typed to start a skill (`/wrapup`, `/tde <args>`) is a
+turn shown as the command line; built-in commands (`/model`, `/compact`,
+`/usage`) are not. The text alone cannot tell the two apart, so
+`is_noise_turn` drops both and each agent's own record of the skill call
+restores the turn:
+
+| Agent | Skill call recorded as | Restored by |
+| --- | --- | --- |
+| Claude | `<command-name>` record whose child (`parentUuid`) is the `isMeta` `Base directory for this skill:` record | `events::ActiveFilter::decode` (pass 1 collects those parents) |
+| Antigravity | `/<skill>` input carrying the invoked skill: DB field `19.3[].2.27.1.1`, transcript `<SKILL>The user has explicitly invoked the (<skill>) skill` | `parser::is_skill_call` in both consumers |
+| Codex | `$<skill>` input, never noise | nothing to restore |
+
+A skill the model calls itself hangs its body off a tool result and opens no
+turn. Bumping `cache::CACHE_VERSION` is required whenever turn selection
+changes, or the list keeps cached counts and the parity run reports mismatches.
+
 ### Claude
 
 - List and context consumers share `parser/claude/events.rs`.
@@ -70,8 +86,10 @@ share `parser::{clean_turn, is_noise_turn}`.
   nothing before it on the active branch the summary becomes the first turn, or
   the session would have no turns and vanish from the list.
 - Sidechain records and task notifications are classified consistently.
-- A noise boundary normally closes the current turn, but an `isMeta` skill
-  injection does not; later tool work and the final answer stay attached.
+- A noise boundary normally closes the current turn, but `isMeta` noise (a
+  skill body, a local-command caveat) is `UserTextKind::Injected` and closes
+  none in either consumer; later tool work and the final answer stay attached,
+  in Detail and in the list's assistant search text alike.
 - The shared decoder stays payload-light. `session_context/claude.rs` alone
   extracts detailed tool-call and tool-result payloads.
 - Unknown record types contribute only their chain link. Claude 2.1.x adds

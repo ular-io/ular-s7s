@@ -8,7 +8,7 @@
 
 use super::model::{ContextEntryKind, ContextTurn};
 use super::{cleanup_user_text, compact_json, promote_qa_turn, push_entry, set_last_assistant};
-use crate::parser::is_noise_turn;
+use crate::parser::{is_noise_turn, is_skill_call};
 use anyhow::Result;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -104,7 +104,8 @@ fn parse_transcript(
                     turns.push(done);
                 }
                 let user = extract_user_request(text);
-                if !user.trim().is_empty() && !is_noise_turn(&user) {
+                let skill_call = invoked_skills(text).any(|s| is_skill_call(&user, s));
+                if !user.trim().is_empty() && (skill_call || !is_noise_turn(&user)) {
                     current = Some(ContextTurn {
                         user: cleanup_user_text(&user),
                         submitted_at_ms: None,
@@ -295,6 +296,17 @@ fn antigravity_ask_answers(content: &str, questions: &[String]) -> Option<String
 
 /// Extracts only the `<USER_REQUEST>` body from USER_INPUT content.
 /// (Removes system metadata like `<ADDITIONAL_METADATA>`. If no tags are found, keeps raw text.)
+/// Names of the skills a `/<skill>` input invoked. agy appends each skill body
+/// to the input's `<ADDITIONAL_METADATA>` as
+/// `<SKILL>The user has explicitly invoked the (<name>) skill.` (agy 1.4.x).
+fn invoked_skills(content: &str) -> impl Iterator<Item = &str> {
+    const MARK: &str = "<SKILL>The user has explicitly invoked the (";
+    content.match_indices(MARK).filter_map(|(at, _)| {
+        let rest = &content[at + MARK.len()..];
+        rest.find(')').map(|end| &rest[..end])
+    })
+}
+
 fn extract_user_request(content: &str) -> String {
     const OPEN: &str = "<USER_REQUEST>";
     const CLOSE: &str = "</USER_REQUEST>";
@@ -411,5 +423,32 @@ not json
         );
         assert_eq!(turns.len(), 1);
         assert_eq!(completed_at_ms, Some(1_784_768_462_000));
+    }
+
+    #[test]
+    fn bare_skill_call_is_a_turn_that_keeps_its_work() {
+        // agy 1.4.x: the invoked skill's body follows the input in
+        // `<ADDITIONAL_METADATA>`; a bare built-in command has no such body.
+        let (turns, _) = parse_fixture(
+            r#"
+{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nfirst\n</USER_REQUEST>"}
+{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","content":"first answer"}
+{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\n/model\n</USER_REQUEST>"}
+{"step_index":3,"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\n/wrapup\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n/wrapup is a [Slash Command]:\n<SKILL>The user has explicitly invoked the (wrapup) skill. You must strictly follow it.\n</ADDITIONAL_METADATA>"}
+{"step_index":4,"source":"MODEL","type":"RUN_COMMAND","content":"git commit done"}
+{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","content":"wrapup answer"}
+"#,
+        );
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].user, "first");
+        assert_eq!(turns[1].user, "/wrapup");
+        assert_eq!(
+            turns[1].last_assistant_text.as_deref(),
+            Some("wrapup answer")
+        );
+        assert!(turns[1]
+            .entries
+            .iter()
+            .any(|e| e.text.contains("git commit done")));
     }
 }
