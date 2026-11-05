@@ -395,7 +395,7 @@ The profile list is saved by the app in `~/.config/s7s/profiles.json` (or `~/Lib
 
 - **path** = Agent config root (e.g., `~/.claude-team`). The session directory is automatically derived (Claude `<path>/projects`, Codex `<path>/sessions`, Antigravity is the path itself).
 - `CLAUDE_CONFIG_DIR`/`CODEX_HOME` is injected only for profiles that are not the default path. Specifying the env on the default path causes a re-login screen issue — [Details](docs/profiles.md).
-- For additional profiles, you must complete **one manual login + folder trust** with that config for usage checking to work.
+- For additional profiles, you must complete **one manual first run (theme selection + login)** with that config for usage checking to work. s7s records the trust of its own probe folder in that config, so no folder trust is needed for usage checks.
 
 ## Configuration (Optional)
 

@@ -76,11 +76,11 @@ To prevent this, `src/resume.rs::sanitize_agent_env()` removes these variables f
 
 ## Additional Profile Initial Setup
 
-Since the new config folder is empty of login/trust states, you must manually run it once to complete it:
+Since the new config folder is empty of onboarding/login state, you must manually run it once to complete it:
 
 ```bash
 CLAUDE_CONFIG_DIR=~/.claude-team claude
-# → Theme selection → Login → Exit after approving folder trust
+# → Theme selection → Login → Exit
 ```
 
 ### When Saving a Non-Existent Config Folder (Automating Creation + Login)
@@ -89,11 +89,11 @@ If you save a non-existent path in the add/edit profile form, a confirmation mod
 
 - **Create** (Default focus): Creates the folder with `create_dir_all` → saves the profile → the main loop releases the TUI and executes the agent for login (`resume::run_login`). After the agent exits, it returns to the TUI, rescans sessions, and performs an incremental usage query for that profile.
 - **Cancel/esc**: Returns to the form maintaining input (path can be modified).
-- Login execution, unlike resume/new session, runs **in the current folder of s7s without cd**, appending only the env prefix to the **base command without flags** (`claude`/`codex`/`agy`) — since the usage query runs in the s7s execution folder, if you trust this folder during login, subsequent usage queries will also pass.
+- Login execution, unlike resume/new session, runs **in the current folder of s7s without cd**, appending only the env prefix to the **base command without flags** (`claude`/`codex`/`agy`) — usage and model queries run in the dedicated probe folder instead, whose trust s7s records in the profile's config itself ([usage-display.md](./usage-display.md)).
 - For **Antigravity additional paths**, env injection is impossible, making login execution meaningless, so it only creates the folder + saves and displays an informational message (`profile::login_runnable()` check).
 
 - **Trust is on a per-folder basis** and is saved in `projects.<path>.hasTrustDialogAccepted` of `<dir>/.claude.json`. It is not shared between profiles, so in a new profile, it asks once for each folder for the first time.
-- The usage query spawns claude in the s7s execution folder, so **you must trust that folder** for the query to pass (fails with `untrusted folder (trust prompt)` if unapproved).
+- Usage and model queries spawn the CLI in `~/.config/s7s/probe`, and s7s adds that folder's trust record to the profile's config (`<dir>/.claude.json`, `<CODEX_HOME>/config.toml`) before the first query, so no manual trust is needed for them ([usage-display.md](./usage-display.md)).
 
 ## Session / Filter / Usage Integration
 

@@ -79,6 +79,11 @@ pub(crate) fn drive_screen(
     if let Some(cwd) = &probe_cwd {
         builder.cwd(&cwd.path);
     }
+    // Trust is recorded in the CLI's own config first, so the dialog below is only the
+    // fallback for a config s7s could not edit. See `probe::trust_record`.
+    if let Some(cwd) = probe_cwd.as_ref().filter(|cwd| cwd.dedicated) {
+        super::trust_record::ensure_probe_trusted(cmd, envs, &cwd.path);
+    }
     let may_confirm_trust = probe_cwd.is_some_and(|cwd| cwd.dedicated);
     let child = pty
         .slave

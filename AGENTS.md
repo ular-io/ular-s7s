@@ -76,6 +76,10 @@ active documentation.
   document in the same change.
 - An external CLI rename is trusted only when the actual storage file
   modification is verified — a successful exit code is not enough.
+- Usage/model probes add the probe folder's trust record to each CLI's own
+  config (`src/probe/trust_record.rs`). On upgrade, re-verify that a record
+  written from outside is honored and survives the CLI's next save
+  ([usage-display.md](./docs/usage-display.md)).
 
 ### Verification
 

@@ -4,15 +4,18 @@
 use std::time::Duration;
 
 /// Screen text of the folder-trust dialogs that block a CLI before it reaches the
-/// prompt. Version-specific wording (claude 2.1.220 / 2.1.318, agy 1.1.8) — recheck on upgrade.
+/// prompt. Version-specific wording (claude 2.1.220 / 2.1.318, agy 1.1.8, codex 0.166.0)
+/// — recheck on upgrade. codex 0.166.0 asks only inside a git repository.
 pub(super) const TRUST_PROMPT_MARKERS: &[&str] = &[
     "Do you trust the files in this folder",
     "Is this a project you created or one you trust",
     "Do you trust the contents of this project",
+    "Trust this folder?",
 ];
 
-/// Row label of the approval choice in those dialogs (identical across claude and agy).
-const TRUST_APPROVE_ROW: &str = "Yes, I trust this folder";
+/// Row labels of the approval choice in those dialogs: claude and agy share the first,
+/// codex 0.166.0 uses the second (`› 1. Trust and continue`).
+const TRUST_APPROVE_ROWS: &[&str] = &["Yes, I trust this folder", "Trust and continue"];
 
 /// How long the dialog may stay on screen after Enter was sent before the probe gives
 /// up: if confirming did not dismiss it, the dialog is not the one we recognized.
@@ -41,7 +44,11 @@ pub(super) enum TrustStep {
 }
 
 fn is_caret_row(row: &str) -> bool {
-    row.starts_with('❯') || row.starts_with('>')
+    row.starts_with('❯') || row.starts_with('>') || row.starts_with('›')
+}
+
+fn is_approve_row(row: &str) -> bool {
+    TRUST_APPROVE_ROWS.iter().any(|label| row.contains(label))
 }
 
 /// Decides the next trust-dialog key from the *highlighted* row. Enter is only ever
@@ -50,7 +57,7 @@ fn is_caret_row(row: &str) -> bool {
 /// approval first; claude 2.1.318 selects `No, exit` with approval one row below.
 pub(super) fn trust_step(screen: &str) -> TrustStep {
     let rows: Vec<&str> = screen.lines().map(str::trim_start).collect();
-    let Some(approve) = rows.iter().position(|r| r.contains(TRUST_APPROVE_ROW)) else {
+    let Some(approve) = rows.iter().position(|r| is_approve_row(r)) else {
         return TrustStep::Refuse;
     };
     if is_caret_row(rows[approve]) {
@@ -123,11 +130,22 @@ mod tests {
          code, a well-known open source project, or work from your team).\n\n \
          ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n";
 
+    /// codex 0.166.0 dialog inside a git repository, approval row selected.
+    const CODEX_TRUST: &str = "\n  Folder access\n\n  /Users/x/repo\n\n  Trust this folder? Codex \
+         can read, edit, and run files here, subject to your permission settings.\n\n\
+         › 1. Trust and continue\n  2. Back to Agent Command Center\n\n  enter continue · esc back\n";
+
     #[test]
     fn approval_row_is_recognized_for_every_dialog_layout() {
         assert_eq!(trust_step(AGY_TRUST), TrustStep::Confirm);
         assert_eq!(trust_step(CLAUDE_TRUST), TrustStep::Confirm);
-        for screen in [AGY_TRUST, CLAUDE_TRUST, CLAUDE_TRUST_DECLINE_FIRST] {
+        assert_eq!(trust_step(CODEX_TRUST), TrustStep::Confirm);
+        for screen in [
+            AGY_TRUST,
+            CLAUDE_TRUST,
+            CLAUDE_TRUST_DECLINE_FIRST,
+            CODEX_TRUST,
+        ] {
             assert!(TRUST_PROMPT_MARKERS.iter().any(|m| screen.contains(m)));
         }
     }

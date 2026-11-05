@@ -1,7 +1,8 @@
 //! Neutral PTY/process probe layer shared by the usage and model queries.
 //!
 //! Owns only the generic mechanics of driving an agent CLI: PTY lifecycle and
-//! screen capture (`pty`), folder-trust dialog handling (`trust`), process
+//! screen capture (`pty`), folder-trust dialog handling (`trust`) and trust records written ahead of it
+//! (`trust_record`), process
 //! discovery/termination helpers (`process`), and the CLI helpers shared by more
 //! than one probe client (this module).
 //! It must not know usage labels or model syntax — screen-to-domain parsing,
@@ -11,6 +12,7 @@
 pub(crate) mod process;
 pub(crate) mod pty;
 mod trust;
+mod trust_record;
 
 use std::path::{Path, PathBuf};
 
