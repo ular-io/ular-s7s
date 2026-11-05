@@ -168,6 +168,7 @@ terminal ownership changes.
 ## Probe flow
 
 - `probe/pty.rs` owns PTY lifecycle, screen capture, stabilization, and cleanup.
+- `probe/trust.rs` recognizes folder-trust dialogs and decides which key the probe may send to them.
 - `probe/process.rs` owns process discovery and termination helpers.
 - `usage.rs` and `models.rs` are independent clients and own their parsing.
 - Probe children run in the fixed s7s probe directory, not the launch directory.
