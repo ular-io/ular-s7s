@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// Screen text of the folder-trust dialogs that block a CLI before it reaches the
-/// prompt. Version-specific wording (claude 2.1.220, agy 1.1.8) — recheck on upgrade.
+/// prompt. Version-specific wording (claude 2.1.220 / 2.1.318, agy 1.1.8) — recheck on upgrade.
 const TRUST_PROMPT_MARKERS: &[&str] = &[
     "Do you trust the files in this folder",
     "Is this a project you created or one you trust",
@@ -24,14 +24,49 @@ const TRUST_APPROVE_ROW: &str = "Yes, I trust this folder";
 /// up: if confirming did not dismiss it, the dialog is not the one we recognized.
 const TRUST_CONFIRM_GRACE: Duration = Duration::from_secs(8);
 
-/// Whether the trust dialog's *highlighted* row is the approval choice, i.e. whether
-/// Enter confirms trust rather than declining it. Guards the auto-confirm against a
-/// reordered menu: the caret has to sit on the row that grants trust.
-fn trust_approval_selected(screen: &str) -> bool {
-    screen.lines().any(|line| {
-        let row = line.trim_start();
-        (row.starts_with('❯') || row.starts_with('>')) && row.contains(TRUST_APPROVE_ROW)
-    })
+/// Most caret moves the probe makes to reach the approval row. claude 2.1.318 puts
+/// `No, exit` first and selected with the approval row right below it; a larger gap
+/// means a menu we do not recognize, so it fails as untrusted instead.
+const TRUST_MAX_MOVES: usize = 3;
+
+/// How long the probe waits after a caret move for the dialog to redraw before it
+/// reads the selection again, so one unrendered move is never followed by another.
+const TRUST_MOVE_SETTLE: Duration = Duration::from_millis(600);
+
+/// What the probe may do with the trust dialog currently on screen.
+#[derive(Debug, PartialEq, Eq)]
+enum TrustStep {
+    /// The caret sits on the approval row: Enter grants trust.
+    Confirm,
+    /// The caret sits on a row above the approval row, at most `TRUST_MAX_MOVES`
+    /// rows up: Down moves it toward approval.
+    MoveDown,
+    /// Anything else (approval row missing, caret below it or too far up): neither
+    /// Enter nor a move is safe.
+    Refuse,
+}
+
+fn is_caret_row(row: &str) -> bool {
+    row.starts_with('❯') || row.starts_with('>')
+}
+
+/// Decides the next trust-dialog key from the *highlighted* row. Enter is only ever
+/// sent with the caret on the approval row, so a reordered menu can cost a move but
+/// never decline or confirm the wrong choice. claude 2.1.220 and agy 1.1.8 select
+/// approval first; claude 2.1.318 selects `No, exit` with approval one row below.
+fn trust_step(screen: &str) -> TrustStep {
+    let rows: Vec<&str> = screen.lines().map(str::trim_start).collect();
+    let Some(approve) = rows.iter().position(|r| r.contains(TRUST_APPROVE_ROW)) else {
+        return TrustStep::Refuse;
+    };
+    if is_caret_row(rows[approve]) {
+        return TrustStep::Confirm;
+    }
+    let caret_above = rows[..approve].iter().rposition(|r| is_caret_row(r));
+    match caret_above {
+        Some(caret) if approve - caret <= TRUST_MAX_MOVES => TrustStep::MoveDown,
+        _ => TrustStep::Refuse,
+    }
 }
 
 /// Result of `drive_screen`: final screen text showing completion markers, or a logged out status.
@@ -145,6 +180,9 @@ pub(crate) fn drive_screen(
     // When the trust dialog was confirmed, so a dialog that survives the grace period
     // is reported as untrusted instead of silently eating the whole ready timeout.
     let mut trust_confirmed_at: Option<Instant> = None;
+    // Caret moves sent toward the approval row, and when the last one went out.
+    let mut trust_moves = 0usize;
+    let mut trust_moved_at: Option<Instant> = None;
 
     let result = loop {
         // Receives screen updates (200ms polling).
@@ -163,22 +201,39 @@ pub(crate) fn drive_screen(
             // A folder-trust dialog blocks the boot this probe waits for, and agy raises it
             // for every workspace missing from `trustedWorkspaces`, so the dedicated probe
             // folder needs confirming once per agent config. Gated on that folder and on the
-            // caret sitting on the approval row. Never falls through to typing while a dialog
+            // caret sitting on the approval row (moved down to it when the menu selects
+            // `No` first, see `trust_step`). Never falls through to typing while a dialog
             // is up (`/usage` would land in the menu), and runs before the logout grace so
             // agy's boot-time "not signed in" line cannot become `NotLoggedIn`.
             if TRUST_PROMPT_MARKERS.iter().any(|m| screen.contains(m)) {
+                let settling = trust_moved_at.is_some_and(|at| at.elapsed() < TRUST_MOVE_SETTLE);
                 match trust_confirmed_at {
                     Some(at) if at.elapsed() > TRUST_CONFIRM_GRACE => {
                         break Err(anyhow!("{cmd}: trust prompt not dismissed by confirm"));
                     }
                     Some(_) => continue,
-                    None if may_confirm_trust && trust_approval_selected(&screen) => {
-                        let _ = writer.write_all(b"\r");
-                        let _ = writer.flush();
-                        trust_confirmed_at = Some(Instant::now());
-                        continue;
+                    None if !may_confirm_trust => {
+                        break Err(anyhow!("{cmd}: untrusted folder (trust prompt)"));
                     }
-                    None => break Err(anyhow!("{cmd}: untrusted folder (trust prompt)")),
+                    None => match trust_step(&screen) {
+                        TrustStep::Confirm => {
+                            let _ = writer.write_all(b"\r");
+                            let _ = writer.flush();
+                            trust_confirmed_at = Some(Instant::now());
+                            continue;
+                        }
+                        // The last move may not have redrawn yet; read again before
+                        // moving further or giving up.
+                        _ if settling => continue,
+                        TrustStep::MoveDown if trust_moves < TRUST_MAX_MOVES => {
+                            let _ = writer.write_all(b"\x1b[B");
+                            let _ = writer.flush();
+                            trust_moves += 1;
+                            trust_moved_at = Some(Instant::now());
+                            continue;
+                        }
+                        _ => break Err(anyhow!("{cmd}: untrusted folder (trust prompt)")),
+                    },
                 }
             }
             let ready = ready_markers.iter().any(|m| screen.contains(m));
@@ -330,27 +385,52 @@ mod tests {
          you trust?\n\n ❯ 1. Yes, I trust this folder\n   2. No, continue without these \
          permissions\n";
 
+    /// claude 2.1.318 dialog: the decline row comes first and is selected, the
+    /// approval row sits right below it (fresh install, no trusted ancestor folder).
+    const CLAUDE_TRUST_DECLINE_FIRST: &str =
+        "\n Accessing workspace:\n\n /Users/x/.config/s7s/probe\n\n \
+         Quick safety check: Is this a project you created or one you trust? (Like your own \
+         code, a well-known open source project, or work from your team).\n\n \
+         ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n";
+
     #[test]
-    fn approval_row_is_recognized_for_both_dialog_layouts() {
-        assert!(trust_approval_selected(AGY_TRUST));
-        assert!(trust_approval_selected(CLAUDE_TRUST));
-        assert!(TRUST_PROMPT_MARKERS.iter().any(|m| AGY_TRUST.contains(m)));
-        assert!(TRUST_PROMPT_MARKERS
-            .iter()
-            .any(|m| CLAUDE_TRUST.contains(m)));
+    fn approval_row_is_recognized_for_every_dialog_layout() {
+        assert_eq!(trust_step(AGY_TRUST), TrustStep::Confirm);
+        assert_eq!(trust_step(CLAUDE_TRUST), TrustStep::Confirm);
+        for screen in [AGY_TRUST, CLAUDE_TRUST, CLAUDE_TRUST_DECLINE_FIRST] {
+            assert!(TRUST_PROMPT_MARKERS.iter().any(|m| screen.contains(m)));
+        }
     }
 
     #[test]
-    fn confirm_is_withheld_unless_the_caret_sits_on_the_approval_row() {
-        // Reordered menu with the decline row selected: Enter would decline, so the
-        // probe must not send it and instead report the folder as untrusted.
-        let decline_selected = AGY_TRUST
+    fn caret_above_the_approval_row_moves_down_then_confirms() {
+        assert_eq!(trust_step(CLAUDE_TRUST_DECLINE_FIRST), TrustStep::MoveDown);
+        // The screen claude 2.1.318 redraws after one Down.
+        let moved = CLAUDE_TRUST_DECLINE_FIRST
+            .replace("❯ No, exit", "  No, exit")
+            .replace("   Yes, I trust this folder", " ❯ Yes, I trust this folder");
+        assert_eq!(trust_step(&moved), TrustStep::Confirm);
+    }
+
+    #[test]
+    fn confirm_and_moves_are_withheld_unless_approval_is_reachable_by_moving_down() {
+        // Decline row selected *below* approval: Enter would decline and Down moves
+        // away, so the probe must report the folder as untrusted.
+        let decline_below = AGY_TRUST
             .replace("> Yes, I trust this folder", "  Yes, I trust this folder")
             .replace("   No, exit", " > No, exit");
-        assert!(!trust_approval_selected(&decline_selected));
+        assert_eq!(trust_step(&decline_below), TrustStep::Refuse);
+        // Caret further above approval than the probe is willing to move.
+        let far = "❯ a\n  b\n  c\n  d\n  Yes, I trust this folder\n";
+        assert_eq!(trust_step(far), TrustStep::Refuse);
         // Approval text alone (no caret anywhere) is not a selection either.
-        assert!(!trust_approval_selected("  Yes, I trust this folder\n"));
+        assert_eq!(
+            trust_step("  Yes, I trust this folder\n"),
+            TrustStep::Refuse
+        );
+        // A dialog without the approval row offers nothing to confirm.
+        assert_eq!(trust_step("❯ No, exit\n"), TrustStep::Refuse);
         // An ordinary boot screen carries neither the prompt nor a selection.
-        assert!(!trust_approval_selected("? for shortcuts\n"));
+        assert_eq!(trust_step("? for shortcuts\n"), TrustStep::Refuse);
     }
 }
