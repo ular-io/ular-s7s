@@ -63,6 +63,45 @@ pub(super) fn trust_step(screen: &str) -> TrustStep {
     }
 }
 
+/// How long the probe keeps reading a trust dialog that is not yet actionable before
+/// it gives up. The dialog can arrive in several writes: on a fresh macOS install
+/// (claude 2.1.318) the first screen showing the prompt ended mid-sentence, before
+/// the menu rows, so it lacked the approval row the decision needs.
+pub(super) const TRUST_RENDER_GRACE: Duration = Duration::from_secs(3);
+
+/// Key the probe sends next to a trust dialog on screen.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TrustKey {
+    Enter,
+    Down,
+    /// Read the screen again: a move has not redrawn yet, or the dialog is still
+    /// arriving within `TRUST_RENDER_GRACE`.
+    Wait,
+    GiveUp,
+}
+
+/// Decides the next key from the current screen, the caret moves already sent,
+/// the time since the last move, and how long the prompt has been on screen.
+pub(super) fn trust_key(
+    screen: &str,
+    moves: usize,
+    since_move: Option<Duration>,
+    shown_for: Duration,
+) -> TrustKey {
+    let step = trust_step(screen);
+    if step == TrustStep::Confirm {
+        return TrustKey::Enter;
+    }
+    if since_move.is_some_and(|elapsed| elapsed < TRUST_MOVE_SETTLE) {
+        return TrustKey::Wait;
+    }
+    match step {
+        TrustStep::MoveDown if moves < TRUST_MAX_MOVES => TrustKey::Down,
+        _ if shown_for < TRUST_RENDER_GRACE => TrustKey::Wait,
+        _ => TrustKey::GiveUp,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +162,46 @@ mod tests {
         assert_eq!(trust_step("❯ No, exit\n"), TrustStep::Refuse);
         // An ordinary boot screen carries neither the prompt nor a selection.
         assert_eq!(trust_step("? for shortcuts\n"), TrustStep::Refuse);
+    }
+
+    #[test]
+    fn a_dialog_still_arriving_is_waited_for_then_given_up() {
+        // Capture from a fresh macOS install: the prompt is on screen but the write
+        // stopped mid-sentence, before the menu rows.
+        let partial = "\n Accessing workspace:\n\n /Users/x/.config/s7s/probe\n\n Quick safety \
+             check: Is this a project you created or one you trust? (Like your own code, a \
+             well-known open source project, or work from your team). If";
+        assert!(TRUST_PROMPT_MARKERS.iter().any(|m| partial.contains(m)));
+        let early = Duration::from_millis(200);
+        assert_eq!(trust_key(partial, 0, None, early), TrustKey::Wait);
+        assert_eq!(
+            trust_key(partial, 0, None, TRUST_RENDER_GRACE),
+            TrustKey::GiveUp
+        );
+        // Once the rest arrives within the grace, the normal decision applies.
+        assert_eq!(
+            trust_key(CLAUDE_TRUST_DECLINE_FIRST, 0, None, early),
+            TrustKey::Down
+        );
+        assert_eq!(trust_key(CLAUDE_TRUST, 0, None, early), TrustKey::Enter);
+    }
+
+    #[test]
+    fn a_move_is_given_time_to_redraw_before_the_next_key() {
+        let settling = Some(Duration::from_millis(100));
+        let settled = Some(TRUST_MOVE_SETTLE);
+        let late = TRUST_RENDER_GRACE;
+        // Unredrawn move: no second Down, no give-up yet.
+        assert_eq!(
+            trust_key(CLAUDE_TRUST_DECLINE_FIRST, 1, settling, late),
+            TrustKey::Wait
+        );
+        // Redrawn onto approval: confirm without waiting out the settle time.
+        assert_eq!(trust_key(CLAUDE_TRUST, 1, settling, late), TrustKey::Enter);
+        // Moves used up and the caret still above approval: give up.
+        assert_eq!(
+            trust_key(CLAUDE_TRUST_DECLINE_FIRST, TRUST_MAX_MOVES, settled, late),
+            TrustKey::GiveUp
+        );
     }
 }

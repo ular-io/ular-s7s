@@ -1,10 +1,7 @@
 //! PTY lifecycle, screen capture, and child-process cleanup for CLI screen probes.
 
 use super::process::{collect_descendants, parent_pid, pids_of};
-use super::trust::{
-    trust_step, TrustStep, TRUST_CONFIRM_GRACE, TRUST_MAX_MOVES, TRUST_MOVE_SETTLE,
-    TRUST_PROMPT_MARKERS,
-};
+use super::trust::{trust_key, TrustKey, TRUST_CONFIRM_GRACE, TRUST_PROMPT_MARKERS};
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
@@ -127,6 +124,8 @@ pub(crate) fn drive_screen(
     // Caret moves sent toward the approval row, and when the last one went out.
     let mut trust_moves = 0usize;
     let mut trust_moved_at: Option<Instant> = None;
+    // When the prompt first appeared, for `TRUST_RENDER_GRACE`.
+    let mut trust_shown_at: Option<Instant> = None;
 
     let result = loop {
         // Receives screen updates (200ms polling).
@@ -146,11 +145,11 @@ pub(crate) fn drive_screen(
             // for every workspace missing from `trustedWorkspaces`, so the dedicated probe
             // folder needs confirming once per agent config. Gated on that folder and on the
             // caret sitting on the approval row (moved down to it when the menu selects
-            // `No` first, see `trust_step`). Never falls through to typing while a dialog
+            // `No` first, and waited for while the dialog is still arriving, see `trust_key`). Never falls through to typing while a dialog
             // is up (`/usage` would land in the menu), and runs before the logout grace so
             // agy's boot-time "not signed in" line cannot become `NotLoggedIn`.
             if TRUST_PROMPT_MARKERS.iter().any(|m| screen.contains(m)) {
-                let settling = trust_moved_at.is_some_and(|at| at.elapsed() < TRUST_MOVE_SETTLE);
+                let shown_at = *trust_shown_at.get_or_insert_with(Instant::now);
                 match trust_confirmed_at {
                     Some(at) if at.elapsed() > TRUST_CONFIRM_GRACE => {
                         break Err(anyhow!("{cmd}: trust prompt not dismissed by confirm"));
@@ -159,24 +158,29 @@ pub(crate) fn drive_screen(
                     None if !may_confirm_trust => {
                         break Err(anyhow!("{cmd}: untrusted folder (trust prompt)"));
                     }
-                    None => match trust_step(&screen) {
-                        TrustStep::Confirm => {
+                    None => match trust_key(
+                        &screen,
+                        trust_moves,
+                        trust_moved_at.map(|at| at.elapsed()),
+                        shown_at.elapsed(),
+                    ) {
+                        TrustKey::Enter => {
                             let _ = writer.write_all(b"\r");
                             let _ = writer.flush();
                             trust_confirmed_at = Some(Instant::now());
                             continue;
                         }
-                        // The last move may not have redrawn yet; read again before
-                        // moving further or giving up.
-                        _ if settling => continue,
-                        TrustStep::MoveDown if trust_moves < TRUST_MAX_MOVES => {
+                        TrustKey::Down => {
                             let _ = writer.write_all(b"\x1b[B");
                             let _ = writer.flush();
                             trust_moves += 1;
                             trust_moved_at = Some(Instant::now());
                             continue;
                         }
-                        _ => break Err(anyhow!("{cmd}: untrusted folder (trust prompt)")),
+                        TrustKey::Wait => continue,
+                        TrustKey::GiveUp => {
+                            break Err(anyhow!("{cmd}: untrusted folder (trust prompt)"));
+                        }
                     },
                 }
             }
