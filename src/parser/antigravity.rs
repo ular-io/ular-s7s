@@ -8,6 +8,8 @@
 //! - Table `steps`, rows where `step_type=14` represent user turns.
 //! - In `step_payload` (protobuf), user message is field `19.2`,
 //!   timestamp (seconds) is field `5.1.1`, and workspace URI is field `19.12.12`.
+//!   The URI (and `WorkspaceURIs` in `conversation_metadata.json`) is percent-encoded
+//!   with NFD Hangul; `file_uri_to_path` decodes it to an NFC path.
 //!   A `/<skill>` input carries each invoked skill as repeated `19.3`, with the
 //!   skill name at `.2.27.1.1` and its `<SKILL>` body at `.2.27.1.2` (agy 1.4.x).
 //! - Rows where `step_type=138` represent ask_question (agent questions). For each field `154.1` block,
@@ -72,7 +74,7 @@ pub fn load_metadata(cli_dir: &Path) -> HashMap<String, Meta> {
             .and_then(Value::as_array)
             .and_then(|a| a.first())
             .and_then(Value::as_str)
-            .map(strip_file_uri);
+            .map(file_uri_to_path);
         out.insert(
             id.clone(),
             Meta {
@@ -287,7 +289,7 @@ fn extract_user_step(payload: &[u8]) -> Option<UserStep> {
     // Workspace: 19.12.12 (file:// URI)
     let workspace = pb_get_bytes(f19, 12)
         .and_then(|f19_12| pb_get_bytes(f19_12, 12))
-        .map(|b| strip_file_uri(&String::from_utf8_lossy(b)));
+        .map(|b| file_uri_to_path(&String::from_utf8_lossy(b)));
 
     let ts_ms = step_timestamp_ms(payload).unwrap_or(0);
 
@@ -360,8 +362,39 @@ fn extract_ask_answers(payload: &[u8]) -> Option<String> {
 
 // ---- Path Helpers ----
 
-fn strip_file_uri(uri: &str) -> String {
-    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+/// Converts a stored workspace URI into the folder path.
+///
+/// agy writes the folder as a percent-encoded `file://` URI (spaces, non-ASCII)
+/// with macOS NFD Hangul. Claude and Codex record the same folder in NFC, and
+/// workspace folders compare paths exactly, so the result is NFC as well.
+fn file_uri_to_path(uri: &str) -> String {
+    match uri.strip_prefix("file://") {
+        Some(rest) => crate::normalize::nfc(&percent_decode(rest).unwrap_or_else(|| rest.into())),
+        None => crate::normalize::nfc(uri),
+    }
+}
+
+/// Decodes `%XX` escapes. Returns `None` when the decoded bytes are not UTF-8.
+fn percent_decode(s: &str) -> Option<String> {
+    let hex = |b: u8| (b as char).to_digit(16);
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).and_then(|&b| hex(b)),
+                bytes.get(i + 2).and_then(|&b| hex(b)),
+            ) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 fn parse_pbtxt_title(data: &str) -> Option<String> {

@@ -419,3 +419,36 @@ fn parse_db_keeps_a_bare_skill_call_and_drops_a_bare_builtin_command() {
     assert_eq!(session.user_turns, vec!["first question", "/wrapup"]);
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn workspace_uri_is_percent_decoded_to_an_nfc_path() {
+    // agy 1.x records `.../1. 과제/26-11 이동` like this: spaces and NFD Hangul escaped.
+    let uri = "file:///Users/username/My%20Drive/1.%20%E1%84%80%E1%85%AA%E1%84%8C%E1%85%A6/26-11%20%E1%84%8B%E1%85%B5%E1%84%83%E1%85%A9%E1%86%BC";
+    assert_eq!(
+        file_uri_to_path(uri),
+        "/Users/username/My Drive/1. \u{acfc}\u{c81c}/26-11 \u{c774}\u{b3d9}"
+    );
+}
+
+#[test]
+fn workspace_uri_keeps_malformed_escapes_and_plain_paths() {
+    assert_eq!(file_uri_to_path("file:///tmp/100%/a%2"), "/tmp/100%/a%2");
+    assert_eq!(file_uri_to_path("file:///tmp/%+F"), "/tmp/%+F");
+    // Escapes that decode to invalid UTF-8 leave the URI path untouched.
+    assert_eq!(file_uri_to_path("file:///tmp/%FF"), "/tmp/%FF");
+    // A value without the scheme is already a path; `%` stays literal.
+    assert_eq!(file_uri_to_path("/tmp/a%20b"), "/tmp/a%20b");
+}
+
+#[test]
+fn workspace_from_user_step_is_decoded() {
+    let mut step = pb_len_field(2, b"hello");
+    step.extend(pb_len_field(
+        12,
+        &pb_len_field(12, b"file:///Users/username/a%20b"),
+    ));
+    let mut payload = pb_len_field(19, &step);
+    payload.extend(timestamp_payload(1_000));
+    let user = extract_user_step(&payload).expect("user step");
+    assert_eq!(user.workspace.as_deref(), Some("/Users/username/a b"));
+}
