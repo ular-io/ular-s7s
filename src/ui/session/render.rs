@@ -12,7 +12,7 @@
 
 use super::table_layout::{table_layout, TableColumn};
 use crate::model::format_local_datetime_seconds;
-use crate::ui::components::modal::titled_block_nav;
+use crate::ui::components::modal::{count_label, titled_block_nav, with_count_footer};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{truncate_w, wrap_w};
 use crate::ui::render::{
@@ -203,7 +203,17 @@ pub(crate) fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
     // Every pane without focus fades, as the table does when this one has it;
     // an overlay or the search prompt leaves both undimmed.
     let dimmed = app.focus != Focus::Preview && app.mode == UiMode::Table;
-    let block = titled_block_nav(" Prompt ", preview_focus, dimmed, true, true, th);
+    // The Session Prompt scrolls by line and has no selected turn: count only.
+    let count = app
+        .current()
+        .and_then(|s| count_label(None, s.user_turns.len(), "prompt", "prompts", area.width));
+    let block = with_count_footer(
+        titled_block_nav(" Prompt ", preview_focus, dimmed, true, true, th),
+        count,
+        preview_focus,
+        dimmed,
+        th,
+    );
     let inner_w = area.width.saturating_sub(2) as usize;
     let (heading_style, content_style) = if dimmed {
         (th.soft_dim().add_modifier(Modifier::BOLD), th.soft_dim())

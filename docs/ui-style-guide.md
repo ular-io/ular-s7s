@@ -265,6 +265,24 @@ Additional rules:
 - The selected-row style is applied over span styles, so a note or footer stays
   dim on the cursor row. Never make one the only signal a row is selected.
 
+## Pane count footer
+
+A list pane shows its item count on the bottom border, right-aligned one
+border cell before the corner, in `soft_dim()` (same form as ular-git's
+History pane `2 / 774 commits`). The helpers are `count_label` and
+`with_count_footer` in `ui/components/modal.rs`; the trailing border cell
+follows the `titled_block_nav` state (`━` focused, `─` otherwise).
+
+| Pane | Label | Why |
+| --- | --- | --- |
+| Session Prompt | ` 15 prompts ` | scrolls by line, no turn is selected |
+| Detail Prompt | ` 2 / 15 prompts ` | ↑/↓ selects a turn; 1-based position |
+
+- One item uses the singular unit (` 1 prompt `).
+- When the label leaves fewer than four border cells to its left, the unit is
+  dropped (` 2 / 15 `); if that still does not fit, nothing is shown.
+- No session selected: no label.
+
 ## Preview omission and expansion
 
 - A user turn of at most eight original lines is shown in full. Longer turns

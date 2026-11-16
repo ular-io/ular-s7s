@@ -5,7 +5,7 @@
 use crate::handoff::WorkKind;
 use crate::model::format_local_datetime_seconds;
 use crate::theme::Theme;
-use crate::ui::components::modal::titled_block_nav;
+use crate::ui::components::modal::{count_label, titled_block_nav, with_count_footer};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{pad_w, wrap_w};
 use crate::ui::render::{
@@ -46,7 +46,20 @@ fn draw_detail_prompt(f: &mut Frame, app: &App, area: Rect, detail: &SessionDeta
     let focused = detail.focus == DetailFocus::Questions && app.mode == UiMode::Table;
     // Fades only while the Work panel has focus: an overlay leaves it undimmed.
     let dimmed = detail.focus == DetailFocus::Work && app.mode == UiMode::Table;
-    let block = titled_block_nav(" Prompt ", focused, dimmed, true, true, th);
+    let count = count_label(
+        (!detail.turns.is_empty()).then_some(detail.selected + 1),
+        detail.turns.len(),
+        "prompt",
+        "prompts",
+        area.width,
+    );
+    let block = with_count_footer(
+        titled_block_nav(" Prompt ", focused, dimmed, true, true, th),
+        count,
+        focused,
+        dimmed,
+        th,
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {

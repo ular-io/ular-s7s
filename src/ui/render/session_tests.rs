@@ -277,3 +277,32 @@ fn preview_scrolls_when_content_overflows() {
         "Should scroll when content overflows"
     );
 }
+
+#[test]
+fn prompt_panes_show_the_prompt_count_on_the_bottom_border() {
+    // Session Prompt has no selected turn: the count alone, on the thin border.
+    let text = rendered_text(&session_app(), 140, 24);
+    assert!(text.contains(" 2 prompts ─┘"), "{text}");
+    assert!(!text.contains(" / 2"), "{text}");
+
+    // Detail Prompt selects a turn: its place, on the focused thick border.
+    let mut app = detail_app();
+    let text = rendered_text(&app, 140, 24);
+    assert!(text.contains(" 1 / 2 prompts ━┛"), "{text}");
+    app.on_key_detail(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let text = rendered_text(&app, 140, 24);
+    assert!(text.contains(" 2 / 2 prompts ━┛"), "{text}");
+}
+
+#[test]
+fn prompt_count_label_singular_and_narrow_fallbacks() {
+    use crate::ui::components::modal::count_label;
+    let label = |pos, total, width| count_label(pos, total, "prompt", "prompts", width);
+    assert_eq!(label(None, 1, 40).as_deref(), Some(" 1 prompt "));
+    assert_eq!(label(Some(3), 12, 40).as_deref(), Some(" 3 / 12 prompts "));
+    // 7 cells of border around the label: the unit goes first, then the label.
+    assert_eq!(label(Some(3), 12, 23).as_deref(), Some(" 3 / 12 prompts "));
+    assert_eq!(label(Some(3), 12, 22).as_deref(), Some(" 3 / 12 "));
+    assert_eq!(label(Some(3), 12, 14).as_deref(), None);
+    assert_eq!(label(None, 12, 17).as_deref(), None);
+}

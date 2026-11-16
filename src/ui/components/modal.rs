@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn modal_block(title: &str, color: Color) -> Block<'static> {
     Block::default()
@@ -137,6 +138,62 @@ pub(crate) fn titled_block_nav(
         block = block.title_top(Line::from(" → ━").right_aligned().style(style));
     }
     block
+}
+
+/// Bottom-border count of a list pane (shared with ular-git's History pane):
+/// ` 2 / 15 prompts ` while an item is selected, ` 15 prompts ` without one,
+/// ` 2 / 15 ` when narrow, and nothing when even that would leave no border
+/// to its left. `position` is 1-based.
+pub(crate) fn count_label(
+    position: Option<usize>,
+    total: usize,
+    singular: &str,
+    plural: &str,
+    width: u16,
+) -> Option<String> {
+    let unit = if total == 1 { singular } else { plural };
+    let labels = match position {
+        Some(pos) => vec![
+            format!(" {pos} / {total} {unit} "),
+            format!(" {pos} / {total} "),
+        ],
+        None => vec![format!(" {total} {unit} ")],
+    };
+    // Two corners, the border cell after the label, four before it.
+    let room = (width as usize).saturating_sub(2 + 1 + 4);
+    labels.into_iter().find(|l| l.width() <= room)
+}
+
+/// Puts `label` (soft-dim, spaces included) on the bottom border of a
+/// `titled_block_nav` frame, right-aligned one border cell before the corner.
+pub(crate) fn with_count_footer(
+    block: Block<'static>,
+    label: Option<String>,
+    focused: bool,
+    dimmed: bool,
+    th: &Theme,
+) -> Block<'static> {
+    let Some(label) = label else {
+        return block;
+    };
+    // Matches the frame `titled_block_nav` draws for the same state.
+    let (line, style) = if focused {
+        (
+            "━",
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+        )
+    } else if dimmed {
+        ("─", th.soft_dim())
+    } else {
+        ("─", Style::default())
+    };
+    block.title_bottom(
+        Line::from(vec![
+            Span::styled(label, th.soft_dim()),
+            Span::styled(line, style),
+        ])
+        .right_aligned(),
+    )
 }
 
 /// Single-line form input box titled with its label (three rows with borders).
