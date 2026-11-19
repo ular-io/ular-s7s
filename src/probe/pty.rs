@@ -18,6 +18,18 @@ pub(crate) enum DriveOutcome {
 
 pub(crate) const CAPTURE_SEPARATOR: &str = "\n--- s7s screen capture ---\n";
 
+/// Next key a capture step sends after the completion markers appear (see `drive_screen`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureKey {
+    /// Move the caret down one row, e.g. to reveal rows below a scrolling list.
+    Down,
+    /// Press Enter. Only for a row whose Enter cannot change CLI state (expanding a group):
+    /// Enter on an ordinary picker row saves that choice in the CLI's own config.
+    Enter,
+    /// Capture is complete.
+    Stop,
+}
+
 /// Drives the CLI inside a PTY to execute a slash command and capture the final screen (generic).
 /// Shared by usage queries (`/usage`, `/status`) and model list queries (`/model`).
 ///
@@ -31,8 +43,10 @@ pub(crate) const CAPTURE_SEPARATOR: &str = "\n--- s7s screen capture ---\n";
 ///
 /// `dump_env` names an environment variable that, when set to a directory, receives a dump of the
 /// final screen text (client-chosen so this driver stays neutral about what is being probed).
-/// `capture_down_while` receives the initial screen and all captured screens so far. It lets a
-/// client collect rows below a scrollable screen without teaching the PTY driver its format.
+/// `capture_step` receives the initial screen and all captured screens so far (joined by
+/// `CAPTURE_SEPARATOR`, the latest last) and picks the next key. It lets a client collect rows
+/// below a scrollable screen, or inside a collapsed group, without teaching the PTY driver
+/// its format.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drive_screen(
     cmd: &str,
@@ -44,7 +58,7 @@ pub(crate) fn drive_screen(
     enter_delay: Duration,
     envs: &[(&str, &Path)],
     dump_env: Option<&str>,
-    capture_down_while: Option<fn(&str, &str) -> bool>,
+    capture_step: Option<fn(&str, &str) -> CaptureKey>,
 ) -> Result<DriveOutcome> {
     // Set a wide width so that agy's 5h `Disabled` message (~150 chars) fits on a single line
     // (at 120 width, the refresh time details get truncated).
@@ -229,14 +243,16 @@ pub(crate) fn drive_screen(
             let mut current = parser.screen().contents();
             let initial = current.clone();
             let mut captured = initial.clone();
-            if let Some(should_scroll) = capture_down_while {
+            if let Some(step) = capture_step {
                 for _ in 0..40 {
-                    if !should_scroll(&initial, &captured) {
-                        break;
-                    }
-                    let _ = writer.write_all(b"\x1b[B");
+                    let (key, settle) = match step(&initial, &captured) {
+                        CaptureKey::Stop => break,
+                        CaptureKey::Down => (&b"\x1b[B"[..], 100),
+                        CaptureKey::Enter => (&b"\r"[..], 400),
+                    };
+                    let _ = writer.write_all(key);
                     let _ = writer.flush();
-                    thread::sleep(Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(settle));
                     while let Ok(chunk) = brx.try_recv() {
                         parser.process(&chunk);
                     }

@@ -293,3 +293,127 @@ fn parse_claude_model_screen_requires_header() {
     // Numbered lines before "Select model" header (e.g. boot banners) are ignored.
     assert!(parse_claude_model_screen("  1. Fable  Fable 5\n").is_none());
 }
+
+/// claude 2.1.328 folds older models into `▸ More models`. Screens captured on 2026-11-19.
+const PICKER_2_1_328_COLLAPSED: &str = "\
+  Select model
+  Your pick is the default for new sessions. For other models, use --model.
+    1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+  ❯ 2.  Opus 5.5 ✔             For complex work and everyday tasks
+    3.  Fable 5.2              For your toughest challenges
+    4.  Sonnet 5.5             Most efficient for simpler tasks
+    5.  Haiku 5.5              Fastest for quick answers
+    ▸   More models
+  ● High effort ←/→ to adjust
+  s to use this session only · Enter to save · Esc to cancel
+";
+
+const PICKER_2_1_328_ON_GROUP: &str = "\
+  Select model
+    1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+    2.  Opus 5.5 ✔             For complex work and everyday tasks
+    3.  Fable 5.2              For your toughest challenges
+    4.  Sonnet 5.5             Most efficient for simpler tasks
+    5.  Haiku 5.5              Fastest for quick answers
+  ❯ ▸   More models
+  Enter to expand · Esc to cancel
+";
+
+fn picker_2_1_328_expanded(caret: usize) -> String {
+    let rows = [
+        "Default (recommended)  Opus 5.5 · Best for everyday, complex tasks",
+        "Opus 5.5 ✔             For complex work and everyday tasks",
+        "Fable 5.2              For your toughest challenges",
+        "Sonnet 5.5             Most efficient for simpler tasks",
+        "Haiku 5.5              Fastest for quick answers",
+        "Fable 5.1              Most capable for your hardest and longest-running tasks",
+        "Haiku 4.5              Fastest for quick answers",
+        "Sonnet 5               Efficient for routine tasks",
+        "Opus 5                 Best for everyday, complex tasks",
+        "Fable 5                Most capable for your hardest and longest-running tasks",
+        "Opus 4.8               Best for everyday, complex tasks",
+        "Opus 4.7               Best for everyday, complex tasks",
+        "Opus 4.6               Best for everyday, complex tasks",
+        "Sonnet 4.6             Efficient for routine tasks",
+    ];
+    let mut screen = String::from("  Select model\n");
+    for (i, row) in rows.iter().enumerate() {
+        let n = i + 1;
+        let mark = if n == caret { "❯" } else { " " };
+        screen.push_str(&format!("  {mark} {:<4}{row}\n", format!("{n}.")));
+        if n == 5 {
+            let mark = if caret == 0 { "❯" } else { " " };
+            screen.push_str(&format!("  {mark} ▾   More models\n"));
+        }
+    }
+    screen
+}
+
+fn joined(screens: &[&str]) -> String {
+    screens.join(CAPTURE_SEPARATOR)
+}
+
+#[test]
+fn claude_2_1_328_step_expands_only_the_focused_group() {
+    use crate::probe::pty::CaptureKey;
+    let first = PICKER_2_1_328_COLLAPSED;
+    // Caret on a model row: Enter would save that model as the default, so only move down.
+    assert_eq!(claude_picker_step(first, first), CaptureKey::Down);
+    let on_group = joined(&[first, PICKER_2_1_328_ON_GROUP]);
+    assert_eq!(claude_picker_step(first, &on_group), CaptureKey::Enter);
+    let header = picker_2_1_328_expanded(0);
+    let opened = joined(&[first, PICKER_2_1_328_ON_GROUP, &header]);
+    assert_eq!(claude_picker_step(first, &opened), CaptureKey::Down);
+    let (r13, r14) = (picker_2_1_328_expanded(13), picker_2_1_328_expanded(14));
+    assert_eq!(
+        claude_picker_step(first, &joined(&[first, &r13, &r14])),
+        CaptureKey::Down
+    );
+    // The caret wraps to row 1 or stays on the last row at the end of the list.
+    let wrapped = picker_2_1_328_expanded(1);
+    assert_eq!(
+        claude_picker_step(first, &joined(&[first, &r14, &wrapped])),
+        CaptureKey::Stop
+    );
+    assert_eq!(
+        claude_picker_step(first, &joined(&[first, &r14, &r14])),
+        CaptureKey::Stop
+    );
+}
+
+#[test]
+fn parse_claude_2_1_328_picker_with_more_models_group() {
+    let first = PICKER_2_1_328_COLLAPSED;
+    let (header, last) = (picker_2_1_328_expanded(0), picker_2_1_328_expanded(14));
+    let complete = joined(&[first, PICKER_2_1_328_ON_GROUP, &header, &last]);
+    let (models, default_model) = parse_claude_model_screen(&complete).unwrap();
+    let values: Vec<&str> = models.iter().map(|m| m.value.as_str()).collect();
+    assert_eq!(
+        values,
+        [
+            "claude-opus-5-5",
+            "claude-fable-5-2",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+        ]
+    );
+    assert_eq!(default_model.as_deref(), Some("claude-opus-5-5"));
+}
+
+#[test]
+fn claude_2_1_328_picker_rejects_a_collapsed_or_gapped_capture() {
+    // The group was never expanded: the older models are missing.
+    assert!(parse_claude_model_screen(PICKER_2_1_328_COLLAPSED).is_none());
+    // Row 7 never rendered.
+    let gapped = picker_2_1_328_expanded(14).replace("    7.  Haiku 4.5", "");
+    assert!(parse_claude_model_screen(&gapped).is_none());
+}
