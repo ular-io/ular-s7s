@@ -129,5 +129,6 @@ git push origin main
 Now users can install or upgrade the tool by running:
 ```bash
 brew tap ular-io/tap
-brew install s7s      # or: brew upgrade s7s
+brew trust ular-io/tap   # required by Homebrew versions that refuse untrusted taps
+brew install s7s         # or: brew upgrade s7s
 ```

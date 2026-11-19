@@ -56,8 +56,12 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 ### Via Homebrew (macOS)
 ```bash
 brew tap ular-io/tap
+brew trust ular-io/tap
 brew install s7s
 ```
+
+> [!NOTE]
+> Recent Homebrew versions refuse to load formulae from a tap that has not been trusted (`Refusing to load formula ular-io/tap/s7s from untrusted tap ular-io/tap`). `brew trust ular-io/tap` allows it once; older Homebrew versions do not have the `trust` command and do not need this step.
 
 > [!NOTE]
 > On macOS, since custom Homebrew tap binaries are unsigned, Gatekeeper may block execution on the first run. You may need to grant trust under **System Settings > Privacy & Security** (click "Allow Anyway"), or manually clear the quarantine attribute:
