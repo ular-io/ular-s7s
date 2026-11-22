@@ -85,7 +85,10 @@ active documentation.
 
 Every code change must pass `scripts/check.sh` (`cargo fmt --all -- --check`,
 `cargo test -q`, `cargo clippy --all-targets --all-features -- -D warnings`,
-`cargo build --release`). The changes below additionally require a manual check —
+`cargo build --release`) and then install `target/release/s7s` to
+`~/.local/bin/s7s` (`mkdir -p ~/.local/bin && install -m 755 target/release/s7s ~/.local/bin/s7s`)
+so the next `s7s` launch runs it. A running instance keeps the old binary
+until it is restarted; say so when reporting. The changes below additionally require a manual check —
 automated tests alone are insufficient. [testing.md](./docs/testing.md) is the
 authoritative matrix; the essentials:
 
