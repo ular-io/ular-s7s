@@ -113,8 +113,7 @@ fn codex_time_on_day_month_reset() {
 
 #[test]
 fn agy_real_screen_claude_group() {
-    // agy 1.0.16 /usage live verification: reads group for the active model (Claude),
-    // leaving the Disabled 5h window as None.
+    // Captured from agy 1.0.16 /usage.
     let s = "\
 GEMINI MODELS
   Models within this group: Gemini Flash, Gemini Pro
@@ -312,19 +311,11 @@ CLAUDE AND GPT MODELS
     [██████████████████████████████████████████████████] 100.00%
     Quota available
                                                 auto · Gemini 4 Argon (High)";
-    assert_eq!(
-        parse_agy_at(screen, now()),
-        Some(UsageSnapshot {
-            current: Some(UsageWindow {
-                pct_left: 100,
-                reset: None,
-            }),
-            weekly: Some(UsageWindow {
-                pct_left: 77,
-                reset: cd(5, 11, 12),
-            }),
-        })
-    );
+    let snapshot = parse_agy_at(screen, now()).unwrap();
+    let current = snapshot.current.unwrap();
+    let weekly = snapshot.weekly.unwrap();
+    assert_eq!((current.pct_left, current.reset), (100, None));
+    assert_eq!((weekly.pct_left, weekly.reset), (77, cd(5, 11, 12)));
     assert_eq!(
         parse_agy_at(&screen.replace(", Gemini 4 Argon,", ","), now()),
         None

@@ -104,7 +104,6 @@ pub(super) fn parse_agy_at(text: &str, now: NaiveDateTime) -> Option<UsageSnapsh
         None if argon => return None,
         None => 0,
     };
-    // Group section: from the header to just before the next group header.
     let end = lines
         .iter()
         .enumerate()
