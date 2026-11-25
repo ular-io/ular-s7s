@@ -87,19 +87,23 @@ pub(super) fn parse_agy_at(text: &str, now: NaiveDateTime) -> Option<UsageSnapsh
         .find(|l| !l.trim().is_empty())
         .copied()
         .unwrap_or("");
-    // agy 1.4.9 added a separate `GEMINI 4 ARGON` bucket that has only a weekly
-    // limit (`Gemini 4 Argon Weekly Limit`); its models also contain "Gemini".
-    let (group, weekly_labels): (&str, &[&str]) = if footer.contains("Argon") {
+    let argon = footer.contains("Argon");
+    let separate_argon = argon && lines.iter().any(|line| line.trim() == "GEMINI 4 ARGON");
+    let (group, weekly_labels): (&str, &[&str]) = if separate_argon {
         (
             "GEMINI 4 ARGON",
             &["gemini 4 argon weekly limit", "weekly limit"],
         )
-    } else if footer.contains("Gemini") {
+    } else if argon || footer.contains("Gemini") {
         ("GEMINI MODELS", &["weekly limit"])
     } else {
         ("CLAUDE AND GPT MODELS", &["weekly limit"])
     };
-    let start = lines.iter().position(|l| l.contains(group)).unwrap_or(0);
+    let start = match lines.iter().position(|line| line.trim() == group) {
+        Some(start) => start,
+        None if argon => return None,
+        None => 0,
+    };
     // Group section: from the header to just before the next group header.
     let end = lines
         .iter()
@@ -109,6 +113,16 @@ pub(super) fn parse_agy_at(text: &str, now: NaiveDateTime) -> Option<UsageSnapsh
         .map(|(i, _)| i)
         .unwrap_or(lines.len());
     let section = &lines[start..end];
+    if argon
+        && !separate_argon
+        && !section
+            .iter()
+            .filter_map(|line| line.trim_start().strip_prefix("Models within this group:"))
+            .flat_map(|models| models.split(','))
+            .any(|model| model.trim() == "Gemini 4 Argon")
+    {
+        return None;
+    }
     let current = agy_window(section, &["five hour limit", "5h limit", "5-hour limit"]);
     let weekly = agy_window(section, weekly_labels);
     let _ = now; // agy only uses relative notation, but signature is kept consistent with other parsers.

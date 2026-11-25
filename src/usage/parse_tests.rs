@@ -293,3 +293,40 @@ fn agy_1_4_9_groups_follow_the_active_model() {
         Some((0, cd(1, 18, 35)))
     );
 }
+
+#[test]
+fn agy_1_5_17_reads_shared_quota_for_argon() {
+    let screen = "\
+    ▀▀▀▀▀▀▀▀      Gemini 4 Argon (High)
+
+GEMINI MODELS
+  Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen
+  Weekly Limit Remaining
+    [██████████████████████████████████████░░░░░░░░░░░░] 76.83%
+    Refreshes in 5d 11h 12m
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+CLAUDE AND GPT MODELS
+  Weekly Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+                                                auto · Gemini 4 Argon (High)";
+    assert_eq!(
+        parse_agy_at(screen, now()),
+        Some(UsageSnapshot {
+            current: Some(UsageWindow {
+                pct_left: 100,
+                reset: None,
+            }),
+            weekly: Some(UsageWindow {
+                pct_left: 77,
+                reset: cd(5, 11, 12),
+            }),
+        })
+    );
+    assert_eq!(
+        parse_agy_at(&screen.replace(", Gemini 4 Argon,", ","), now()),
+        None
+    );
+}
