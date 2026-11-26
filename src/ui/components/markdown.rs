@@ -5,8 +5,10 @@
 //! Copy, search, and handoff keep using the raw text — this is display only.
 
 use crate::theme::Theme;
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use pulldown_cmark::{
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd,
+};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -15,7 +17,10 @@ use unicode_width::UnicodeWidthStr;
 pub(crate) fn render_markdown(text: &str, width: usize, th: &Theme) -> Vec<Line<'static>> {
     let text = text.replace('\t', "    ");
     let mut r = Renderer::new(width.max(1), th);
-    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let opts = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_GFM;
     for event in Parser::new_ext(&text, opts) {
         r.event(event);
     }
@@ -129,7 +134,8 @@ struct Renderer<'t> {
     cur: Spans,
     styles: Vec<Style>,
     lists: Vec<Option<u64>>,
-    quote: usize,
+    /// Open block quotes, outermost first; `Some` marks a GFM alert.
+    quotes: Vec<Option<BlockQuoteKind>>,
     bullet: Option<String>,
     bullet_used: bool,
     heading_level: usize,
@@ -147,7 +153,7 @@ impl<'t> Renderer<'t> {
             cur: Vec::new(),
             styles: Vec::new(),
             lists: Vec::new(),
-            quote: 0,
+            quotes: Vec::new(),
             bullet: None,
             bullet_used: false,
             heading_level: 0,
@@ -165,13 +171,36 @@ impl<'t> Renderer<'t> {
         self.styles.push(self.style().patch(st));
     }
 
+    /// Quote bar, fill color, and label of a GFM alert. The two lighter kinds
+    /// get the thin bar so weight reads from shape as well as from color.
+    fn alert(&self, kind: BlockQuoteKind) -> (&'static str, Color, &'static str) {
+        let md = self.th.md;
+        match kind {
+            BlockQuoteKind::Note => ("▎", md.alert_note, "NOTE"),
+            BlockQuoteKind::Tip => ("▎", md.alert_tip, "TIP"),
+            BlockQuoteKind::Important => ("█", md.alert_important, "IMPORTANT"),
+            BlockQuoteKind::Warning => ("█", md.alert_warning, "WARNING"),
+            BlockQuoteKind::Caution => ("█", md.alert_caution, "CAUTION"),
+        }
+    }
+
     fn border(&self) -> Style {
         Style::default().fg(self.th.md.border)
     }
 
     /// Quote bars, list indentation, and the item marker (first line only).
     fn prefix(&self, first: bool) -> Spans {
-        let mut p = vec![Span::styled("▎ ", self.border()); self.quote];
+        let mut p: Spans = self
+            .quotes
+            .iter()
+            .map(|quote| match quote {
+                None => Span::styled("▎ ", self.border()),
+                Some(kind) => {
+                    let (bar, fill, _) = self.alert(*kind);
+                    Span::styled(format!("{bar} "), Style::default().fg(fill))
+                }
+            })
+            .collect();
         if let Some(depth) = self.lists.len().checked_sub(1) {
             p.push(Span::raw("  ".repeat(depth)));
             p.push(match (&self.bullet, first) {
@@ -211,7 +240,7 @@ impl<'t> Renderer<'t> {
     /// Paragraph-like block end: a blank line only between top-level blocks.
     fn end_block(&mut self) {
         self.flush();
-        if self.lists.is_empty() && self.quote == 0 {
+        if self.lists.is_empty() && self.quotes.is_empty() {
             self.blank();
         }
     }
@@ -281,10 +310,23 @@ impl<'t> Renderer<'t> {
                 self.heading_level = level as usize;
                 self.push_style(Style::default().add_modifier(Modifier::BOLD));
             }
-            Tag::BlockQuote(_) => {
+            Tag::BlockQuote(kind) => {
                 self.flush();
-                self.quote += 1;
-                self.push_style(Style::default().fg(md.quote));
+                self.quotes.push(kind);
+                match kind {
+                    None => self.push_style(Style::default().fg(md.quote)),
+                    Some(kind) => {
+                        self.push_style(Style::default());
+                        let (_, fill, label) = self.alert(kind);
+                        let chip = Style::default()
+                            .fg(md.alert_fg)
+                            .bg(fill)
+                            .add_modifier(Modifier::BOLD);
+                        let mut title = self.prefix(false);
+                        title.push(Span::styled(format!("\u{a0}{label}\u{a0}"), chip));
+                        self.out.push(Line::from(title));
+                    }
+                }
             }
             Tag::CodeBlock(kind) => {
                 self.flush();
@@ -350,7 +392,7 @@ impl<'t> Renderer<'t> {
             }
             TagEnd::BlockQuote(_) => {
                 self.flush();
-                self.quote = self.quote.saturating_sub(1);
+                self.quotes.pop();
                 self.styles.pop();
                 self.blank();
             }

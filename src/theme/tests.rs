@@ -210,6 +210,15 @@ fn derived_markdown_colors_meet_contrast_targets() {
             assert!(on(color, bg) >= 4.5, "{} {role}", t.key);
         }
         assert!(on(md.marker, bg) >= 3.0, "{} marker", t.key);
+        for fill in [
+            md.alert_note,
+            md.alert_tip,
+            md.alert_important,
+            md.alert_warning,
+            md.alert_caution,
+        ] {
+            assert!(on(md.alert_fg, color_rgb(fill)) >= 4.5, "{} alert", t.key);
+        }
     }
 }
 

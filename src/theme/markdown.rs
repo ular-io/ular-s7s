@@ -26,6 +26,14 @@ pub struct MarkdownColors {
     pub quote: Color,
     /// Code-block and table frames, quote bar, horizontal rule.
     pub border: Color,
+    /// GFM alert quotes (`> [!NOTE]` ...): label text, then the fill per kind
+    /// shared by the label chip and the quote bar.
+    pub alert_fg: Color,
+    pub alert_note: Color,
+    pub alert_tip: Color,
+    pub alert_important: Color,
+    pub alert_warning: Color,
+    pub alert_caution: Color,
 }
 
 /// Placeholder the palette macro replaces with derived values right away.
@@ -40,6 +48,12 @@ pub(super) const UNSET: MarkdownColors = MarkdownColors {
     link: Color::Reset,
     quote: Color::Reset,
     border: Color::Reset,
+    alert_fg: Color::Reset,
+    alert_note: Color::Reset,
+    alert_tip: Color::Reset,
+    alert_important: Color::Reset,
+    alert_warning: Color::Reset,
+    alert_caution: Color::Reset,
 };
 
 /// User-decided values for Ular Light (cream `#FDF6E3`). Some sit below the
@@ -55,6 +69,12 @@ pub(super) const ULAR_LIGHT: MarkdownColors = MarkdownColors {
     link: rgb(0x268BD2),
     quote: rgb(0x859900),
     border: rgb(0x002B36),
+    alert_fg: rgb(0xFFFFFF),
+    alert_note: rgb(0x073642),
+    alert_tip: rgb(0x1A7F37),
+    alert_important: rgb(0x8250DF),
+    alert_warning: rgb(0x9A6700),
+    alert_caution: rgb(0xCF222E),
 };
 
 const TEXT_CONTRAST: f64 = 4.5;
@@ -79,6 +99,13 @@ impl MarkdownColors {
             link: fit(t.key_hint, bg, TEXT_CONTRAST),
             quote: fit(t.success, bg, TEXT_CONTRAST),
             border: t.dim,
+            // Labels are written in the page background color on each fill.
+            alert_fg: as_color(bg),
+            alert_note: fit(t.fg, bg, TEXT_CONTRAST),
+            alert_tip: fit(t.success, bg, TEXT_CONTRAST),
+            alert_important: fit(t.accent, bg, TEXT_CONTRAST),
+            alert_warning: fit(t.warning, bg, TEXT_CONTRAST),
+            alert_caution: fit(t.error, bg, TEXT_CONTRAST),
         }
     }
 
@@ -95,6 +122,12 @@ impl MarkdownColors {
             "md_link" => &mut self.link,
             "md_quote" => &mut self.quote,
             "md_border" => &mut self.border,
+            "md_alert_fg" => &mut self.alert_fg,
+            "md_alert_note" => &mut self.alert_note,
+            "md_alert_tip" => &mut self.alert_tip,
+            "md_alert_important" => &mut self.alert_important,
+            "md_alert_warning" => &mut self.alert_warning,
+            "md_alert_caution" => &mut self.alert_caution,
             _ => return None,
         })
     }

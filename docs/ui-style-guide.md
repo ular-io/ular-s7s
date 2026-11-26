@@ -457,6 +457,13 @@ is never involved.
 - Wrapping is word-first by display width and splits long words at grapheme
   boundaries; list, quote, and code prefixes repeat on wrapped rows. Tabs are
   expanded to four spaces before parsing.
+- GFM alerts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`,
+  `[!CAUTION]`; Antigravity writes them) replace the marker with a bold label
+  chip (`md.alert_fg` on the kind's `md.alert_*` fill, U+00A0 padded) on its
+  own row. The quote bar takes the same fill and is thin (`▎`) for NOTE/TIP,
+  thick (`█`) for the other three, so weight also reads from shape — the user
+  is color-blind, and the label text is the primary cue. The body uses the
+  default text color; plain quotes keep `md.quote`.
 - `<br>` (any case, `<br/>`, `<br />`) is a line break: a new row inside a
   table cell (Antigravity answers use it there), a new line elsewhere. Other
   HTML stays as `soft_dim()` text. Table layout lives in

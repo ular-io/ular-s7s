@@ -188,3 +188,26 @@ fn br_breaks_the_line_inside_table_cells_and_paragraphs() {
     let (_, paragraph) = render("first<br>second", 40);
     assert_eq!(paragraph, ["first", "second"]);
 }
+
+#[test]
+fn gfm_alerts_get_a_label_chip_and_a_bar_by_weight() {
+    let th = ular_light();
+    let (lines, text) = render("> [!NOTE]\n> read this\n\n> [!WARNING]\n> careful\n", 40);
+    assert_eq!(
+        text,
+        [
+            "▎ \u{a0}NOTE\u{a0}",
+            "▎ read this",
+            "",
+            "█ \u{a0}WARNING\u{a0}",
+            "█ careful"
+        ]
+    );
+    let (bar, chip) = (&lines[3].spans[0], &lines[3].spans[1]);
+    assert_eq!(bar.style.fg, Some(th.md.alert_warning));
+    assert_eq!(chip.style.bg, Some(th.md.alert_warning));
+    assert_eq!(chip.style.fg, Some(th.md.alert_fg));
+    assert!(chip.style.add_modifier.contains(Modifier::BOLD));
+    // Alert bodies use the default text color, unlike plain quotes.
+    assert_eq!(lines[4].spans[1].style.fg, None);
+}

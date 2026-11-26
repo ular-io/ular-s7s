@@ -448,7 +448,7 @@ bg = "default"        # keep the terminal's own background
 accent = "#88C0D0"    # focus borders / selection
 ```
 
-Rendered Markdown in the Detail view uses its own roles: `md_heading_bg`, `md_heading_fg`, `md_code_bg`, `md_code_fg` (inline code), `md_code_block_fg`, `md_table_head`, `md_marker` (list bullets, numbers, task boxes), `md_link`, `md_quote`, and `md_border` (code/table frames, quote bar, rules). Ular Light ships a fixed set; every other theme derives them from its own colors, raised to 4.5:1 contrast for text and 3:1 for list markers. A custom theme that changes any base color re-derives them, and an `md_*` key in `[colors]` overrides the result.
+Rendered Markdown in the Detail view uses its own roles: `md_heading_bg`, `md_heading_fg`, `md_code_bg`, `md_code_fg` (inline code), `md_code_block_fg`, `md_table_head`, `md_marker` (list bullets, numbers, task boxes), `md_link`, `md_quote`, `md_border` (code/table frames, quote bar, rules), and the alert labels `md_alert_fg`, `md_alert_note`, `md_alert_tip`, `md_alert_important`, `md_alert_warning`, `md_alert_caution`. Ular Light ships a fixed set; every other theme derives them from its own colors, raised to 4.5:1 contrast for text and 3:1 for list markers. A custom theme that changes any base color re-derives them, and an `md_*` key in `[colors]` overrides the result.
 
 
 
