@@ -78,6 +78,7 @@ pub(super) const ULAR_LIGHT: MarkdownColors = MarkdownColors {
 };
 
 const TEXT_CONTRAST: f64 = 4.5;
+const HEADING_BAR_CONTRAST: f64 = 1.25;
 const MARKER_CONTRAST: f64 = 3.0;
 
 impl MarkdownColors {
@@ -86,8 +87,26 @@ impl MarkdownColors {
         let toward = if t.dark { (255, 255, 255) } else { (0, 0, 0) };
         let fit =
             |c: Color, against, need| as_color(reach_contrast(color_rgb(c), against, toward, need));
-        let heading_bg = mix(bg, color_rgb(t.fg), 0.12);
+        // 12% reads on dark palettes; light ones need more before the bar shows.
+        let heading_bg = (6..=15)
+            .map(|i| mix(bg, color_rgb(t.fg), i as f64 * 0.02))
+            .find(|bar| contrast(*bar, bg) >= HEADING_BAR_CONTRAST)
+            .unwrap_or_else(|| mix(bg, color_rgb(t.fg), 0.3));
         let code_bg = mix(bg, color_rgb(t.warning), 0.25);
+        let [note, tip, warning, caution] =
+            [t.fg, t.success, t.warning, t.error].map(|c| fit(c, bg, TEXT_CONTRAST));
+        // Palettes reuse hues (accent == success, accent == warning, ...), so
+        // IMPORTANT takes whichever spare role sits farthest from the other four.
+        let important = [t.accent, t.key_hint, t.usage_high, t.agent_antigravity]
+            .map(|c| fit(c, bg, TEXT_CONTRAST))
+            .into_iter()
+            .max_by_key(|c| {
+                [note, tip, warning, caution]
+                    .map(|other| distance(color_rgb(*c), color_rgb(other)))
+                    .into_iter()
+                    .min()
+            })
+            .expect("candidate list is not empty");
         Self {
             heading_bg: as_color(heading_bg),
             heading_fg: fit(t.fg, heading_bg, TEXT_CONTRAST),
@@ -101,11 +120,11 @@ impl MarkdownColors {
             border: t.dim,
             // Labels are written in the page background color on each fill.
             alert_fg: as_color(bg),
-            alert_note: fit(t.fg, bg, TEXT_CONTRAST),
-            alert_tip: fit(t.success, bg, TEXT_CONTRAST),
-            alert_important: fit(t.accent, bg, TEXT_CONTRAST),
-            alert_warning: fit(t.warning, bg, TEXT_CONTRAST),
-            alert_caution: fit(t.error, bg, TEXT_CONTRAST),
+            alert_note: note,
+            alert_tip: tip,
+            alert_important: important,
+            alert_warning: warning,
+            alert_caution: caution,
         }
     }
 
@@ -142,6 +161,12 @@ fn as_color((r, g, b): Rgb) -> Color {
 fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
     let ch = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
     (ch(a.0, b.0), ch(a.1, b.1), ch(a.2, b.2))
+}
+
+/// Squared RGB distance; enough to rank candidate fills against each other.
+fn distance(a: Rgb, b: Rgb) -> u32 {
+    let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2) as u32;
+    d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2)
 }
 
 /// First 1/40 step from `c` toward `toward` that meets `need` against `bg`.

@@ -472,7 +472,11 @@ is never involved.
   `ULAR_LIGHT`, partly below the contrast targets by choice). Every other
   palette derives them from its own roles, stepping toward black (light) or
   white (dark) until text reaches 4.5:1 and markers 3:1; a unit test enforces
-  the targets on every built-in. A custom theme re-derives them when it
+  the targets on every built-in. The heading bar mixes in more of `fg` until it
+  stands 1.25:1 off the background, and the IMPORTANT alert takes whichever of
+  `accent`/`key_hint`/`usage_high`/`agent_antigravity` sits farthest from the
+  other four fills, because palettes reuse hues. Review a rule change with the
+  ignored `markdown_theme_gallery` test ([testing.md](./testing.md)). A custom theme re-derives them when it
   changes a base color, and explicit `md_*` keys win.
 - The Work & Answer rows are cached in `SessionDetailState::work_lines`, keyed
   by selection, width, tool visibility, fade, and the whole `Theme`; refresh

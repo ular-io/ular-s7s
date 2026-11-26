@@ -472,5 +472,9 @@ impl<'t> Renderer<'t> {
 mod table;
 
 #[cfg(test)]
+#[path = "markdown_gallery.rs"]
+mod gallery;
+
+#[cfg(test)]
 #[path = "markdown_tests.rs"]
 mod tests;
