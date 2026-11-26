@@ -14,7 +14,7 @@ pub struct MarkdownColors {
     /// Full-width heading bar and its text.
     pub heading_bg: Color,
     pub heading_fg: Color,
-    /// Inverted inline-code chip.
+    /// Inline-code chip: body text on a pale highlighter tint.
     pub code_bg: Color,
     pub code_fg: Color,
     /// Fenced/indented code block text (the frame uses `border`).
@@ -47,8 +47,8 @@ pub(super) const UNSET: MarkdownColors = MarkdownColors {
 pub(super) const ULAR_LIGHT: MarkdownColors = MarkdownColors {
     heading_bg: rgb(0xD0D0D0),
     heading_fg: rgb(0x073642),
-    code_bg: rgb(0x6C6C6C),
-    code_fg: rgb(0xEEEEEE),
+    code_bg: rgb(0xF3E6A8),
+    code_fg: rgb(0x073642),
     code_block_fg: rgb(0x005FAF),
     table_head: rgb(0x005F87),
     marker: rgb(0x839496),
@@ -67,11 +67,12 @@ impl MarkdownColors {
         let fit =
             |c: Color, against, need| as_color(reach_contrast(color_rgb(c), against, toward, need));
         let heading_bg = mix(bg, color_rgb(t.fg), 0.12);
+        let code_bg = mix(bg, color_rgb(t.warning), 0.25);
         Self {
             heading_bg: as_color(heading_bg),
             heading_fg: fit(t.fg, heading_bg, TEXT_CONTRAST),
-            code_bg: fit(t.muted, bg, TEXT_CONTRAST),
-            code_fg: as_color(bg),
+            code_bg: as_color(code_bg),
+            code_fg: fit(t.fg, code_bg, TEXT_CONTRAST),
             code_block_fg: fit(t.key_hint, bg, TEXT_CONTRAST),
             table_head: fit(t.accent, bg, TEXT_CONTRAST),
             marker: fit(t.accent, bg, MARKER_CONTRAST),

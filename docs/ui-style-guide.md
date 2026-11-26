@@ -447,7 +447,7 @@ is never involved.
   keep the raw Markdown.
 - No markers on screen: headings, emphasis, fences, task boxes, and link URLs
   are replaced by styling. Headings sit on a full-width `md.heading_bg` bar,
-  bold, indented `1 + 2 × (level − 1)` columns. Inline code is an inverted
+  bold, indented `1 + 2 × (level − 1)` columns. Inline code is a tinted
   `md.code_fg`/`md.code_bg` chip padded with one U+00A0 on each side (a normal
   space would let wrapping split the padding). Code blocks get a `╭─ lang` /
   `│ ` / `╰─` frame in `md.border`; lists use `•`, `◦`, `N.`, and `[✓]`/`[ ]`

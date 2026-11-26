@@ -53,7 +53,7 @@ fn headings_fill_the_width_on_a_bar_indented_by_level() {
 }
 
 #[test]
-fn inline_code_is_an_inverted_chip_padded_with_nbsp() {
+fn inline_code_is_a_tinted_chip_padded_with_nbsp() {
     let th = ular_light();
     let (lines, text) = render("run `ls` now", 40);
     assert_eq!(text, ["run \u{a0}ls\u{a0} now"]);
