@@ -36,10 +36,10 @@ fn redact_line(line: &str) -> String {
     let lower = trimmed.to_lowercase();
     if contains_secret_key(&lower) && (trimmed.contains('=') || trimmed.contains(':')) {
         if let Some(pos) = line.find('=') {
-            return format!("{}= [REDACTED]", &line[..pos].trim_end());
+            return format!("{}= [REDACTED]", line[..pos].trim_end());
         }
         if let Some(pos) = line.find(':') {
-            return format!("{}: [REDACTED]", &line[..pos].trim_end());
+            return format!("{}: [REDACTED]", line[..pos].trim_end());
         }
     }
 

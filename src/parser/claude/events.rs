@@ -327,11 +327,8 @@ fn active_uuid_set<'a>(
         if !active.insert(u) {
             break; // Cycle guard (corrupt file).
         }
-        match parents.get(u) {
-            Some(parent) => cursor = *parent,
-            // Dangling reference: the chain cannot be trusted, keep everything.
-            None => return None,
-        }
+        // Dangling reference: the chain cannot be trusted, keep everything.
+        cursor = *parents.get(u)?;
     }
     Some(active)
 }

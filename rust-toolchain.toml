@@ -2,5 +2,5 @@
 # contributor and CI run gets identical build, test, and Clippy results.
 # Bump deliberately (and re-run scripts/check.sh) rather than tracking `stable`.
 [toolchain]
-channel = "1.96.0"
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]

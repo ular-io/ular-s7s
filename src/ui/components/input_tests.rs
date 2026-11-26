@@ -155,7 +155,7 @@ fn insert_before_an_existing_mark_does_not_skip_it() {
     let mut i = input(COMBINING);
     i.move_left();
     i.insert_char('x');
-    assert_eq!(i.value, format!("xe\u{301}"));
+    assert_eq!(i.value, "xe\u{301}");
     assert_eq!(i.cursor, 1);
 }
 
