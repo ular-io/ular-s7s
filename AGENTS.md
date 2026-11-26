@@ -63,9 +63,8 @@ active documentation.
   - Edited file over 500: bring it to 500 or fewer in the same task. Split by
     responsibility into sibling modules (tests by topic, e.g.
     `src/ui/new_session/combo_tests.rs`), not by line count.
-- Do the split as its own commit before the behavior change: moves only, no
-  logic edits, `scripts/check.sh` passing. A reviewer can then read the
-  behavior commit without the move noise.
+- Do the split first: moves only, no logic edits, `scripts/check.sh` passing,
+  before starting the behavior change.
 - Do not keep a list of over-limit files in documentation; it goes stale.
   Find them with
   `find src -name '*.rs' -exec wc -l {} + | awk '$1 > 500 && $2 != "total"'`.
