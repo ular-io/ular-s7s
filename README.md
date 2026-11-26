@@ -33,6 +33,7 @@ A terminal dashboard that integrates **search and management** across Claude Cod
 - **Integrated TUI Search**: Search and filter past sessions scattered across Claude, Codex, and Antigravity from a single consolidated screen. Keyword search spans user prompts, titles, folder names, and each turn's last assistant answer, so you can find a session by something the agent said. Full search (`ctrl+/`) goes further — every assistant message, tool call, and tool result (command output, build logs, file contents) — streaming matches into the list with a highlighted snippet while it runs.
 - **At-a-Glance Usage Monitor**: Track remaining quotas and usage limits for all active profiles and agents directly in the header (e.g., ` 72%(4h 30m)  52%(2d 16h) left  2h ago`). Countdowns keep running, each row shows how old its value is, and a refresh in one s7s window shows up in every other open window within a second.
 - **Comprehensive Session Management**: View transcripts, resume conversations, rename session titles, change the folder a session runs in, or delete redundant histories directly from the TUI — and do the same from the shell with `s7s session`.
+- **Readable Answers**: The Detail view renders assistant messages and final answers as Markdown — headings on a full-width bar, lists, boxed tables that fit the pane, framed code blocks, and links shown by title — without the raw `#`, `**`, or fence markers. Copy, search, and handoff keep the original text.
 - **Session Bookmarks**: Mark sessions with `ctrl+b` to keep them at the top of the list, or filter to bookmarked sessions. Bookmarks persist across restarts and cache rebuilds without changing agent-owned titles.
 - **Live-Session Markers**: Claude sessions that Claude Code is running in the background (after `←` on an empty prompt, `/bg`, or `claude --bg`) show `Ⓑ` before the title, and Claude or Antigravity sessions open in another terminal show `Ⓞ` (Codex sessions are not marked); the Prompt pane explains each marker (for `Ⓑ`: working, needs input, or done). Enter on a `Ⓑ` session asks whether to attach to it (Cancel is the default); a `Ⓞ` session cannot be opened, and neither can be deleted or renamed while it is live. Markers refresh every 30 seconds — [Details](docs/background-sessions.md).
 - **Workspaces**: Use `[NO WORKSPACE]` to find sessions outside every saved scope. Save named session scopes — words a session must contain, words that hide it, and a set of project folders — and switch between them with `ctrl+w`. The open workspace narrows the session list until you close it; s7s always starts with All open.
@@ -446,6 +447,8 @@ base = "nord"
 bg = "default"        # keep the terminal's own background
 accent = "#88C0D0"    # focus borders / selection
 ```
+
+Rendered Markdown in the Detail view uses its own roles: `md_heading_bg`, `md_heading_fg`, `md_code_bg`, `md_code_fg` (inline code), `md_code_block_fg`, `md_table_head`, `md_marker` (list bullets, numbers, task boxes), `md_link`, `md_quote`, and `md_border` (code/table frames, quote bar, rules). Ular Light ships a fixed set; every other theme derives them from its own colors, raised to 4.5:1 contrast for text and 3:1 for list markers. A custom theme that changes any base color re-derives them, and an `md_*` key in `[colors]` overrides the result.
 
 
 

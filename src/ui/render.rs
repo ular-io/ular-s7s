@@ -301,6 +301,8 @@ mod dialog_tests;
 #[cfg(test)]
 mod header_tests;
 #[cfg(test)]
+mod markdown_tests;
+#[cfg(test)]
 mod session_tests;
 #[cfg(test)]
 mod test_support;

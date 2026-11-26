@@ -128,7 +128,7 @@ discrete request fields drained by `runtime`.
 | Attach/Cancel dialog for a background session | `ui/overlays/attach.rs` (handover: `runtime::handover::handover_attach`) |
 | Clipboard projections | `ui/copy.rs` |
 | Paste routing | `ui/paste.rs` |
-| Reusable input/modal/scroll/text primitives | `ui/components/` |
+| Reusable input/modal/scroll/text primitives, Markdown body rendering | `ui/components/` |
 | In-place external effects and refresh scheduling | `ui/effect.rs` |
 | Background job receiver coordination | `ui/background.rs` |
 | Global refresh snapshots and result application | `ui/refresh.rs` |

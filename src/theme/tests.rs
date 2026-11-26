@@ -176,3 +176,55 @@ fn themes_sorting_order() {
         );
     }
 }
+
+#[test]
+fn ular_light_keeps_user_tuned_markdown_colors() {
+    let theme = builtin_themes()
+        .into_iter()
+        .find(|t| t.key == "ular-light")
+        .expect("ular-light exists");
+    assert_eq!(theme.md, super::markdown::ULAR_LIGHT);
+}
+
+#[test]
+fn derived_markdown_colors_meet_contrast_targets() {
+    use super::markdown::contrast;
+    for t in builtin_themes()
+        .into_iter()
+        .filter(|t| t.key != "ular-light")
+    {
+        let (md, bg) = (t.md, t.bg_rgb());
+        let on = |fg: Color, bg| contrast(color_rgb(fg), bg);
+        assert!(
+            on(md.heading_fg, color_rgb(md.heading_bg)) >= 4.5,
+            "{}",
+            t.key
+        );
+        assert!(on(md.code_fg, color_rgb(md.code_bg)) >= 4.5, "{}", t.key);
+        for (role, color) in [
+            ("code_block_fg", md.code_block_fg),
+            ("table_head", md.table_head),
+            ("link", md.link),
+            ("quote", md.quote),
+        ] {
+            assert!(on(color, bg) >= 4.5, "{} {role}", t.key);
+        }
+        assert!(on(md.marker, bg) >= 3.0, "{} marker", t.key);
+    }
+}
+
+#[test]
+fn custom_theme_rederives_markdown_only_when_base_colors_change() {
+    let kept = theme_from_file("kept", "base = \"ular-light\"\n").expect("parses");
+    assert_eq!(kept.md, super::markdown::ULAR_LIGHT);
+    let changed = theme_from_file(
+        "changed",
+        "base = \"ular-light\"\n[colors]\nbg = \"#ffffff\"\nmd_link = \"#123456\"\n",
+    )
+    .expect("parses");
+    assert_ne!(
+        changed.md.heading_bg,
+        super::markdown::ULAR_LIGHT.heading_bg
+    );
+    assert_eq!(changed.md.link, Color::Rgb(0x12, 0x34, 0x56));
+}

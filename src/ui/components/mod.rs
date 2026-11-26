@@ -7,6 +7,7 @@
 //! them; feature widgets belong in their own feature module, not here.
 
 pub(crate) mod input;
+pub(crate) mod markdown;
 pub(crate) mod modal;
 pub(crate) mod scrollbar;
 pub(crate) mod text;

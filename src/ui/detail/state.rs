@@ -39,6 +39,19 @@ pub struct SessionDetailState {
     pub right_scroll: std::cell::Cell<u16>,
     /// Maximum scroll limit for the right details panel. Calculated and updated in the render pass post-wrapping.
     pub right_max_scroll: std::cell::Cell<u16>,
+    /// Rendered Work & Answer rows, rebuilt only when `WorkLinesKey` changes so
+    /// Markdown is not re-converted every frame. Cleared when `turns` is replaced.
+    pub work_lines: std::cell::RefCell<Option<(WorkLinesKey, Vec<ratatui::text::Line<'static>>)>>,
+}
+
+/// Everything the Work & Answer rows depend on besides the turns themselves.
+#[derive(PartialEq)]
+pub struct WorkLinesKey {
+    pub selected: usize,
+    pub width: usize,
+    pub show_tools: bool,
+    pub dimmed: bool,
+    pub theme: crate::theme::Theme,
 }
 
 impl SessionDetailState {

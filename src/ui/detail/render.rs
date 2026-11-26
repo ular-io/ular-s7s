@@ -5,13 +5,14 @@
 use crate::handoff::WorkKind;
 use crate::model::format_local_datetime_seconds;
 use crate::theme::Theme;
+use crate::ui::components::markdown::render_markdown;
 use crate::ui::components::modal::{count_label, titled_block_nav, with_count_footer};
 use crate::ui::components::scrollbar::draw_vscrollbar;
 use crate::ui::components::text::{pad_w, wrap_w};
 use crate::ui::render::{
     context_source_lines, preview_turn_display, session_meta_lines, PreviewTurnLine,
 };
-use crate::ui::{App, DetailFocus, SessionDetailState, UiMode};
+use crate::ui::{App, DetailFocus, SessionDetailState, UiMode, WorkLinesKey};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
@@ -243,14 +244,6 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
     // While the Prompt panel has focus this one fades like every unfocused pane:
     // text turns soft-dim and headings drop their color but stay bold.
     let dimmed = detail.focus == DetailFocus::Questions && app.mode == UiMode::Table;
-    let heading = |style: Style| {
-        if dimmed {
-            th.soft_dim().add_modifier(Modifier::BOLD)
-        } else {
-            style
-        }
-    };
-    let body = |style: Style| if dimmed { th.soft_dim() } else { style };
     let title = format!(" Q{} Work & Answer ", detail.selected + 1);
     let block = titled_block_nav(&title, focused, dimmed, true, false, th);
     let inner = block.inner(area);
@@ -260,6 +253,48 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
     }
     let wrap_width = inner.width as usize;
 
+    let key = WorkLinesKey {
+        selected: detail.selected,
+        width: wrap_width,
+        show_tools: app.detail_show_tools,
+        dimmed,
+        theme: th.clone(),
+    };
+    let mut cache = detail.work_lines.borrow_mut();
+    if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+        *cache = Some((key, work_lines(app, detail, wrap_width, dimmed)));
+    }
+    let lines = &cache.as_ref().expect("filled above").1;
+
+    // Computes and records the maximum scroll boundary at rendering, clamping active scroll offsets.
+    let h = inner.height as usize;
+    let max_off = lines.len().saturating_sub(h).min(u16::MAX as usize) as u16;
+    detail.right_max_scroll.set(max_off);
+    let off = detail.right_scroll.get().min(max_off);
+    detail.right_scroll.set(off);
+
+    let visible: Vec<Line> = lines.iter().skip(off as usize).take(h).cloned().collect();
+    f.render_widget(Paragraph::new(visible), inner);
+    draw_vscrollbar(f, area, focused, off as usize, lines.len(), h, th);
+}
+
+/// Builds the Work & Answer rows for the selected turn. Assistant text and the
+/// final answer render as Markdown; tool calls/results stay raw.
+fn work_lines(
+    app: &App,
+    detail: &SessionDetailState,
+    wrap_width: usize,
+    dimmed: bool,
+) -> Vec<Line<'static>> {
+    let th = &app.theme;
+    let heading = |style: Style| {
+        if dimmed {
+            th.soft_dim().add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    };
+    let body = |style: Style| if dimmed { th.soft_dim() } else { style };
     // When expanded (`.`), reveal hidden tool entries and drop the per-entry line caps so the
     // full work log and answer render; collapsed keeps the caps to bound large tool logs.
     let work_entry_max = if app.detail_show_tools {
@@ -318,18 +353,20 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
                 format!("● {} {}", entry.kind.heading(), i + 1),
                 heading_style,
             )));
-            let body_style = body(match entry.kind {
-                WorkKind::AssistantText => Style::default(),
-                _ => th.soft_dim(),
-            });
-            push_capped_lines(
-                &mut lines,
-                &entry.text,
-                wrap_width,
-                body_style,
-                work_entry_max,
-                th,
-            );
+            if entry.kind == WorkKind::AssistantText {
+                let md = render_markdown(&entry.text, wrap_width, th);
+                push_capped(&mut lines, md, work_entry_max, th);
+            } else {
+                let body_style = body(th.soft_dim());
+                push_capped_lines(
+                    &mut lines,
+                    &entry.text,
+                    wrap_width,
+                    body_style,
+                    work_entry_max,
+                    th,
+                );
+            }
             lines.push(Line::from(""));
         }
         flush_hidden(&mut lines, &mut hidden_run);
@@ -339,14 +376,8 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
         )));
         match turn.final_answer.as_deref() {
             Some(answer) if !answer.trim().is_empty() => {
-                push_capped_lines(
-                    &mut lines,
-                    answer,
-                    wrap_width,
-                    body(Style::default()),
-                    final_answer_max,
-                    th,
-                );
+                let md = render_markdown(answer, wrap_width, th);
+                push_capped(&mut lines, md, final_answer_max, th);
             }
             _ => lines.push(Line::from(Span::styled(
                 "No final assistant answer extracted.",
@@ -360,16 +391,7 @@ fn draw_detail_work(f: &mut Frame, app: &App, area: Rect, detail: &SessionDetail
         )));
     }
 
-    // Computes and records the maximum scroll boundary at rendering, clamping active scroll offsets.
-    let h = inner.height as usize;
-    let max_off = lines.len().saturating_sub(h).min(u16::MAX as usize) as u16;
-    detail.right_max_scroll.set(max_off);
-    let off = detail.right_scroll.get().min(max_off);
-    detail.right_scroll.set(off);
-
-    let total_lines = lines.len();
-    f.render_widget(Paragraph::new(lines).scroll((off, 0)), inner);
-    draw_vscrollbar(f, area, focused, off as usize, total_lines, h, th);
+    lines
 }
 
 /// Wraps multi-line text by width and appends to `out`. Truncates lines exceeding `max_lines`,
@@ -400,9 +422,29 @@ fn push_capped_lines(
         }
     }
     if omitted > 0 {
-        out.push(Line::from(Span::styled(
-            format!("────── ⋯ {omitted} more lines ⋯ ──────"),
-            th.soft_dim().add_modifier(Modifier::DIM),
-        )));
+        out.push(omission_line(omitted, th));
     }
+}
+
+/// Appends rendered Markdown rows capped at `max_lines`. They keep their
+/// styles even while the pane is faded (user decision; the frame, entry
+/// headings, and raw tool text still fade).
+fn push_capped(
+    out: &mut Vec<Line<'static>>,
+    rows: Vec<Line<'static>>,
+    max_lines: usize,
+    th: &Theme,
+) {
+    let omitted = rows.len().saturating_sub(max_lines);
+    out.extend(rows.into_iter().take(max_lines));
+    if omitted > 0 {
+        out.push(omission_line(omitted, th));
+    }
+}
+
+fn omission_line(omitted: usize, th: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("────── ⋯ {omitted} more lines ⋯ ──────"),
+        th.soft_dim().add_modifier(Modifier::DIM),
+    ))
 }

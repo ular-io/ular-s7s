@@ -1,6 +1,6 @@
 //! Custom theme files (`~/.config/s7s/themes/*.toml`) and color parsing.
 
-use super::{builtin_themes, rgb, Theme, DEFAULT_THEME_KEY};
+use super::{builtin_themes, rgb, MarkdownColors, Theme, DEFAULT_THEME_KEY};
 use ratatui::style::Color;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -60,13 +60,21 @@ pub(super) fn theme_from_file(key: &str, data: &str) -> Option<Theme> {
     theme.key = key.to_string();
     theme.name = file.name.unwrap_or_else(|| key.to_string());
     theme.custom = true;
+    // A changed base color re-derives the `md_*` roles (they are computed from
+    // it); explicit `md_*` keys apply last so they win over the derivation.
+    let mut rederive = file.dark.is_some_and(|dark| dark != theme.dark);
     if let Some(dark) = file.dark {
         theme.dark = dark;
     }
+    let mut md_overrides = Vec::new();
     for (role, value) in &file.colors {
         let Some(color) = parse_color(value) else {
             continue;
         };
+        if role.starts_with("md_") {
+            md_overrides.push((role.as_str(), color));
+            continue;
+        }
         let slot = match role.as_str() {
             "bg" => &mut theme.bg,
             "fg" => &mut theme.fg,
@@ -94,6 +102,15 @@ pub(super) fn theme_from_file(key: &str, data: &str) -> Option<Theme> {
             _ => continue,
         };
         *slot = color;
+        rederive = true;
+    }
+    if rederive {
+        theme.md = MarkdownColors::derive(&theme);
+    }
+    for (role, color) in md_overrides {
+        if let Some(slot) = theme.md.slot(role) {
+            *slot = color;
+        }
     }
     Some(theme)
 }

@@ -27,6 +27,7 @@ semantic fields rather than literal colors.
 | `button_*` | focused/unfocused dialog buttons |
 | `success`, `warning`, `error` | severity |
 | `agent_*` | CLD/CDX/AGY badges |
+| `md` (`md_*` in theme files) | rendered Markdown in Detail Work & Answer (§Markdown answers) |
 
 - Add a new visual role to `Theme`, every built-in palette, and custom-theme
   loading before using it. Do not inline arbitrary RGB values in render code.
@@ -58,6 +59,8 @@ holds (a list or text to read). Fading a pane means:
   thick.
 - Its text, headers, and tags use `soft_dim()`; colored headings (accent, agent,
   key, success) drop their color and keep only their bold.
+  The one exception is the rendered Markdown body in Detail Work & Answer
+  (§Markdown answers), which keeps its styles.
 - A selected row uses `selection_inactive_bg`, `soft_dim()`, and a weak
   `REVERSED` signal.
 - Separators and the third-level omission markers keep their own fainter styles.
@@ -431,6 +434,43 @@ follows the `titled_block_nav` state (`━` focused, `─` otherwise).
   highlighted only while the button row has focus (Save first).
 - The status bar shows the dialog's keys while it is open, switching to the
   checklist keys while the checklist is open; both fit an 80-column terminal.
+
+## Markdown answers
+
+Detail Work & Answer renders `AssistantText` entries and the final answer with
+`ui/components/markdown.rs::render_markdown`; tool calls and results stay raw
+`soft_dim()` text. pulldown-cmark (tables, strikethrough, task lists) only
+parses — the converter emits pre-wrapped `Line`s itself, so `Paragraph::wrap`
+is never involved.
+
+- Display only. Copy (`ui/copy.rs`), search, handoff, and `s7s session show`
+  keep the raw Markdown.
+- No markers on screen: headings, emphasis, fences, task boxes, and link URLs
+  are replaced by styling. Headings sit on a full-width `md.heading_bg` bar,
+  bold, indented `1 + 2 × (level − 1)` columns. Inline code is an inverted
+  `md.code_fg`/`md.code_bg` chip padded with one U+00A0 on each side (a normal
+  space would let wrapping split the padding). Code blocks get a `╭─ lang` /
+  `│ ` / `╰─` frame in `md.border`; lists use `•`, `◦`, `N.`, and `[✓]`/`[ ]`
+  in `md.marker`; tables are boxed, honor column alignment, and shrink the
+  widest column (down to 4) before wrapping cells; quotes get a `▎ ` bar;
+  links show the title only.
+- Wrapping is word-first by display width and splits long words at grapheme
+  boundaries; list, quote, and code prefixes repeat on wrapped rows. Tabs are
+  expanded to four spaces before parsing.
+- `md_*` colors: Ular Light keeps a user-tuned set (`theme/markdown.rs`
+  `ULAR_LIGHT`, partly below the contrast targets by choice). Every other
+  palette derives them from its own roles, stepping toward black (light) or
+  white (dark) until text reaches 4.5:1 and markers 3:1; a unit test enforces
+  the targets on every built-in. A custom theme re-derives them when it
+  changes a base color, and explicit `md_*` keys win.
+- The Work & Answer rows are cached in `SessionDetailState::work_lines`, keyed
+  by selection, width, tool visibility, fade, and the whole `Theme`; refresh
+  clears it when it replaces `turns`. Only the visible slice is cloned per frame.
+- Exception to pane fading: the Markdown body keeps its full styles while
+  Work & Answer is faded (user decision). The frame, title, entry headings
+  (`● Final Answer`, `● Assistant Text N`), and raw tool text still fade.
+- The collapsed per-entry caps (`WORK_ENTRY_MAX_LINES`, `FINAL_ANSWER_MAX_LINES`)
+  count rendered rows.
 
 ## Width and root layout
 

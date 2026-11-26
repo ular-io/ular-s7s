@@ -28,7 +28,7 @@ pub mod workspace;
 pub(crate) use components::input::{
     insert_paste_at, next_grapheme_boundary, prev_grapheme_boundary, PasteOutcome, TextInput,
 };
-pub use detail::state::{DetailFocus, SessionDetailState};
+pub use detail::state::{DetailFocus, SessionDetailState, WorkLinesKey};
 pub use modes::{Screen, TerminalKind, TerminalRequest, UiMode};
 pub use new_session::state::{
     ModelOption, NewSessionFocus, NewSessionRequest, NewSessionState, SessionContextRef,

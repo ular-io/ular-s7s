@@ -1,7 +1,7 @@
 //! The project's own palettes (Ular Dark / Ular Light) and the colorblind-safe
 //! (CVD) palettes, appended after the standard built-ins.
 
-use super::{rgb, Theme};
+use super::{markdown, rgb, MarkdownColors, Theme};
 
 pub(super) fn project_themes() -> Vec<Theme> {
     vec![
@@ -37,7 +37,8 @@ pub(super) fn project_themes() -> Vec<Theme> {
             button_bg: 0xEEE8D5, button_fg: 0x7E93AE,
             success: 0x2E8F5B, warning: 0xB58900, error: 0xD14343,
             agent_claude: 0xC2603F, agent_codex: 0x3F9668, agent_antigravity: 0x4E77C2,
-        }),
+        })
+        .with_markdown(super::markdown::ULAR_LIGHT),
         // --- Colorblind-safe (CVD) themes: 3 dark, 3 light. success=blue-ish,
         // error=orange/vermillion/magenta, never red-vs-green semantics. ---
         builtin_theme!("cb-okabe-ito-dark", "(CVD) Okabe-Ito Dark", dark: true, {

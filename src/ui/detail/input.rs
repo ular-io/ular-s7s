@@ -37,6 +37,7 @@ impl App {
             left_scroll_max: std::cell::Cell::new(0),
             right_scroll: std::cell::Cell::new(0),
             right_max_scroll: std::cell::Cell::new(0),
+            work_lines: Default::default(),
         });
         self.screen = Screen::Detail;
         self.status_msg = None;

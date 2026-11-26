@@ -64,9 +64,17 @@ pub struct Theme {
     pub agent_claude: Color,
     pub agent_codex: Color,
     pub agent_antigravity: Color,
+    /// Rendered Markdown roles (`md_*`): derived, except Ular Light's tuned set.
+    pub md: MarkdownColors,
 }
 
 impl Theme {
+    /// Replaces the derived Markdown roles with a fixed set.
+    fn with_markdown(mut self, md: MarkdownColors) -> Self {
+        self.md = md;
+        self
+    }
+
     /// Secondary-text style (previous `soft_dim_style`).
     pub fn soft_dim(&self) -> Style {
         Style::default().fg(self.muted)
@@ -148,8 +156,8 @@ macro_rules! builtin_theme {
         button_bg: $bb:literal, button_fg: $bf:literal,
         success: $succ:literal, warning: $warn:literal, error: $err:literal,
         agent_claude: $ac:literal, agent_codex: $ax:literal, agent_antigravity: $aa:literal $(,)?
-    }) => {
-        Theme {
+    }) => {{
+        let mut theme = Theme {
             key: String::from($key),
             name: String::from($name),
             dark: $dark,
@@ -177,17 +185,22 @@ macro_rules! builtin_theme {
             agent_claude: rgb($ac),
             agent_codex: rgb($ax),
             agent_antigravity: rgb($aa),
-        }
-    };
+            md: markdown::UNSET,
+        };
+        theme.md = MarkdownColors::derive(&theme);
+        theme
+    }};
 }
 
 mod builtin;
 mod file;
+mod markdown;
 mod project;
 
 pub use builtin::builtin_themes;
 use file::load_custom_themes_from;
 pub use file::{parse_color, themes_dir};
+pub use markdown::MarkdownColors;
 
 /// Full theme list for the dialog: built-ins (dark then light) followed by
 /// custom themes. Unit tests skip disk access for determinism.

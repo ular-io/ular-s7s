@@ -1,6 +1,6 @@
 //! Built-in palettes taken from the projects' official specs, in dialog order.
 
-use super::{rgb, Theme};
+use super::{markdown, rgb, MarkdownColors, Theme};
 
 /// Built-in themes in dialog order: the original 10 (6 dark, 4 light), then 10
 /// developer-popular palettes (7 dark, 3 light), then 3 additional dark and

@@ -180,6 +180,7 @@ impl App {
                             d.selected = d.selected.min(turns.len() - 1);
                             d.expanded_prompt = d.expanded_prompt.filter(|&i| i < turns.len());
                             d.turns = turns;
+                            d.work_lines.get_mut().take();
                         }
                     }
                 }
