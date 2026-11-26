@@ -131,13 +131,6 @@ pub(super) fn contrast(a: Rgb, b: Rgb) -> f64 {
         };
         0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
     };
-    let (hi, lo) = {
-        let (x, y) = (lum(a), lum(b));
-        if x > y {
-            (x, y)
-        } else {
-            (y, x)
-        }
-    };
-    (hi + 0.05) / (lo + 0.05)
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }

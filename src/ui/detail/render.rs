@@ -294,7 +294,6 @@ fn work_lines(
             style
         }
     };
-    let body = |style: Style| if dimmed { th.soft_dim() } else { style };
     // When expanded (`.`), reveal hidden tool entries and drop the per-entry line caps so the
     // full work log and answer render; collapsed keeps the caps to bound large tool logs.
     let work_entry_max = if app.detail_show_tools {
@@ -357,12 +356,11 @@ fn work_lines(
                 let md = render_markdown(&entry.text, wrap_width, th);
                 push_capped(&mut lines, md, work_entry_max, th);
             } else {
-                let body_style = body(th.soft_dim());
                 push_capped_lines(
                     &mut lines,
                     &entry.text,
                     wrap_width,
-                    body_style,
+                    th.soft_dim(),
                     work_entry_max,
                     th,
                 );
