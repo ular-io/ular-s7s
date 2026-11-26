@@ -457,6 +457,10 @@ is never involved.
 - Wrapping is word-first by display width and splits long words at grapheme
   boundaries; list, quote, and code prefixes repeat on wrapped rows. Tabs are
   expanded to four spaces before parsing.
+- `<br>` (any case, `<br/>`, `<br />`) is a line break: a new row inside a
+  table cell (Antigravity answers use it there), a new line elsewhere. Other
+  HTML stays as `soft_dim()` text. Table layout lives in
+  `ui/components/markdown/table.rs`.
 - `md_*` colors: Ular Light keeps a user-tuned set (`theme/markdown.rs`
   `ULAR_LIGHT`, partly below the contrast targets by choice). Every other
   palette derives them from its own roles, stepping toward black (light) or

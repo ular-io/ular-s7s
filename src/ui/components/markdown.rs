@@ -35,6 +35,9 @@ struct Cell {
 }
 
 type Cells = Vec<Cell>;
+
+/// Forced line break inside a run of cells (`<br>`); zero width, never drawn.
+const BREAK: &str = "\n";
 type Spans = Vec<Span<'static>>;
 
 fn cells(spans: &[Span<'static>]) -> Cells {
@@ -43,7 +46,7 @@ fn cells(spans: &[Span<'static>]) -> Cells {
         .flat_map(|s| {
             s.content.graphemes(true).map(|g| Cell {
                 g: g.to_string(),
-                w: g.width(),
+                w: if g == BREAK { 0 } else { g.width() },
                 st: s.style,
             })
         })
@@ -77,6 +80,11 @@ fn wrap(cells: &[Cell], width: usize) -> Vec<Cells> {
     let mut line: Cells = Vec::new();
     let mut w = 0;
     for c in cells {
+        if c.g == BREAK {
+            lines.push(std::mem::take(&mut line));
+            w = 0;
+            continue;
+        }
         if w + c.w > width && !line.is_empty() {
             match line.iter().rposition(|c| c.g == " ").filter(|&i| i > 0) {
                 Some(space) => {
@@ -98,6 +106,13 @@ fn wrap(cells: &[Cell], width: usize) -> Vec<Cells> {
         lines.push(line);
     }
     lines
+}
+
+fn is_br(html: &str) -> bool {
+    matches!(
+        html.trim().to_ascii_lowercase().as_str(),
+        "<br>" | "<br/>" | "<br />"
+    )
 }
 
 struct Table {
@@ -213,6 +228,14 @@ impl<'t> Renderer<'t> {
         }
     }
 
+    /// `<br>` and hard breaks: a new row inside a table cell, a new line elsewhere.
+    fn line_break(&mut self) {
+        match &mut self.cell {
+            Some(cell) => cell.push(Span::raw(BREAK)),
+            None => self.flush(),
+        }
+    }
+
     /// Full-width bar; text indented 1 column at H1 and 2 more per level.
     fn heading_bar(&mut self) {
         let md = self.th.md;
@@ -242,79 +265,6 @@ impl<'t> Renderer<'t> {
             self.emit(&cells, gutter.clone(), gutter.clone());
         }
         self.out.push(Line::from(frame("╰─".to_string())));
-    }
-
-    fn table(&mut self, t: Table) {
-        let n = t.rows.iter().map(Vec::len).max().unwrap_or(0);
-        if n == 0 {
-            return;
-        }
-        let grid: Vec<Vec<Cells>> = t
-            .rows
-            .iter()
-            .map(|r| r.iter().map(|c| cells(c)).collect())
-            .collect();
-        let mut w: Vec<usize> = (0..n)
-            .map(|i| {
-                grid.iter()
-                    .filter_map(|r| r.get(i))
-                    .map(|c| width_of(c))
-                    .max()
-                    .unwrap_or(0)
-                    .max(1)
-            })
-            .collect();
-        let base = self.prefix(false);
-        let budget = self.width.saturating_sub(spans_width(&base) + 3 * n + 1);
-        while w.iter().sum::<usize>() > budget {
-            let (i, &widest) = w
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, v)| **v)
-                .expect("n > 0");
-            if widest <= 4 {
-                break;
-            }
-            w[i] -= 1;
-        }
-        let border = self.border();
-        let rule = |l: &str, m: &str, r: &str| {
-            let mut s = l.to_string();
-            for (i, cw) in w.iter().enumerate() {
-                s += &"─".repeat(cw + 2);
-                s += if i + 1 == n { r } else { m };
-            }
-            Line::from([base.clone(), vec![Span::styled(s, border)]].concat())
-        };
-        self.out.push(rule("┌", "┬", "┐"));
-        for (ri, row) in grid.iter().enumerate() {
-            let parts: Vec<Vec<Cells>> = (0..n)
-                .map(|i| wrap(row.get(i).map_or(&[][..], Vec::as_slice), w[i]))
-                .collect();
-            let height = parts.iter().map(Vec::len).max().unwrap_or(1);
-            for k in 0..height {
-                let mut spans = base.clone();
-                spans.push(Span::styled("│", border));
-                for (i, part) in parts.iter().enumerate() {
-                    let part = part.get(k).map_or(&[][..], Vec::as_slice);
-                    let pad = w[i].saturating_sub(width_of(part));
-                    let (l, r) = match t.aligns.get(i) {
-                        Some(Alignment::Right) => (pad, 0),
-                        Some(Alignment::Center) => (pad / 2, pad - pad / 2),
-                        _ => (0, pad),
-                    };
-                    spans.push(Span::raw(" ".repeat(l + 1)));
-                    spans.extend(spans_of(part));
-                    spans.push(Span::raw(" ".repeat(r + 1)));
-                    spans.push(Span::styled("│", border));
-                }
-                self.out.push(Line::from(spans));
-            }
-            if ri + 1 == t.head_rows {
-                self.out.push(rule("├", "┼", "┤"));
-            }
-        }
-        self.out.push(rule("└", "┴", "┘"));
     }
 
     fn finish_row(&mut self) {
@@ -460,7 +410,7 @@ impl<'t> Renderer<'t> {
                 self.text(&format!("\u{a0}{t}\u{a0}"), st);
             }
             Event::SoftBreak => self.text(" ", self.style()),
-            Event::HardBreak => self.flush(),
+            Event::HardBreak => self.line_break(),
             Event::Rule => {
                 self.flush();
                 let rule = "─".repeat(self.width);
@@ -470,11 +420,14 @@ impl<'t> Renderer<'t> {
             Event::TaskListMarker(done) => {
                 self.bullet = Some(if done { "[✓] " } else { "[ ] " }.into());
             }
+            Event::Html(t) | Event::InlineHtml(t) if is_br(&t) => self.line_break(),
             Event::Html(t) | Event::InlineHtml(t) => self.text(&t, self.th.soft_dim()),
             _ => {}
         }
     }
 }
+
+mod table;
 
 #[cfg(test)]
 #[path = "markdown_tests.rs"]

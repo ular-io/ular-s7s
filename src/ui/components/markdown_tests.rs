@@ -170,3 +170,21 @@ fn lines_never_exceed_the_width_or_split_graphemes() {
         );
     }
 }
+
+#[test]
+fn br_breaks_the_line_inside_table_cells_and_paragraphs() {
+    let (_, table) = render("| a | b |\n|---|---|\n| one<br>three | x<BR/>y |\n", 40);
+    assert_eq!(
+        table,
+        [
+            "┌───────┬───┐",
+            "│ a     │ b │",
+            "├───────┼───┤",
+            "│ one   │ x │",
+            "│ three │ y │",
+            "└───────┴───┘"
+        ]
+    );
+    let (_, paragraph) = render("first<br>second", 40);
+    assert_eq!(paragraph, ["first", "second"]);
+}
