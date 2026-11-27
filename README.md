@@ -65,9 +65,9 @@ brew install s7s
 > Recent Homebrew versions refuse to load formulae from a tap that has not been trusted (`Refusing to load formula ular-io/tap/s7s from untrusted tap ular-io/tap`). `brew trust ular-io/tap` allows it once; older Homebrew versions do not have the `trust` command and do not need this step.
 
 > [!NOTE]
-> On macOS, since custom Homebrew tap binaries are unsigned, Gatekeeper may block execution on the first run. You may need to grant trust under **System Settings > Privacy & Security** (click "Allow Anyway"), or manually clear the quarantine attribute:
+> Homebrew does not set the quarantine attribute on formula installs, so Gatekeeper does not block `s7s` installed this way. The release binaries are not notarized: if you download a release archive from GitHub with a browser instead, clear the attribute on the extracted binary before the first run (or click **Open Anyway** under **System Settings > Privacy & Security**):
 > ```bash
-> xattr -rd com.apple.quarantine $(which s7s)
+> xattr -d com.apple.quarantine ./s7s
 > ```
 
 ### Build and Install Manually
