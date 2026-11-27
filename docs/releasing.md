@@ -15,7 +15,7 @@ This document describes how to release a new version of `s7s` and distribute it 
 ## Prerequisites
 
 Ensure you have the following tools installed and authenticated on your local machine:
-* **Rust & Cargo**: For compiling source files.
+* **Rust via rustup**: `release.sh` runs `rustup target add` for both macOS targets, and `rust-toolchain.toml` pins the version only under rustup. Homebrew's `rust` formula ships only the host target and cannot build `x86_64-apple-darwin`; use `brew install rustup` (keg-only, so put `$(brew --prefix rustup)/bin` first on `PATH`).
 * **GitHub CLI (`gh`)**: For managing tags and releases. Run `gh auth status` to verify credentials.
 * **shasum**: For calculating SHA256 checksums (standard on macOS).
 
